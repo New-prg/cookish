@@ -19,7 +19,17 @@ export default function NewRequestPage() {
     });
     if (!items.length) return;
     const id = crypto.randomUUID();
-    update((current) => ({ ...current, requests: [{ id, title: String(form.get("title") ?? "").trim(), createdAt: requestDate(), status: "open", items }, ...current.requests] }));
+    update((current) => ({
+      ...current,
+      requests: [{
+        id,
+        title: String(form.get("title") ?? "").trim(),
+        createdAt: requestDate(),
+        createdAtIso: new Date().toISOString(),
+        status: "open",
+        items,
+      }, ...current.requests],
+    }));
     router.push(`/requests/${id}`);
   }
 

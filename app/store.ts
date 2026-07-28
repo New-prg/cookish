@@ -9,6 +9,7 @@ export type PurchaseRequest = {
   id: string;
   title: string;
   createdAt: string;
+  createdAtIso?: string;
   status: "open" | "done";
   items: RequestItem[];
   purchases?: Purchase[];

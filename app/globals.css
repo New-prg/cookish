@@ -57,7 +57,7 @@ h1 { margin: 0; font-size: 28px; line-height: 1.15; letter-spacing: -.02em; }
 .button.primary { background: var(--green); border-color: var(--green); color: white; }
 .button:hover { border-color: var(--ink); }
 
-.summary { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface); }
+.summary { display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface); }
 .summary > * { min-height: 92px; padding: 16px 20px; display: grid; grid-template-columns: 1fr auto; align-items: center; border-right: 1px solid var(--line); }
 .summary > *:last-child { border-right: 0; }
 .summary span { grid-column: 1 / -1; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
@@ -72,19 +72,14 @@ h1 { margin: 0; font-size: 28px; line-height: 1.15; letter-spacing: -.02em; }
 .section-header { align-items: flex-start; flex-direction: column; justify-content: center; }
 .section-header p { margin: 0; color: var(--muted); font-size: 10px; }
 
-.operation-list { background: var(--surface); }
-.operation-list a { min-height: 50px; padding: 0 14px; display: grid; grid-template-columns: 46px 1fr auto; gap: 10px; align-items: center; border-bottom: 1px solid var(--line-soft); }
-.operation-list a > span { color: var(--muted); font-family: monospace; font-size: 10px; }
-.operation-list a > strong { font-size: 11px; }.operation-list a > b { color: var(--muted); }
-.operation-list a:hover { background: #f0f2f0; }
-
 .table-header, .table-row { display: grid; align-items: center; }
 .table-header { min-height: 34px; padding: 0 12px; background: #e8ebe8; border-bottom: 1px solid var(--line); color: #555d57; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
 .table-row { min-height: 50px; padding: 7px 12px; background: var(--surface); border-bottom: 1px solid var(--line-soft); color: var(--muted); font-size: 10px; }
 a.table-row:hover { background: #f0f2f0; }
 .table-row strong { color: var(--ink); font-size: 11px; }
 .request-table .table-header, .request-table .table-row { grid-template-columns: 110px 1.4fr 1fr 80px 110px; gap: 16px; }
-.request-table.compact .table-header, .request-table.compact .table-row { grid-template-columns: 110px 1.4fr 1fr 80px; }
+.request-table.compact .table-header, .request-table.compact .table-row { grid-template-columns: 1.4fr 1fr 80px 100px; }
+.row-action { color: var(--green); font-weight: 700; }
 .product-table .table-header, .product-table .table-row { grid-template-columns: 1.4fr 1fr 100px; gap: 18px; }
 .status-mark { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; }
 .status-mark.open { background: var(--orange); }.status-mark.done { background: var(--green); }
@@ -132,7 +127,6 @@ input:focus, select:focus { border: 2px solid var(--green); }
   .summary strong { font-size: 18px; }
   .registry { margin-top: 20px; }
   .registry > header { min-height: 42px; }
-  .operation-list a { min-height: 48px; padding-inline: 8px; }
   .table-header { display: none; }
   .request-table .table-row, .request-table.compact .table-row {
     min-height: 80px;
@@ -140,11 +134,14 @@ input:focus, select:focus { border: 2px solid var(--green); }
     gap: 6px 10px;
     padding: 10px 8px;
   }
-  .request-table .table-row > span:first-child { grid-column: 2; grid-row: 1; }
+  .request-table:not(.compact) .table-row > span:first-child { grid-column: 2; grid-row: 1; }
   .request-table .table-row > strong { grid-column: 1; grid-row: 1; }
   .request-table .table-row > span:nth-child(3) { grid-column: 1; }
   .request-table .table-row > span:nth-child(4) { grid-column: 2; }
   .request-table .table-row > span:nth-child(5) { grid-column: 2; }
+  .request-table.compact .table-row > span:nth-child(2) { grid-column: 1; }
+  .request-table.compact .table-row > span:nth-child(3) { grid-column: 2; grid-row: 1; text-align: right; }
+  .request-table.compact .table-row > span:nth-child(4) { grid-column: 2; grid-row: 2; text-align: right; }
   .product-table .table-row { min-height: 62px; grid-template-columns: 1fr auto; gap: 5px 10px; padding: 9px 8px; }
   .product-table .table-row > span:nth-child(2) { grid-column: 1; }
   .product-table .table-row > span:nth-child(3) { grid-column: 2; grid-row: 1 / 3; }
