@@ -11,7 +11,13 @@ export function AppShell({ title, subtitle, action, children }: {
   children: ReactNode;
 }) {
   const pathname = usePathname();
-  const section = pathname.startsWith("/products") ? "products" : pathname.startsWith("/requests") ? "requests" : "home";
+  const section = pathname.startsWith("/products")
+    ? "products"
+    : pathname.startsWith("/requests")
+      ? "requests"
+      : pathname.startsWith("/profile")
+        ? "profile"
+        : "home";
 
   return (
     <main>
@@ -21,6 +27,7 @@ export function AppShell({ title, subtitle, action, children }: {
           <Link className={section === "home" ? "active" : ""} href="/">Сводка</Link>
           <Link className={section === "products" ? "active" : ""} href="/products">Продукты</Link>
           <Link className={section === "requests" ? "active" : ""} href="/requests">Запросы</Link>
+          <Link className={section === "profile" ? "active" : ""} href="/profile">Профиль</Link>
         </nav>
         <span className="system-state"><i /> Локальное хранилище</span>
       </header>
@@ -36,8 +43,8 @@ export function AppShell({ title, subtitle, action, children }: {
       <nav className="mobile-nav" aria-label="Мобильная навигация">
         <Link className={section === "home" ? "active" : ""} href="/">Сводка</Link>
         <Link className={section === "products" ? "active" : ""} href="/products">Продукты</Link>
-        <Link className={section === "requests" && pathname !== "/requests/new" ? "active" : ""} href="/requests">Запросы</Link>
-        <Link className={pathname === "/requests/new" ? "active" : ""} href="/requests/new">Создать</Link>
+        <Link className={section === "requests" ? "active" : ""} href="/requests">Запросы</Link>
+        <Link className={section === "profile" ? "active" : ""} href="/profile">Профиль</Link>
       </nav>
     </main>
   );
