@@ -66,10 +66,11 @@
         createdBy: request.createdBy || "local",
         updatedAt: request.updatedAt || request.completedAt || request.createdAt,
         updatedBy: request.updatedBy || request.createdBy || "local",
-        items: request.items.map((item) => ({
+        items: dedupeByProduct(request.items || []).map((item) => ({
           ...item,
           stockAtRequest: Number(item.stockAtRequest ?? loaded.products.find((product) => product.id === item.productId)?.quantity) || 0,
         })),
+        purchases: dedupeByProduct(request.purchases || []),
       }));
       return loaded;
     } catch {
@@ -277,6 +278,7 @@
     `;
     bindDraftItems();
     document.getElementById("add-request-item").onclick = () => {
+      syncDraftFromForm();
       draftItems.push({
         key: id("item"),
         productId: state.products[0].id,
@@ -293,6 +295,9 @@
         quantity: Number(quantity),
         stockAtRequest: Number(stockAtRequest),
       }));
+      if (new Set(items.map((item) => item.productId)).size !== items.length) {
+        return showToast("Один продукт нельзя добавлять в запрос дважды.");
+      }
       items.forEach((item) => {
         const product = getProduct(item.productId);
         if (product) updateProductQuantity(product, item.stockAtRequest);
@@ -730,8 +735,8 @@
     const purchasesByRequest = new Map();
     purchaseRows.forEach((row) => {
       if (!row[0] || !row[1]) return;
-      const values = purchasesByRequest.get(String(row[0])) || [];
-      values.push({
+      const values = purchasesByRequest.get(String(row[0])) || new Map();
+      values.set(String(row[1]), {
         productId: String(row[1]),
         quantity: Number(row[2]) || 0,
         price: Number(row[3]) || 0,
@@ -753,16 +758,19 @@
         updatedBy: String(row[9] || row[7] || "remote"),
         items: [],
       };
-      request.items.push({
+      const item = {
         productId: String(row[1]),
         quantity: Number(row[2]) || 0,
         stockAtRequest: Number(row[3]) || 0,
-      });
+      };
+      const existingIndex = request.items.findIndex((value) => value.productId === item.productId);
+      if (existingIndex === -1) request.items.push(item);
+      else request.items[existingIndex] = item;
       remoteById.set(requestId, request);
     });
     const remoteRequests = [...remoteById.values()].map((request) => ({
       ...request,
-      purchases: purchasesByRequest.get(request.id) || [],
+      purchases: [...(purchasesByRequest.get(request.id)?.values() || [])],
     }));
 
     const knownIds = new Set(state.requests.map((request) => request.id));
@@ -780,7 +788,7 @@
       }
       if (isRemoteRequest(request)) seenIds.add(request.id);
     });
-    state.requests = mergeVersioned(state.requests, remoteRequests);
+    state.requests = mergeVersioned(state.requests, remoteRequests).map(normalizeRequest);
     state.seenRemoteRequestIds = [...seenIds];
     state.remoteTrackingInitialized = true;
     saveState(false);
@@ -789,6 +797,7 @@
   }
 
   async function writeSpreadsheetData(token, spreadsheetId) {
+    state.requests = state.requests.map(normalizeRequest);
     const requestRows = state.requests.flatMap((request) =>
       request.items.map((item) => [
         request.id,
@@ -912,6 +921,22 @@
       }
     });
     return [...merged.values()];
+  }
+
+  function dedupeByProduct(values) {
+    const unique = new Map();
+    values.forEach((value) => {
+      if (value?.productId) unique.set(value.productId, value);
+    });
+    return [...unique.values()];
+  }
+
+  function normalizeRequest(request) {
+    return {
+      ...request,
+      items: dedupeByProduct(request.items || []),
+      purchases: dedupeByProduct(request.purchases || []),
+    };
   }
 
   function timestamp(value) {

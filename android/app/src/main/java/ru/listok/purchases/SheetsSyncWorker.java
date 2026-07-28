@@ -36,6 +36,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -217,8 +218,8 @@ public class SheetsSyncWorker extends Worker {
             result.requests.put(
                 request.optString("id"),
                 new RequestBlock(
-                    requestRows,
-                    purchaseRows,
+                    dedupeProductRows(requestRows),
+                    dedupeProductRows(purchaseRows),
                     timestamp(request.optString("updatedAt", request.optString("createdAt")))
                 )
             );
@@ -352,15 +353,30 @@ public class SheetsSyncWorker extends Worker {
     }
 
     private static Map<String, List<JSONArray>> groupRows(JSONArray rows, int idIndex) {
-        Map<String, List<JSONArray>> grouped = new HashMap<>();
+        Map<String, LinkedHashMap<String, JSONArray>> grouped = new HashMap<>();
         for (int index = 0; index < rows.length(); index++) {
             JSONArray row = rows.optJSONArray(index);
             if (row == null) continue;
             String id = stringAt(row, idIndex);
             if (id.isEmpty()) continue;
-            grouped.computeIfAbsent(id, ignored -> new ArrayList<>()).add(row);
+            String productId = stringAt(row, 1);
+            if (productId.isEmpty()) continue;
+            grouped.computeIfAbsent(id, ignored -> new LinkedHashMap<>()).put(productId, row);
         }
-        return grouped;
+        Map<String, List<JSONArray>> result = new HashMap<>();
+        for (Map.Entry<String, LinkedHashMap<String, JSONArray>> entry : grouped.entrySet()) {
+            result.put(entry.getKey(), new ArrayList<>(entry.getValue().values()));
+        }
+        return result;
+    }
+
+    private static List<JSONArray> dedupeProductRows(List<JSONArray> rows) {
+        Map<String, JSONArray> unique = new LinkedHashMap<>();
+        for (JSONArray row : rows) {
+            String productId = stringAt(row, 1);
+            if (!productId.isEmpty()) unique.put(productId, row);
+        }
+        return new ArrayList<>(unique.values());
     }
 
     private static String summarize(
