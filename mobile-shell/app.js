@@ -2,6 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "listok.android.data.v1";
+  const FOREGROUND_SYNC_INTERVAL_MS = 5_000;
   const defaultState = {
     products: [],
     requests: [],
@@ -20,6 +21,7 @@
   let authResolve = null;
   let toastTimer = null;
   let syncTimer = null;
+  let foregroundSyncTimer = null;
   let syncInProgress = false;
 
   const app = document.getElementById("app");
@@ -646,6 +648,24 @@
     }
   }
 
+  function startForegroundSync(syncImmediately = true) {
+    clearInterval(foregroundSyncTimer);
+    foregroundSyncTimer = null;
+    if (document.visibilityState === "hidden") return;
+
+    if (syncImmediately) queueAutoSync(0);
+    foregroundSyncTimer = setInterval(() => {
+      if (document.visibilityState !== "hidden") queueAutoSync(0);
+    }, FOREGROUND_SYNC_INTERVAL_MS);
+  }
+
+  function stopForegroundSync() {
+    clearInterval(foregroundSyncTimer);
+    foregroundSyncTimer = null;
+    clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+
   async function setupSpreadsheet(token, spreadsheetId) {
     let metadata = await googleFetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties(sheetId,title)`,
@@ -984,6 +1004,13 @@
 
   render();
   mirrorStateForBackgroundSync();
-  setInterval(() => queueAutoSync(0), 15 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      stopForegroundSync();
+    } else {
+      startForegroundSync(true);
+    }
+  });
+  startForegroundSync(false);
   if (state.spreadsheetId && state.user) queueAutoSync(1200);
 })();
