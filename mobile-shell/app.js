@@ -4,6 +4,7 @@
   const STORAGE_KEY = "listok.android.data.v1";
   const FOREGROUND_SYNC_INTERVAL_MS = 5_000;
   const defaultState = {
+    schemaVersion: 2,
     products: [],
     requests: [],
     spreadsheetId: "",
@@ -16,6 +17,7 @@
   let state = loadState();
   let route = "summary";
   let routeId = null;
+  let routeSubId = null;
   let draftItems = [];
   let accessToken = null;
   let authResolve = null;
@@ -39,7 +41,10 @@
     } else if (route === "requests") {
       draftItems = [];
       navigate("request-new");
-    } else if (route.includes("-new") || route.endsWith("-edit") || route === "request-detail" || route === "request-answer") {
+    } else if (route === "request-edit" || route === "request-answer") {
+      draftItems = [];
+      navigate("request-detail", routeId);
+    } else if (route.includes("-new") || route.endsWith("-edit") || route === "request-detail") {
       draftItems = [];
       navigate(route.startsWith("product") ? "products" : "requests");
     }
@@ -57,36 +62,30 @@
       const loaded = { ...defaultState, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
       loaded.products = loaded.products.map((product) => ({
         ...product,
+        baseQuantity: Number(product.baseQuantity ?? product.quantity) || 0,
+        baseUpdatedAt: product.baseUpdatedAt || product.updatedAt || new Date(0).toISOString(),
         quantity: Number(product.quantity) || 0,
         updatedAt: product.updatedAt || new Date(0).toISOString(),
         updatedBy: product.updatedBy || "local",
       }));
-      loaded.requests = loaded.requests.map((request) => ({
-        ...request,
-        createdBy: request.createdBy || "local",
-        updatedAt: request.updatedAt || request.completedAt || request.createdAt,
-        updatedBy: request.updatedBy || request.createdBy || "local",
-        items: dedupeByProduct(request.items || []).map((item) => ({
-          ...item,
-          stockAtRequest: Number(item.stockAtRequest ?? loaded.products.find((product) => product.id === item.productId)?.quantity) || 0,
-        })),
-        purchases: dedupeByProduct(request.purchases || []),
-      }));
-      return loaded;
+      loaded.requests = loaded.requests.map((request) => migrateRequest(request, loaded.products));
+      return buildSyncPackage(loaded);
     } catch {
       return structuredClone(defaultState);
     }
   }
 
   function saveState(sync = true) {
+    state = buildSyncPackage(state);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     mirrorStateForBackgroundSync();
     if (sync) queueAutoSync();
   }
 
-  function navigate(next, id = null) {
+  function navigate(next, id = null, subId = null) {
     route = next;
     routeId = id;
+    routeSubId = subId;
     window.scrollTo(0, 0);
     render();
   }
@@ -124,7 +123,7 @@
       "request-new": ["Новый запрос", "Отмена", true],
       "request-edit": ["Редактирование", "Отмена", true],
       "request-detail": ["Запрос", "Назад", false],
-      "request-answer": ["Закупка", "Отмена", true],
+      "request-answer": ["Ответ", "Отмена", true],
       profile: ["Профиль", "", false],
     }[route];
     title.textContent = config[0];
@@ -217,12 +216,15 @@
     document.getElementById("product-form").addEventListener("submit", (event) => {
       event.preventDefault();
       const data = new FormData(event.currentTarget);
+      const changedAt = new Date().toISOString();
       const values = {
         name: data.get("name").trim(),
         category: data.get("category").trim(),
         unit: data.get("unit"),
+        baseQuantity: Number(data.get("quantity")),
+        baseUpdatedAt: changedAt,
         quantity: Number(data.get("quantity")),
-        updatedAt: new Date().toISOString(),
+        updatedAt: changedAt,
         updatedBy: state.user?.email || "local",
       };
       if (product) Object.assign(product, values);
@@ -298,35 +300,33 @@
       if (new Set(items.map((item) => item.productId)).size !== items.length) {
         return showToast("Один продукт нельзя добавлять в запрос дважды.");
       }
-      items.forEach((item) => {
-        const product = getProduct(item.productId);
-        if (product) updateProductQuantity(product, item.stockAtRequest);
-      });
+      const answeredProductIds = new Set(
+        (editedRequest?.responses || []).flatMap((response) =>
+          response.items.filter((item) => item.quantity || item.price).map((item) => item.productId)
+        )
+      );
+      if ([...answeredProductIds].some((productId) => !items.some((item) => item.productId === productId))) {
+        return showToast("Нельзя удалить товар, который уже указан в ответе.");
+      }
+      const changedAt = new Date().toISOString();
       if (editedRequest) {
         editedRequest.items = items;
-        editedRequest.updatedAt = new Date().toISOString();
+        editedRequest.updatedAt = changedAt;
         editedRequest.updatedBy = state.user?.email || "local";
-        if (editedRequest.purchases) {
-          editedRequest.purchases = editedRequest.purchases.filter((purchase) =>
-            items.some((item) => item.productId === purchase.productId)
-          );
-          if (editedRequest.status === "done") {
-            items.forEach((item) => {
-              const product = getProduct(item.productId);
-              const purchase = editedRequest.purchases.find((value) => value.productId === item.productId);
-              if (product && purchase) updateProductQuantity(product, item.stockAtRequest + purchase.quantity);
-            });
-          }
-        }
       } else {
+        items.forEach((item) => {
+          const product = getProduct(item.productId);
+          if (product) setProductBase(product, item.stockAtRequest, changedAt);
+        });
         state.requests.push({
           id: id("request"),
-          createdAt: new Date().toISOString(),
+          createdAt: changedAt,
           status: "open",
           items,
+          responses: [],
           createdBy: state.user?.email || "local",
           updatedBy: state.user?.email || "local",
-          updatedAt: new Date().toISOString(),
+          updatedAt: changedAt,
         });
       }
       draftItems = [];
@@ -386,16 +386,31 @@
     if (!request) return navigate("requests");
     const rows = request.items.map((item) => {
       const product = getProduct(item.productId);
-      const purchase = request.purchases?.find((value) => value.productId === item.productId);
+      const purchased = responseItemTotal(request, item.productId);
       return `
         <div class="row">
           <div class="row-main">
             <strong>${escapeHtml(product?.name || "Удалённый продукт")}</strong>
-            <span>Остаток: ${number(item.stockAtRequest || 0)} · Запрошено: ${number(item.quantity)} ${escapeHtml(product?.unit || "")}</span>
+            <span>Остаток: ${number(item.stockAtRequest || 0)} · Запрошено: ${number(item.quantity)}${purchased.quantity ? ` · Куплено: ${number(purchased.quantity)}` : ""} ${escapeHtml(product?.unit || "")}</span>
           </div>
-          ${purchase ? `<div class="row-value">${money(purchase.price)}</div>` : ""}
+          ${purchased.price ? `<div class="row-value">${money(purchased.price)}</div>` : ""}
         </div>`;
     }).join("");
+    const responses = [...request.responses]
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((response, index) => `
+        <section class="section response-section">
+          <div class="row-main">
+            <strong>Ответ ${index + 1}</strong>
+            <span>${dateTime(response.createdAt)}${response.createdBy && response.createdBy !== "local" ? ` · ${escapeHtml(response.createdBy)}` : ""}</span>
+          </div>
+          ${response.items.map((item) => {
+            const product = getProduct(item.productId);
+            return `<div class="compact-line"><span>${escapeHtml(product?.name || "Удалённый продукт")} · ${number(item.quantity)} ${escapeHtml(product?.unit || "")}</span><strong>${money(item.price)}</strong></div>`;
+          }).join("")}
+          <button class="button secondary full edit-response" data-id="${response.id}" type="button">Редактировать ответ</button>
+        </section>
+      `).join("");
     app.innerHTML = `
       <section class="section">
         <span class="status ${request.status}">${request.status === "open" ? "Активен" : "Выполнен"}</span>
@@ -404,11 +419,12 @@
       <section>
         ${rows}
       </section>
+      ${responses}
       <section class="section">
         ${request.status === "done" ? `<p><strong>Итого: ${money(requestTotal(request))}</strong></p>` : ""}
         <div class="button-row">
           <button id="edit-request" class="button secondary" type="button">Редактировать запрос</button>
-          <button id="answer-request" class="button" type="button">${request.status === "open" ? "Заполнить закупку" : "Редактировать закупку"}</button>
+          <button id="answer-request" class="button" type="button">${request.responses.length ? "Добавить ответ" : "Ответить"}</button>
         </div>
       </section>
     `;
@@ -417,60 +433,79 @@
       navigate("request-edit", request.id);
     };
     document.getElementById("answer-request").onclick = () => navigate("request-answer", request.id);
+    document.querySelectorAll(".edit-response").forEach((button) => {
+      button.onclick = () => navigate("request-answer", request.id, button.dataset.id);
+    });
   }
 
   function renderRequestAnswer() {
     const request = getRequest(routeId);
     if (!request) return navigate("requests");
+    const editedResponse = routeSubId
+      ? request.responses.find((response) => response.id === routeSubId)
+      : null;
+    if (routeSubId && !editedResponse) return navigate("request-detail", request.id);
     app.innerHTML = `
       <form id="answer-form" class="form">
         <p class="muted">Укажите фактически купленное количество и итоговую цену позиции.</p>
         ${request.items.map((item) => {
           const product = getProduct(item.productId);
-          const existing = request.purchases?.find((purchase) => purchase.productId === item.productId);
+          const existing = editedResponse?.items.find((responseItem) => responseItem.productId === item.productId);
           return `
             <div class="section" style="padding-left:0;padding-right:0">
               <strong>${escapeHtml(product?.name || "Продукт")}</strong>
               <div class="button-row">
-                <label class="field" style="flex:1;margin:0"><span>Куплено</span><input name="qty-${item.productId}" type="number" min="0" step="0.01" value="${existing?.quantity ?? item.quantity}" required></label>
-                <label class="field" style="flex:1;margin:0"><span>Цена позиции, ₽</span><input name="price-${item.productId}" type="number" min="0" step="0.01" value="${existing?.price ?? ""}" required></label>
+                <label class="field" style="flex:1;margin:0"><span>Куплено</span><input name="qty-${item.productId}" type="number" min="0" step="0.01" value="${existing?.quantity ?? (request.responses.length ? 0 : item.quantity)}" required></label>
+                <label class="field" style="flex:1;margin:0"><span>Цена позиции, ₽</span><input name="price-${item.productId}" type="number" min="0" step="0.01" value="${existing?.price ?? ""}"></label>
               </div>
             </div>`;
         }).join("")}
-        <button class="button full" type="submit">${request.status === "done" ? "Сохранить изменения" : "Завершить закупку"}</button>
+        <button class="button full" type="submit">${editedResponse ? "Сохранить ответ" : "Отправить ответ"}</button>
       </form>
     `;
     document.getElementById("answer-form").addEventListener("submit", (event) => {
       event.preventDefault();
       const data = new FormData(event.currentTarget);
-      request.purchases = request.items.map((item) => ({
+      const changedAt = new Date().toISOString();
+      const responseItems = request.items.map((item) => ({
         productId: item.productId,
         quantity: Number(data.get(`qty-${item.productId}`)),
         price: Number(data.get(`price-${item.productId}`)),
       }));
+      if (editedResponse) {
+        editedResponse.items = responseItems;
+        editedResponse.updatedAt = changedAt;
+        editedResponse.updatedBy = state.user?.email || "local";
+      } else {
+        request.responses.push({
+          id: id("response"),
+          requestId: request.id,
+          items: responseItems,
+          createdAt: changedAt,
+          createdBy: state.user?.email || "local",
+          updatedAt: changedAt,
+          updatedBy: state.user?.email || "local",
+        });
+      }
       request.status = "done";
-      request.completedAt = request.completedAt || new Date().toISOString();
-      request.updatedAt = new Date().toISOString();
+      request.completedAt = request.completedAt || changedAt;
+      request.updatedAt = changedAt;
       request.updatedBy = state.user?.email || "local";
-      request.items.forEach((item) => {
-        const product = getProduct(item.productId);
-        const purchase = request.purchases.find((value) => value.productId === item.productId);
-        if (product && purchase) updateProductQuantity(product, Number(item.stockAtRequest || 0) + purchase.quantity);
-      });
       saveState();
       navigate("request-detail", request.id);
-      showToast("Закупка сохранена.");
+      showToast(editedResponse ? "Ответ изменён." : "Ответ добавлен.");
     });
   }
 
   function renderProfile() {
     const completed = state.requests.filter((item) => item.status === "done");
+    const responseCount = state.requests.reduce((sum, item) => sum + item.responses.length, 0);
     const spent = completed.reduce((sum, item) => sum + requestTotal(item), 0);
     app.innerHTML = `
       <div class="metrics">
         ${metric("Всего запросов", state.requests.length)}
         ${metric("Выполнено", completed.length)}
-        ${metric("Количество трат", completed.length)}
+        ${metric("Количество трат", responseCount)}
         ${metric("Сумма трат", money(spent))}
       </div>
       <section class="section">
@@ -619,6 +654,10 @@
     state.requests.forEach((request) => {
       if (!request.createdBy || request.createdBy === "local") request.createdBy = state.user.email;
       if (!request.updatedBy || request.updatedBy === "local") request.updatedBy = state.user.email;
+      request.responses.forEach((response) => {
+        if (!response.createdBy || response.createdBy === "local") response.createdBy = state.user.email;
+        if (!response.updatedBy || response.updatedBy === "local") response.updatedBy = state.user.email;
+      });
     });
     saveState(false);
     if (showSuccess) showToast("Вход выполнен.");
@@ -627,10 +666,11 @@
 
   function mirrorStateForBackgroundSync() {
     if (!window.NativeGoogle?.configureBackgroundSync) return;
+    const syncPackage = buildSyncPackage(state);
     window.NativeGoogle.configureBackgroundSync(
-      JSON.stringify(state),
-      state.spreadsheetId || "",
-      state.user?.email || ""
+      JSON.stringify(syncPackage),
+      syncPackage.spreadsheetId || "",
+      syncPackage.user?.email || ""
     );
   }
 
@@ -711,38 +751,18 @@
 
   async function readAndMergeSpreadsheetData(token, spreadsheetId) {
     const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet`);
-    url.searchParams.append("ranges", "Продукты!A2:G");
+    url.searchParams.append("ranges", "Продукты!A2:I");
     url.searchParams.append("ranges", "Запросы!A2:J");
-    url.searchParams.append("ranges", "Покупки!A2:D");
+    url.searchParams.append("ranges", "Покупки!A2:I");
     const response = await googleFetch(url.toString(), token);
     const productRows = response.valueRanges?.[0]?.values || [];
     const requestRows = response.valueRanges?.[1]?.values || [];
-    const purchaseRows = response.valueRanges?.[2]?.values || [];
+    const responseRows = response.valueRanges?.[2]?.values || [];
 
     const remoteProducts = productRows
       .filter((row) => row[0])
-      .map((row) => ({
-        id: String(row[0]),
-        name: String(row[1] || ""),
-        category: String(row[2] || ""),
-        unit: String(row[3] || "шт."),
-        quantity: Number(row[4]) || 0,
-        updatedAt: String(row[5] || new Date(0).toISOString()),
-        updatedBy: String(row[6] || "remote"),
-      }));
+      .map(parseProductRow);
     state.products = mergeVersioned(state.products, remoteProducts);
-
-    const purchasesByRequest = new Map();
-    purchaseRows.forEach((row) => {
-      if (!row[0] || !row[1]) return;
-      const values = purchasesByRequest.get(String(row[0])) || new Map();
-      values.set(String(row[1]), {
-        productId: String(row[1]),
-        quantity: Number(row[2]) || 0,
-        price: Number(row[3]) || 0,
-      });
-      purchasesByRequest.set(String(row[0]), values);
-    });
 
     const remoteById = new Map();
     requestRows.forEach((row) => {
@@ -757,6 +777,7 @@
         updatedAt: String(row[8] || row[6] || row[5] || new Date(0).toISOString()),
         updatedBy: String(row[9] || row[7] || "remote"),
         items: [],
+        responses: [],
       };
       const item = {
         productId: String(row[1]),
@@ -768,10 +789,22 @@
       else request.items[existingIndex] = item;
       remoteById.set(requestId, request);
     });
-    const remoteRequests = [...remoteById.values()].map((request) => ({
-      ...request,
-      purchases: [...(purchasesByRequest.get(request.id)?.values() || [])],
-    }));
+
+    const parsedResponses = new Map();
+    responseRows.forEach((row) => {
+      const normalized = parseResponseRow(row, remoteById);
+      if (!normalized) return;
+      const existing = parsedResponses.get(normalized.id);
+      if (!existing || timestamp(normalized.updatedAt) > timestamp(existing.updatedAt)) {
+        parsedResponses.set(normalized.id, normalized);
+      } else if (timestamp(normalized.updatedAt) === timestamp(existing.updatedAt)) {
+        existing.items = dedupeByProduct([...existing.items, ...normalized.items]);
+      }
+    });
+    parsedResponses.forEach((responseValue) => {
+      remoteById.get(responseValue.requestId)?.responses.push(responseValue);
+    });
+    const remoteRequests = [...remoteById.values()].map(normalizeRequest);
 
     const knownIds = new Set(state.requests.map((request) => request.id));
     const seenIds = new Set(state.seenRemoteRequestIds || []);
@@ -788,7 +821,7 @@
       }
       if (isRemoteRequest(request)) seenIds.add(request.id);
     });
-    state.requests = mergeVersioned(state.requests, remoteRequests).map(normalizeRequest);
+    state.requests = mergeRequests(state.requests, remoteRequests);
     state.seenRemoteRequestIds = [...seenIds];
     state.remoteTrackingInitialized = true;
     saveState(false);
@@ -797,8 +830,8 @@
   }
 
   async function writeSpreadsheetData(token, spreadsheetId) {
-    state.requests = state.requests.map(normalizeRequest);
-    const requestRows = state.requests.flatMap((request) =>
+    const syncPackage = buildSyncPackage(state);
+    const requestRows = syncPackage.requests.flatMap((request) =>
       request.items.map((item) => [
         request.id,
         item.productId,
@@ -812,14 +845,24 @@
         request.updatedBy || request.createdBy || "local",
       ])
     );
-    const purchaseRows = state.requests.flatMap((request) =>
-      (request.purchases || []).map((purchase) => [
-        request.id, purchase.productId, purchase.quantity, purchase.price,
-      ])
+    const responseRows = syncPackage.requests.flatMap((request) =>
+      request.responses.flatMap((response) =>
+        response.items.map((item) => [
+          response.id,
+          request.id,
+          item.productId,
+          item.quantity,
+          item.price,
+          response.createdAt,
+          response.createdBy || "local",
+          response.updatedAt || response.createdAt,
+          response.updatedBy || response.createdBy || "local",
+        ])
+      )
     );
     await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, token, {
       method: "POST",
-      body: JSON.stringify({ ranges: ["Продукты!A:H", "Запросы!A:K", "Покупки!A:E"] }),
+      body: JSON.stringify({ ranges: ["Продукты!A:J", "Запросы!A:K", "Покупки!A:J"] }),
     });
     await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, token, {
       method: "POST",
@@ -827,9 +870,9 @@
         valueInputOption: "USER_ENTERED",
         data: [
           {
-            range: "Продукты!A1:G",
-            values: [["id", "Наименование", "Категория", "Единица", "Остаток", "Обновлён", "Кем обновлён"], ...state.products.map((item) =>
-              [item.id, item.name, item.category, item.unit, item.quantity || 0, item.updatedAt || "", item.updatedBy || ""]
+            range: "Продукты!A1:I",
+            values: [["id", "Наименование", "Категория", "Единица", "Базовый остаток", "База на дату", "Текущий остаток", "Обновлён", "Кем обновлён"], ...syncPackage.products.map((item) =>
+              [item.id, item.name, item.category, item.unit, item.baseQuantity || 0, item.baseUpdatedAt || "", item.quantity || 0, item.updatedAt || "", item.updatedBy || ""]
             )],
           },
           {
@@ -837,8 +880,8 @@
             values: [["request_id", "product_id", "Запрошено", "Остаток", "Статус", "Создан", "Закрыт", "Автор", "Обновлён", "Кем обновлён"], ...requestRows],
           },
           {
-            range: "Покупки!A1:D",
-            values: [["request_id", "product_id", "Куплено", "Цена позиции"], ...purchaseRows],
+            range: "Покупки!A1:I",
+            values: [["response_id", "request_id", "product_id", "Куплено", "Цена позиции", "Ответ создан", "Автор ответа", "Ответ обновлён", "Кем обновлён"], ...responseRows],
           },
         ],
       }),
@@ -887,7 +930,21 @@
   }
 
   function requestTotal(request) {
-    return (request.purchases || []).reduce((sum, item) => sum + item.price, 0);
+    return request.responses.reduce(
+      (sum, response) => sum + response.items.reduce((responseSum, item) => responseSum + item.price, 0),
+      0
+    );
+  }
+
+  function responseItemTotal(request, productId) {
+    return request.responses.reduce((total, response) => {
+      const item = response.items.find((value) => value.productId === productId);
+      if (item) {
+        total.quantity += Number(item.quantity) || 0;
+        total.price += Number(item.price) || 0;
+      }
+      return total;
+    }, { quantity: 0, price: 0 });
   }
 
   function requestSummary(request) {
@@ -923,6 +980,27 @@
     return [...merged.values()];
   }
 
+  function mergeRequests(localValues, remoteValues) {
+    const merged = new Map(localValues.map((request) => {
+      const normalized = normalizeRequest(request);
+      return [normalized.id, normalized];
+    }));
+    remoteValues.forEach((remoteValue) => {
+      const remote = normalizeRequest(remoteValue);
+      const local = merged.get(remote.id);
+      if (!local) {
+        merged.set(remote.id, remote);
+        return;
+      }
+      const metadata = timestamp(remote.updatedAt) > timestamp(local.updatedAt) ? remote : local;
+      merged.set(remote.id, normalizeRequest({
+        ...metadata,
+        responses: mergeVersioned(local.responses, remote.responses),
+      }));
+    });
+    return [...merged.values()];
+  }
+
   function dedupeByProduct(values) {
     const unique = new Map();
     values.forEach((value) => {
@@ -932,11 +1010,126 @@
   }
 
   function normalizeRequest(request) {
+    const responses = mergeVersioned([], (request.responses || []).map((response) =>
+      normalizeResponse(response, request.id)
+    ));
     return {
       ...request,
       items: dedupeByProduct(request.items || []),
-      purchases: dedupeByProduct(request.purchases || []),
+      responses,
+      status: responses.length ? "done" : "open",
+      completedAt: request.completedAt || responses
+        .map((response) => response.createdAt)
+        .sort()[0] || "",
     };
+  }
+
+  function normalizeResponse(response, requestId) {
+    return {
+      ...response,
+      id: response.id || `response_legacy_${requestId}`,
+      requestId,
+      items: dedupeByProduct(response.items || []),
+      createdAt: response.createdAt || response.updatedAt || new Date(0).toISOString(),
+      createdBy: response.createdBy || "remote",
+      updatedAt: response.updatedAt || response.createdAt || new Date(0).toISOString(),
+      updatedBy: response.updatedBy || response.createdBy || "remote",
+    };
+  }
+
+  function migrateRequest(request, products) {
+    const updatedAt = request.updatedAt || request.completedAt || request.createdAt || new Date(0).toISOString();
+    const legacyResponses = !request.responses?.length && request.purchases?.length
+      ? [{
+          id: `response_legacy_${request.id}`,
+          requestId: request.id,
+          items: request.purchases,
+          createdAt: request.completedAt || updatedAt,
+          createdBy: request.updatedBy || request.createdBy || "local",
+          updatedAt,
+          updatedBy: request.updatedBy || request.createdBy || "local",
+        }]
+      : [];
+    return normalizeRequest({
+      ...request,
+      createdBy: request.createdBy || "local",
+      updatedAt,
+      updatedBy: request.updatedBy || request.createdBy || "local",
+      items: dedupeByProduct(request.items || []).map((item) => ({
+        ...item,
+        stockAtRequest: Number(
+          item.stockAtRequest ?? products.find((product) => product.id === item.productId)?.quantity
+        ) || 0,
+      })),
+      responses: request.responses?.length ? request.responses : legacyResponses,
+    });
+  }
+
+  function buildSyncPackage(source) {
+    const result = structuredClone(source);
+    result.schemaVersion = 2;
+    result.products = mergeVersioned([], (result.products || []).map((product) => ({
+      ...product,
+      baseQuantity: Number(product.baseQuantity ?? product.quantity) || 0,
+      baseUpdatedAt: product.baseUpdatedAt || product.updatedAt || new Date(0).toISOString(),
+      updatedAt: product.updatedAt || new Date(0).toISOString(),
+      updatedBy: product.updatedBy || "local",
+    })));
+    result.requests = mergeRequests([], result.requests || []);
+    result.products.forEach((product) => {
+      const baseAt = timestamp(product.baseUpdatedAt);
+      const purchasedAfterBase = result.requests.reduce((requestSum, request) =>
+        requestSum + request.responses.reduce((responseSum, response) => {
+          if (timestamp(response.createdAt) <= baseAt) return responseSum;
+          const item = response.items.find((value) => value.productId === product.id);
+          return responseSum + (Number(item?.quantity) || 0);
+        }, 0), 0);
+      product.quantity = (Number(product.baseQuantity) || 0) + purchasedAfterBase;
+    });
+    return result;
+  }
+
+  function parseProductRow(row) {
+    const modern = row.length >= 8;
+    const updatedAt = String((modern ? row[7] : row[5]) || new Date(0).toISOString());
+    return {
+      id: String(row[0]),
+      name: String(row[1] || ""),
+      category: String(row[2] || ""),
+      unit: String(row[3] || "шт."),
+      baseQuantity: Number(row[4]) || 0,
+      baseUpdatedAt: String((modern ? row[5] : updatedAt) || updatedAt),
+      quantity: Number(modern ? row[6] : row[4]) || 0,
+      updatedAt,
+      updatedBy: String((modern ? row[8] : row[6]) || "remote"),
+    };
+  }
+
+  function parseResponseRow(row, requestsById) {
+    if (!row[0] || !row[1]) return null;
+    const modern = row.length >= 5 && requestsById.has(String(row[1]));
+    const requestId = String(modern ? row[1] : row[0]);
+    const request = requestsById.get(requestId);
+    if (!request) return null;
+    const createdAt = String(
+      (modern ? row[5] : request.completedAt || request.updatedAt) ||
+      request.updatedAt ||
+      request.createdAt ||
+      new Date(0).toISOString()
+    );
+    return normalizeResponse({
+      id: modern ? String(row[0]) : `response_legacy_${requestId}`,
+      requestId,
+      items: [{
+        productId: String(modern ? row[2] : row[1]),
+        quantity: Number(modern ? row[3] : row[2]) || 0,
+        price: Number(modern ? row[4] : row[3]) || 0,
+      }],
+      createdAt,
+      createdBy: String((modern ? row[6] : request.updatedBy || request.createdBy) || "remote"),
+      updatedAt: String((modern ? row[7] : request.updatedAt) || createdAt),
+      updatedBy: String((modern ? row[8] : request.updatedBy || request.createdBy) || "remote"),
+    }, requestId);
   }
 
   function timestamp(value) {
@@ -944,9 +1137,11 @@
     return Number.isFinite(result) ? result : 0;
   }
 
-  function updateProductQuantity(product, quantity) {
-    product.quantity = Number(quantity) || 0;
-    product.updatedAt = new Date().toISOString();
+  function setProductBase(product, quantity, changedAt = new Date().toISOString()) {
+    product.baseQuantity = Number(quantity) || 0;
+    product.baseUpdatedAt = changedAt;
+    product.quantity = product.baseQuantity;
+    product.updatedAt = changedAt;
     product.updatedBy = state.user?.email || "local";
   }
 

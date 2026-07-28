@@ -93,34 +93,35 @@ public class SheetsSyncWorker extends Worker {
 
         notifyNewRemoteRequests(remote, local, currentEmail, preferences);
 
-        List<JSONArray> products = mergeSingleRows(remote.products, local.products, 5);
+        List<JSONArray> products = mergeSingleRows(remote.products, local.products, 7);
         Map<String, RequestBlock> requests = new HashMap<>(remote.requests);
         for (Map.Entry<String, RequestBlock> entry : local.requests.entrySet()) {
             RequestBlock remoteBlock = requests.get(entry.getKey());
-            if (remoteBlock == null ||
-                entry.getValue().updatedAt.compareTo(remoteBlock.updatedAt) >= 0) {
-                requests.put(entry.getKey(), entry.getValue());
-            }
+            requests.put(
+                entry.getKey(),
+                remoteBlock == null ? entry.getValue() : mergeRequestBlocks(remoteBlock, entry.getValue())
+            );
         }
+        recomputeProductQuantities(products, requests);
 
         JSONArray productValues = new JSONArray()
-            .put(row("id", "Наименование", "Категория", "Единица", "Остаток", "Обновлён", "Кем обновлён"));
+            .put(row("id", "Наименование", "Категория", "Единица", "Базовый остаток", "База на дату", "Текущий остаток", "Обновлён", "Кем обновлён"));
         for (JSONArray product : products) productValues.put(product);
 
         JSONArray requestValues = new JSONArray()
             .put(row("request_id", "product_id", "Запрошено", "Остаток", "Статус", "Создан", "Закрыт", "Автор", "Обновлён", "Кем обновлён"));
-        JSONArray purchaseValues = new JSONArray()
-            .put(row("request_id", "product_id", "Куплено", "Цена позиции"));
+        JSONArray responseValues = new JSONArray()
+            .put(row("response_id", "request_id", "product_id", "Куплено", "Цена позиции", "Ответ создан", "Автор ответа", "Ответ обновлён", "Кем обновлён"));
         for (RequestBlock block : requests.values()) {
             for (JSONArray request : block.requestRows) requestValues.put(request);
-            for (JSONArray purchase : block.purchaseRows) purchaseValues.put(purchase);
+            for (JSONArray response : block.responseRows) responseValues.put(response);
         }
 
         clearRemote(token, spreadsheetId);
         JSONArray data = new JSONArray()
-            .put(range("Продукты!A1:G", productValues))
+            .put(range("Продукты!A1:I", productValues))
             .put(range("Запросы!A1:J", requestValues))
-            .put(range("Покупки!A1:D", purchaseValues));
+            .put(range("Покупки!A1:I", responseValues));
         post(
             "https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheetId + "/values:batchUpdate",
             token,
@@ -131,9 +132,9 @@ public class SheetsSyncWorker extends Worker {
     private RemoteValues readRemote(String token, String spreadsheetId)
         throws IOException, JSONException {
         String ranges =
-            "ranges=" + encode("Продукты!A2:G") +
+            "ranges=" + encode("Продукты!A2:I") +
             "&ranges=" + encode("Запросы!A2:J") +
-            "&ranges=" + encode("Покупки!A2:D");
+            "&ranges=" + encode("Покупки!A2:I");
         JSONObject response = get(
             "https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheetId +
                 "/values:batchGet?" + ranges,
@@ -147,17 +148,41 @@ public class SheetsSyncWorker extends Worker {
         RemoteValues result = new RemoteValues();
         for (int index = 0; index < productRows.length(); index++) {
             JSONArray row = productRows.optJSONArray(index);
-            if (row != null && !stringAt(row, 0).isEmpty()) result.products.add(row);
+            if (row != null && !stringAt(row, 0).isEmpty()) {
+                result.products.add(normalizeProductRow(row));
+            }
         }
 
-        Map<String, List<JSONArray>> purchases = groupRows(purchaseRows, 0);
-        Map<String, List<JSONArray>> groupedRequests = groupRows(requestRows, 0);
+        Map<String, List<JSONArray>> groupedRequests = groupRows(requestRows, 0, 1);
         for (Map.Entry<String, List<JSONArray>> entry : groupedRequests.entrySet()) {
             List<JSONArray> rows = entry.getValue();
             String updatedAt = rows.isEmpty() ? "" : timestamp(stringAt(rows.get(0), 8));
             result.requests.put(
                 entry.getKey(),
-                new RequestBlock(rows, purchases.getOrDefault(entry.getKey(), new ArrayList<>()), updatedAt)
+                new RequestBlock(rows, new ArrayList<>(), updatedAt)
+            );
+        }
+        Map<String, List<JSONArray>> responsesByRequest = new HashMap<>();
+        for (int index = 0; index < purchaseRows.length(); index++) {
+            JSONArray normalized = normalizeResponseRow(
+                purchaseRows.optJSONArray(index),
+                result.requests
+            );
+            if (normalized == null) continue;
+            responsesByRequest
+                .computeIfAbsent(stringAt(normalized, 1), ignored -> new ArrayList<>())
+                .add(normalized);
+        }
+        for (Map.Entry<String, List<JSONArray>> entry : responsesByRequest.entrySet()) {
+            RequestBlock block = result.requests.get(entry.getKey());
+            if (block == null) continue;
+            result.requests.put(
+                entry.getKey(),
+                new RequestBlock(
+                    block.requestRows,
+                    dedupeResponseRows(entry.getValue()),
+                    block.updatedAt
+                )
             );
         }
         return result;
@@ -174,6 +199,8 @@ public class SheetsSyncWorker extends Worker {
                 product.optString("name"),
                 product.optString("category"),
                 product.optString("unit"),
+                product.optDouble("baseQuantity", product.optDouble("quantity", 0)),
+                product.optString("baseUpdatedAt", product.optString("updatedAt")),
                 product.optDouble("quantity", 0),
                 product.optString("updatedAt"),
                 product.optString("updatedBy")
@@ -185,7 +212,7 @@ public class SheetsSyncWorker extends Worker {
         for (int requestIndex = 0; requestIndex < requests.length(); requestIndex++) {
             JSONObject request = requests.getJSONObject(requestIndex);
             List<JSONArray> requestRows = new ArrayList<>();
-            List<JSONArray> purchaseRows = new ArrayList<>();
+            List<JSONArray> responseRows = new ArrayList<>();
             JSONArray items = request.optJSONArray("items");
             if (items == null) items = new JSONArray();
             for (int itemIndex = 0; itemIndex < items.length(); itemIndex++) {
@@ -203,23 +230,33 @@ public class SheetsSyncWorker extends Worker {
                     request.optString("updatedBy", request.optString("createdBy", "local"))
                 ));
             }
-            JSONArray purchases = request.optJSONArray("purchases");
-            if (purchases != null) {
-                for (int purchaseIndex = 0; purchaseIndex < purchases.length(); purchaseIndex++) {
-                    JSONObject purchase = purchases.getJSONObject(purchaseIndex);
-                    purchaseRows.add(row(
-                        request.optString("id"),
-                        purchase.optString("productId"),
-                        purchase.optDouble("quantity", 0),
-                        purchase.optDouble("price", 0)
-                    ));
+            JSONArray responses = request.optJSONArray("responses");
+            if (responses != null) {
+                for (int responseIndex = 0; responseIndex < responses.length(); responseIndex++) {
+                    JSONObject response = responses.getJSONObject(responseIndex);
+                    JSONArray responseItems = response.optJSONArray("items");
+                    if (responseItems == null) responseItems = new JSONArray();
+                    for (int itemIndex = 0; itemIndex < responseItems.length(); itemIndex++) {
+                        JSONObject item = responseItems.getJSONObject(itemIndex);
+                        responseRows.add(row(
+                            response.optString("id"),
+                            request.optString("id"),
+                            item.optString("productId"),
+                            item.optDouble("quantity", 0),
+                            item.optDouble("price", 0),
+                            response.optString("createdAt"),
+                            response.optString("createdBy", "local"),
+                            response.optString("updatedAt", response.optString("createdAt")),
+                            response.optString("updatedBy", response.optString("createdBy", "local"))
+                        ));
+                    }
                 }
             }
             result.requests.put(
                 request.optString("id"),
                 new RequestBlock(
                     dedupeProductRows(requestRows),
-                    dedupeProductRows(purchaseRows),
+                    dedupeResponseRows(responseRows),
                     timestamp(request.optString("updatedAt", request.optString("createdAt")))
                 )
             );
@@ -327,9 +364,9 @@ public class SheetsSyncWorker extends Worker {
             "https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheetId + "/values:batchClear",
             token,
             new JSONObject().put("ranges", new JSONArray()
-                .put("Продукты!A:H")
+                .put("Продукты!A:J")
                 .put("Запросы!A:K")
-                .put("Покупки!A:E"))
+                .put("Покупки!A:J"))
         );
     }
 
@@ -352,22 +389,79 @@ public class SheetsSyncWorker extends Worker {
         return new ArrayList<>(merged.values());
     }
 
-    private static Map<String, List<JSONArray>> groupRows(JSONArray rows, int idIndex) {
+    private static Map<String, List<JSONArray>> groupRows(
+        JSONArray rows,
+        int idIndex,
+        int dedupeIndex
+    ) {
         Map<String, LinkedHashMap<String, JSONArray>> grouped = new HashMap<>();
         for (int index = 0; index < rows.length(); index++) {
             JSONArray row = rows.optJSONArray(index);
             if (row == null) continue;
             String id = stringAt(row, idIndex);
             if (id.isEmpty()) continue;
-            String productId = stringAt(row, 1);
-            if (productId.isEmpty()) continue;
-            grouped.computeIfAbsent(id, ignored -> new LinkedHashMap<>()).put(productId, row);
+            String dedupeId = stringAt(row, dedupeIndex);
+            if (dedupeId.isEmpty()) continue;
+            grouped.computeIfAbsent(id, ignored -> new LinkedHashMap<>()).put(dedupeId, row);
         }
         Map<String, List<JSONArray>> result = new HashMap<>();
         for (Map.Entry<String, LinkedHashMap<String, JSONArray>> entry : grouped.entrySet()) {
             result.put(entry.getKey(), new ArrayList<>(entry.getValue().values()));
         }
         return result;
+    }
+
+    private static RequestBlock mergeRequestBlocks(RequestBlock remote, RequestBlock local) {
+        RequestBlock metadata = local.updatedAt.compareTo(remote.updatedAt) >= 0 ? local : remote;
+        return new RequestBlock(
+            metadata.requestRows,
+            mergeResponseRows(remote.responseRows, local.responseRows),
+            metadata.updatedAt
+        );
+    }
+
+    private static List<JSONArray> mergeResponseRows(
+        List<JSONArray> remoteRows,
+        List<JSONArray> localRows
+    ) {
+        Map<String, List<JSONArray>> merged = responseBlocks(remoteRows);
+        for (Map.Entry<String, List<JSONArray>> entry : responseBlocks(localRows).entrySet()) {
+            List<JSONArray> remote = merged.get(entry.getKey());
+            String localUpdatedAt = responseUpdatedAt(entry.getValue());
+            if (remote == null || localUpdatedAt.compareTo(responseUpdatedAt(remote)) >= 0) {
+                merged.put(entry.getKey(), entry.getValue());
+            }
+        }
+        List<JSONArray> result = new ArrayList<>();
+        for (List<JSONArray> rows : merged.values()) result.addAll(rows);
+        return result;
+    }
+
+    private static Map<String, List<JSONArray>> responseBlocks(List<JSONArray> rows) {
+        Map<String, LinkedHashMap<String, JSONArray>> grouped = new HashMap<>();
+        Map<String, String> versions = new HashMap<>();
+        for (JSONArray row : rows) {
+            String responseId = stringAt(row, 0);
+            String productId = stringAt(row, 2);
+            if (responseId.isEmpty() || productId.isEmpty()) continue;
+            String version = timestamp(stringAt(row, 7));
+            String currentVersion = versions.get(responseId);
+            if (currentVersion != null && version.compareTo(currentVersion) < 0) continue;
+            if (currentVersion == null || version.compareTo(currentVersion) > 0) {
+                grouped.put(responseId, new LinkedHashMap<>());
+                versions.put(responseId, version);
+            }
+            grouped.get(responseId).put(productId, row);
+        }
+        Map<String, List<JSONArray>> result = new HashMap<>();
+        for (Map.Entry<String, LinkedHashMap<String, JSONArray>> entry : grouped.entrySet()) {
+            result.put(entry.getKey(), new ArrayList<>(entry.getValue().values()));
+        }
+        return result;
+    }
+
+    private static String responseUpdatedAt(List<JSONArray> rows) {
+        return rows.isEmpty() ? "" : timestamp(stringAt(rows.get(0), 7));
     }
 
     private static List<JSONArray> dedupeProductRows(List<JSONArray> rows) {
@@ -377,6 +471,80 @@ public class SheetsSyncWorker extends Worker {
             if (!productId.isEmpty()) unique.put(productId, row);
         }
         return new ArrayList<>(unique.values());
+    }
+
+    private static List<JSONArray> dedupeResponseRows(List<JSONArray> rows) {
+        List<JSONArray> result = new ArrayList<>();
+        for (List<JSONArray> block : responseBlocks(rows).values()) result.addAll(block);
+        return result;
+    }
+
+    private static JSONArray normalizeProductRow(JSONArray source) {
+        boolean modern = source.length() >= 8;
+        String updatedAt = modern ? stringAt(source, 7) : stringAt(source, 5);
+        return row(
+            stringAt(source, 0),
+            stringAt(source, 1),
+            stringAt(source, 2),
+            stringAt(source, 3),
+            doubleAt(source, 4),
+            modern ? stringAt(source, 5) : updatedAt,
+            modern ? doubleAt(source, 6) : doubleAt(source, 4),
+            updatedAt,
+            modern ? stringAt(source, 8) : stringAt(source, 6)
+        );
+    }
+
+    private static JSONArray normalizeResponseRow(
+        JSONArray source,
+        Map<String, RequestBlock> requests
+    ) {
+        if (source == null || stringAt(source, 0).isEmpty()) return null;
+        boolean modern = source.length() >= 5 && requests.containsKey(stringAt(source, 1));
+        String requestId = modern ? stringAt(source, 1) : stringAt(source, 0);
+        RequestBlock request = requests.get(requestId);
+        if (request == null || request.requestRows.isEmpty()) return null;
+        JSONArray requestRow = request.requestRows.get(0);
+        String createdAt = modern ? stringAt(source, 5) : stringAt(requestRow, 6);
+        if (createdAt.isEmpty()) createdAt = stringAt(requestRow, 8);
+        if (createdAt.isEmpty()) createdAt = stringAt(requestRow, 5);
+        String creator = modern ? stringAt(source, 6) : stringAt(requestRow, 9);
+        if (creator.isEmpty()) creator = stringAt(requestRow, 7);
+        String updatedAt = modern ? stringAt(source, 7) : stringAt(requestRow, 8);
+        if (updatedAt.isEmpty()) updatedAt = createdAt;
+        return row(
+            modern ? stringAt(source, 0) : "response_legacy_" + requestId,
+            requestId,
+            modern ? stringAt(source, 2) : stringAt(source, 1),
+            modern ? doubleAt(source, 3) : doubleAt(source, 2),
+            modern ? doubleAt(source, 4) : doubleAt(source, 3),
+            createdAt,
+            creator,
+            updatedAt,
+            modern ? stringAt(source, 8) : creator
+        );
+    }
+
+    private static void recomputeProductQuantities(
+        List<JSONArray> products,
+        Map<String, RequestBlock> requests
+    ) throws JSONException {
+        for (JSONArray product : products) {
+            String productId = stringAt(product, 0);
+            String baseAt = timestamp(stringAt(product, 5));
+            double quantity = doubleAt(product, 4);
+            for (RequestBlock request : requests.values()) {
+                for (JSONArray response : request.responseRows) {
+                    if (
+                        productId.equals(stringAt(response, 2)) &&
+                        timestamp(stringAt(response, 5)).compareTo(baseAt) > 0
+                    ) {
+                        quantity += doubleAt(response, 3);
+                    }
+                }
+            }
+            product.put(6, quantity);
+        }
     }
 
     private static String summarize(
@@ -403,6 +571,16 @@ public class SheetsSyncWorker extends Worker {
     private static String stringAt(JSONArray row, int index) {
         Object value = row.opt(index);
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private static double doubleAt(JSONArray row, int index) {
+        Object value = row.opt(index);
+        if (value instanceof Number) return ((Number) value).doubleValue();
+        try {
+            return value == null ? 0 : Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
     }
 
     private static String timestamp(String value) {
@@ -482,16 +660,16 @@ public class SheetsSyncWorker extends Worker {
 
     private static final class RequestBlock {
         final List<JSONArray> requestRows;
-        final List<JSONArray> purchaseRows;
+        final List<JSONArray> responseRows;
         final String updatedAt;
 
         RequestBlock(
             List<JSONArray> requestRows,
-            List<JSONArray> purchaseRows,
+            List<JSONArray> responseRows,
             String updatedAt
         ) {
             this.requestRows = requestRows;
-            this.purchaseRows = purchaseRows;
+            this.responseRows = responseRows;
             this.updatedAt = updatedAt;
         }
     }
