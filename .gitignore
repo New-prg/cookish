@@ -32,6 +32,7 @@ yarn-error.log*
 .env*
 !.env.example
 .codex-dev.*
+site-package.tar.gz
 
 # vercel
 .vercel
