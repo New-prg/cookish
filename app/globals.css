@@ -130,8 +130,8 @@ input:focus, select:focus { border: 2px solid var(--green); }
 .mobile-nav { display: none; }
 
 @media (max-width: 720px) {
-  body { padding-bottom: calc(58px + env(safe-area-inset-bottom)); }
-  .topbar { height: 50px; grid-template-columns: 1fr auto; padding: 0 14px; }
+  body { padding-bottom: calc(58px + env(safe-area-inset-bottom)); overscroll-behavior-y: contain; }
+  .topbar { height: calc(50px + env(safe-area-inset-top)); grid-template-columns: 1fr auto; padding: env(safe-area-inset-top) 14px 0; }
   .brand { font-size: 12px; }
   .desktop-nav { display: none; }
   .system-state { font-size: 8px; }
@@ -194,4 +194,6 @@ input:focus, select:focus { border: 2px solid var(--green); }
   .mobile-nav a { display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--line-soft); color: var(--muted); font-size: 9px; }
   .mobile-nav a:last-child { border-right: 0; }
   .mobile-nav a.active { color: var(--ink); background: #e8ebe8; font-weight: 800; box-shadow: inset 0 3px var(--green); }
+  input, select, button, .button { font-size: 16px; }
+  input, select { min-height: 44px; }
 }

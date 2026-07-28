@@ -33,6 +33,10 @@ yarn-error.log*
 !.env.example
 .codex-dev.*
 site-package.tar.gz
+/android/.gradle/
+/android/local.properties
+/android/app/build/
+/output/*.apk
 
 # vercel
 .vercel

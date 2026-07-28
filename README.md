@@ -33,6 +33,18 @@ npm install
 npm run dev
 ```
 
+## Android APK
+
+Мобильная сборка подключается к локальному серверу на ПК. Адрес задаётся через
+`CAPACITOR_SERVER_URL`. Телефон и ПК должны находиться в одной сети.
+
+```bash
+$env:CAPACITOR_SERVER_URL="http://10.10.40.165:3000"
+npm run android:apk
+```
+
+Готовый файл: `output/Listok-debug.apk`.
+
 ## Техническая основа
 
 Vinext / React / Next.js, адаптивный PWA-интерфейс и опциональные серверные
