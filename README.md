@@ -17,7 +17,14 @@ docker compose down
 ```
 
 Переменные интеграций можно скопировать из `.env.example` в `.env`. Для локальной
-работы каталога и заявок они не требуются.
+работы требуется настроить Google OAuth:
+
+1. В Google Cloud включите Google Sheets API.
+2. Создайте OAuth Client типа Web application.
+3. Добавьте redirect URI `http://localhost:3000/api/auth/google/callback`.
+4. Заполните `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` и `AUTH_SECRET` в `.env`.
+
+`AUTH_SECRET` должен быть случайной строкой длиной не менее 32 символов.
 
 ## Запуск через npm
 

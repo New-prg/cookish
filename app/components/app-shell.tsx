@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { useEffect } from "react";
+import { useGoogleSession } from "./google-session";
 
 export function AppShell({ title, subtitle, action, children }: {
   title: string;
@@ -11,6 +13,7 @@ export function AppShell({ title, subtitle, action, children }: {
   children: ReactNode;
 }) {
   const pathname = usePathname();
+  const googleSession = useGoogleSession();
   const section = pathname.startsWith("/products")
     ? "products"
     : pathname.startsWith("/requests")
@@ -18,6 +21,12 @@ export function AppShell({ title, subtitle, action, children }: {
       : pathname.startsWith("/profile")
         ? "profile"
         : "home";
+
+  useEffect(() => {
+    if (googleSession && !googleSession.authenticated) window.location.replace("/login");
+  }, [googleSession]);
+
+  if (!googleSession?.authenticated) return <main className="auth-check">Проверка доступа</main>;
 
   return (
     <main>
