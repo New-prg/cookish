@@ -8,9 +8,6 @@ $javaHome = "C:\Program Files\Android\Android Studio\jbr"
 $env:JAVA_HOME = $javaHome
 $env:ANDROID_HOME = $androidSdk
 $env:ANDROID_SDK_ROOT = $androidSdk
-if (-not $env:CAPACITOR_SERVER_URL) {
-  $env:CAPACITOR_SERVER_URL = "http://10.10.40.165:3000"
-}
 
 Push-Location $projectRoot
 try {

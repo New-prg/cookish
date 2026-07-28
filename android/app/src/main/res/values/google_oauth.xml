@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Public identifiers from the Android OAuth client; no client secret is used. -->
+    <string name="google_android_client_id" translatable="false">904030339035-1db4kc3bjcl3b53cble25jsd98969oc4.apps.googleusercontent.com</string>
+    <string name="google_cloud_project_id" translatable="false">pokupki-503810</string>
+</resources>

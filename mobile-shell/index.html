@@ -3,9 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" />
     <title>Листок</title>
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <p>Для работы требуется подключение к локальному серверу.</p>
+    <header class="topbar">
+      <h1 id="page-title">Сводка</h1>
+      <button id="header-action" class="text-button" type="button" hidden></button>
+    </header>
+
+    <main id="app" aria-live="polite"></main>
+
+    <nav class="bottom-nav" aria-label="Основная навигация">
+      <button data-route="summary" class="active"><span>⌂</span>Сводка</button>
+      <button data-route="products"><span>□</span>Продукты</button>
+      <button data-route="requests"><span>≡</span>Запросы</button>
+      <button data-route="profile"><span>○</span>Профиль</button>
+    </nav>
+
+    <div id="toast" role="status"></div>
+    <script src="./app.js"></script>
   </body>
 </html>
