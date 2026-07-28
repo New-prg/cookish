@@ -1,12 +1,17 @@
 package ru.listok.purchases;
 
+import android.Manifest;
 import android.content.Intent;
 import android.content.IntentSender;
+import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.webkit.JavascriptInterface;
 
 import androidx.annotation.Nullable;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.work.Constraints;
 import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.ExistingWorkPolicy;
@@ -35,6 +40,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        SheetsSyncWorker.createNotificationChannel(this);
         bridge.getWebView().addJavascriptInterface(new GoogleAuthorizationBridge(), "NativeGoogle");
     }
 
@@ -90,6 +96,7 @@ public class MainActivity extends BridgeActivity {
                 manager.cancelUniqueWork(IMMEDIATE_SYNC_WORK);
                 return;
             }
+            requestNotificationPermission();
 
             Constraints constraints = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -132,6 +139,30 @@ public class MainActivity extends BridgeActivity {
                 intent.putExtra(Intent.EXTRA_TEXT, text);
                 startActivity(Intent.createChooser(intent, "Поделиться таблицей"));
             });
+        }
+
+        @JavascriptInterface
+        public void notifyRequest(String requestId, String summary, String creator) {
+            SheetsSyncWorker.showRequestNotification(
+                MainActivity.this,
+                requestId,
+                summary,
+                creator
+            );
+        }
+    }
+
+    private void requestNotificationPermission() {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                9205
+            );
         }
     }
 

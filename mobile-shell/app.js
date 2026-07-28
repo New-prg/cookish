@@ -8,6 +8,8 @@
     spreadsheetId: "",
     spreadsheetTitle: "",
     user: null,
+    seenRemoteRequestIds: [],
+    remoteTrackingInitialized: false,
   };
 
   let state = loadState();
@@ -35,7 +37,7 @@
     } else if (route === "requests") {
       draftItems = [];
       navigate("request-new");
-    } else if (route.includes("-new") || route === "request-edit" || route === "request-detail" || route === "request-answer") {
+    } else if (route.includes("-new") || route.endsWith("-edit") || route === "request-detail" || route === "request-answer") {
       draftItems = [];
       navigate(route.startsWith("product") ? "products" : "requests");
     }
@@ -51,9 +53,17 @@
   function loadState() {
     try {
       const loaded = { ...defaultState, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
-      loaded.products = loaded.products.map((product) => ({ ...product, quantity: Number(product.quantity) || 0 }));
+      loaded.products = loaded.products.map((product) => ({
+        ...product,
+        quantity: Number(product.quantity) || 0,
+        updatedAt: product.updatedAt || new Date(0).toISOString(),
+        updatedBy: product.updatedBy || "local",
+      }));
       loaded.requests = loaded.requests.map((request) => ({
         ...request,
+        createdBy: request.createdBy || "local",
+        updatedAt: request.updatedAt || request.completedAt || request.createdAt,
+        updatedBy: request.updatedBy || request.createdBy || "local",
         items: request.items.map((item) => ({
           ...item,
           stockAtRequest: Number(item.stockAtRequest ?? loaded.products.find((product) => product.id === item.productId)?.quantity) || 0,
@@ -85,13 +95,14 @@
     document.querySelectorAll(".bottom-nav button").forEach((button) => {
       button.classList.toggle("active", button.dataset.route === rootRoute);
     });
-    nav.hidden = route.includes("-new") || route === "request-edit" || route === "request-answer";
+    nav.hidden = route.includes("-new") || route.endsWith("-edit") || route === "request-answer";
     document.body.style.paddingBottom = nav.hidden ? "env(safe-area-inset-bottom)" : "";
     configureHeader();
 
     if (route === "summary") renderSummary();
     else if (route === "products") renderProducts();
     else if (route === "product-new") renderProductForm();
+    else if (route === "product-edit") renderProductForm();
     else if (route === "requests") renderRequests();
     else if (route === "request-new") renderRequestForm();
     else if (route === "request-edit") renderRequestForm();
@@ -105,6 +116,7 @@
       summary: ["Сводка", "", false],
       products: ["Продукты", "Добавить", false],
       "product-new": ["Новый продукт", "Отмена", true],
+      "product-edit": ["Редактирование", "Отмена", true],
       requests: ["Запросы", "Создать", false],
       "request-new": ["Новый запрос", "Отмена", true],
       "request-edit": ["Редактирование", "Отмена", true],
@@ -138,8 +150,15 @@
         <h2 class="section-title">Активные запросы</h2>
         ${active.length ? active.map(requestRow).join("") : `<p class="empty">Нет активных запросов</p>`}
       </section>
+      <section class="section">
+        <button id="summary-new-request" class="button full" type="button">Создать запрос</button>
+      </section>
     `;
     bindRequestRows();
+    document.getElementById("summary-new-request").onclick = () => {
+      draftItems = [];
+      navigate("request-new");
+    };
   }
 
   function renderProducts() {
@@ -151,7 +170,10 @@
               <span>${escapeHtml(product.category || "Без категории")} · ${escapeHtml(product.unit)}</span>
             </div>
             <div class="row-value"><strong>${number(product.quantity)} ${escapeHtml(product.unit)}</strong></div>
-            <button class="text-button delete-product" data-id="${product.id}" type="button">Удалить</button>
+            <div>
+              <button class="text-button edit-product" data-id="${product.id}" type="button">Изменить</button>
+              <button class="text-button delete-product" data-id="${product.id}" type="button">Удалить</button>
+            </div>
           </div>
         `).join("")
       : `<section class="section"><p class="empty">Продукты не добавлены</p></section>`;
@@ -165,39 +187,46 @@
         renderProducts();
       });
     });
+    document.querySelectorAll(".edit-product").forEach((button) => {
+      button.addEventListener("click", () => navigate("product-edit", button.dataset.id));
+    });
   }
 
   function renderProductForm() {
+    const editing = route === "product-edit";
+    const product = editing ? getProduct(routeId) : null;
+    if (editing && !product) return navigate("products");
     app.innerHTML = `
       <form id="product-form" class="form">
-        <label class="field"><span>Наименование</span><input name="name" required autocomplete="off"></label>
-        <label class="field"><span>Категория</span><input name="category" autocomplete="off"></label>
+        <label class="field"><span>Наименование</span><input name="name" required autocomplete="off" value="${escapeAttr(product?.name || "")}"></label>
+        <label class="field"><span>Категория</span><input name="category" autocomplete="off" value="${escapeAttr(product?.category || "")}"></label>
         <label class="field"><span>Единица измерения</span>
           <select name="unit">
-            <option value="шт.">шт.</option>
-            <option value="кг">кг</option>
-            <option value="г">г</option>
-            <option value="л">л</option>
-            <option value="уп.">уп.</option>
+            ${["шт.", "кг", "г", "л", "уп."].map((unit) =>
+              `<option value="${unit}" ${unit === product?.unit ? "selected" : ""}>${unit}</option>`
+            ).join("")}
           </select>
         </label>
-        <label class="field"><span>Текущий остаток</span><input name="quantity" type="number" min="0" step="0.01" value="0" required></label>
+        <label class="field"><span>Текущий остаток</span><input name="quantity" type="number" min="0" step="0.01" value="${product?.quantity ?? 0}" required></label>
         <button class="button full" type="submit">Сохранить</button>
       </form>
     `;
     document.getElementById("product-form").addEventListener("submit", (event) => {
       event.preventDefault();
       const data = new FormData(event.currentTarget);
-      state.products.push({
-        id: id("product"),
+      const values = {
         name: data.get("name").trim(),
         category: data.get("category").trim(),
         unit: data.get("unit"),
         quantity: Number(data.get("quantity")),
-      });
+        updatedAt: new Date().toISOString(),
+        updatedBy: state.user?.email || "local",
+      };
+      if (product) Object.assign(product, values);
+      else state.products.push({ id: id("product"), ...values });
       saveState();
       navigate("products");
-      showToast("Продукт добавлен.");
+      showToast(product ? "Продукт изменён." : "Продукт добавлен.");
     });
   }
 
@@ -264,11 +293,12 @@
       }));
       items.forEach((item) => {
         const product = getProduct(item.productId);
-        if (product) product.quantity = item.stockAtRequest;
+        if (product) updateProductQuantity(product, item.stockAtRequest);
       });
       if (editedRequest) {
         editedRequest.items = items;
         editedRequest.updatedAt = new Date().toISOString();
+        editedRequest.updatedBy = state.user?.email || "local";
         if (editedRequest.purchases) {
           editedRequest.purchases = editedRequest.purchases.filter((purchase) =>
             items.some((item) => item.productId === purchase.productId)
@@ -277,7 +307,7 @@
             items.forEach((item) => {
               const product = getProduct(item.productId);
               const purchase = editedRequest.purchases.find((value) => value.productId === item.productId);
-              if (product && purchase) product.quantity = item.stockAtRequest + purchase.quantity;
+              if (product && purchase) updateProductQuantity(product, item.stockAtRequest + purchase.quantity);
             });
           }
         }
@@ -287,6 +317,9 @@
           createdAt: new Date().toISOString(),
           status: "open",
           items,
+          createdBy: state.user?.email || "local",
+          updatedBy: state.user?.email || "local",
+          updatedAt: new Date().toISOString(),
         });
       }
       draftItems = [];
@@ -359,7 +392,7 @@
     app.innerHTML = `
       <section class="section">
         <span class="status ${request.status}">${request.status === "open" ? "Активен" : "Выполнен"}</span>
-        <p class="muted">${date(request.createdAt)}</p>
+        <p class="muted">${date(request.createdAt)}${request.createdBy && request.createdBy !== "local" ? ` · ${escapeHtml(request.createdBy)}` : ""}</p>
       </section>
       <section>
         ${rows}
@@ -411,10 +444,11 @@
       request.status = "done";
       request.completedAt = request.completedAt || new Date().toISOString();
       request.updatedAt = new Date().toISOString();
+      request.updatedBy = state.user?.email || "local";
       request.items.forEach((item) => {
         const product = getProduct(item.productId);
         const purchase = request.purchases.find((value) => value.productId === item.productId);
-        if (product && purchase) product.quantity = Number(item.stockAtRequest || 0) + purchase.quantity;
+        if (product && purchase) updateProductQuantity(product, Number(item.stockAtRequest || 0) + purchase.quantity);
       });
       saveState();
       navigate("request-detail", request.id);
@@ -572,6 +606,13 @@
       email: user.email || "",
       picture: user.picture || "",
     };
+    state.products.forEach((product) => {
+      if (!product.updatedBy || product.updatedBy === "local") product.updatedBy = state.user.email;
+    });
+    state.requests.forEach((request) => {
+      if (!request.createdBy || request.createdBy === "local") request.createdBy = state.user.email;
+      if (!request.updatedBy || request.updatedBy === "local") request.updatedBy = state.user.email;
+    });
     saveState(false);
     if (showSuccess) showToast("Вход выполнен.");
     return accessToken;
@@ -635,11 +676,96 @@
         token
       );
     }
+    await readAndMergeSpreadsheetData(token, spreadsheetId);
     await writeSpreadsheetData(token, spreadsheetId);
     state.spreadsheetTitle = metadata.properties.title;
     state.lastSyncAt = new Date().toISOString();
     saveState(false);
     return metadata.properties.title;
+  }
+
+  async function readAndMergeSpreadsheetData(token, spreadsheetId) {
+    const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet`);
+    url.searchParams.append("ranges", "Продукты!A2:G");
+    url.searchParams.append("ranges", "Запросы!A2:J");
+    url.searchParams.append("ranges", "Покупки!A2:D");
+    const response = await googleFetch(url.toString(), token);
+    const productRows = response.valueRanges?.[0]?.values || [];
+    const requestRows = response.valueRanges?.[1]?.values || [];
+    const purchaseRows = response.valueRanges?.[2]?.values || [];
+
+    const remoteProducts = productRows
+      .filter((row) => row[0])
+      .map((row) => ({
+        id: String(row[0]),
+        name: String(row[1] || ""),
+        category: String(row[2] || ""),
+        unit: String(row[3] || "шт."),
+        quantity: Number(row[4]) || 0,
+        updatedAt: String(row[5] || new Date(0).toISOString()),
+        updatedBy: String(row[6] || "remote"),
+      }));
+    state.products = mergeVersioned(state.products, remoteProducts);
+
+    const purchasesByRequest = new Map();
+    purchaseRows.forEach((row) => {
+      if (!row[0] || !row[1]) return;
+      const values = purchasesByRequest.get(String(row[0])) || [];
+      values.push({
+        productId: String(row[1]),
+        quantity: Number(row[2]) || 0,
+        price: Number(row[3]) || 0,
+      });
+      purchasesByRequest.set(String(row[0]), values);
+    });
+
+    const remoteById = new Map();
+    requestRows.forEach((row) => {
+      if (!row[0] || !row[1]) return;
+      const requestId = String(row[0]);
+      const request = remoteById.get(requestId) || {
+        id: requestId,
+        status: String(row[4]) === "Выполнен" ? "done" : "open",
+        createdAt: String(row[5] || new Date().toISOString()),
+        completedAt: String(row[6] || ""),
+        createdBy: String(row[7] || "remote"),
+        updatedAt: String(row[8] || row[6] || row[5] || new Date(0).toISOString()),
+        updatedBy: String(row[9] || row[7] || "remote"),
+        items: [],
+      };
+      request.items.push({
+        productId: String(row[1]),
+        quantity: Number(row[2]) || 0,
+        stockAtRequest: Number(row[3]) || 0,
+      });
+      remoteById.set(requestId, request);
+    });
+    const remoteRequests = [...remoteById.values()].map((request) => ({
+      ...request,
+      purchases: purchasesByRequest.get(request.id) || [],
+    }));
+
+    const knownIds = new Set(state.requests.map((request) => request.id));
+    const seenIds = new Set(state.seenRemoteRequestIds || []);
+    const trackingWasInitialized = Boolean(state.remoteTrackingInitialized);
+    remoteRequests.forEach((request) => {
+      if (
+        trackingWasInitialized &&
+        !knownIds.has(request.id) &&
+        !seenIds.has(request.id) &&
+        request.status === "open" &&
+        isRemoteRequest(request)
+      ) {
+        notifyRemoteRequest(request);
+      }
+      if (isRemoteRequest(request)) seenIds.add(request.id);
+    });
+    state.requests = mergeVersioned(state.requests, remoteRequests);
+    state.seenRemoteRequestIds = [...seenIds];
+    state.remoteTrackingInitialized = true;
+    saveState(false);
+
+    if (["summary", "products", "requests"].includes(route)) render();
   }
 
   async function writeSpreadsheetData(token, spreadsheetId) {
@@ -652,6 +778,9 @@
         request.status === "open" ? "Активен" : "Выполнен",
         request.createdAt,
         request.completedAt || "",
+        request.createdBy || "local",
+        request.updatedAt || request.createdAt,
+        request.updatedBy || request.createdBy || "local",
       ])
     );
     const purchaseRows = state.requests.flatMap((request) =>
@@ -661,7 +790,7 @@
     );
     await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, token, {
       method: "POST",
-      body: JSON.stringify({ ranges: ["Продукты!A:F", "Запросы!A:H", "Покупки!A:E"] }),
+      body: JSON.stringify({ ranges: ["Продукты!A:H", "Запросы!A:K", "Покупки!A:E"] }),
     });
     await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, token, {
       method: "POST",
@@ -669,14 +798,14 @@
         valueInputOption: "USER_ENTERED",
         data: [
           {
-            range: "Продукты!A1:E",
-            values: [["id", "Наименование", "Категория", "Единица", "Остаток"], ...state.products.map((item) =>
-              [item.id, item.name, item.category, item.unit, item.quantity || 0]
+            range: "Продукты!A1:G",
+            values: [["id", "Наименование", "Категория", "Единица", "Остаток", "Обновлён", "Кем обновлён"], ...state.products.map((item) =>
+              [item.id, item.name, item.category, item.unit, item.quantity || 0, item.updatedAt || "", item.updatedBy || ""]
             )],
           },
           {
-            range: "Запросы!A1:G",
-            values: [["request_id", "product_id", "Запрошено", "Остаток", "Статус", "Создан", "Закрыт"], ...requestRows],
+            range: "Запросы!A1:J",
+            values: [["request_id", "product_id", "Запрошено", "Остаток", "Статус", "Создан", "Закрыт", "Автор", "Обновлён", "Кем обновлён"], ...requestRows],
           },
           {
             range: "Покупки!A1:D",
@@ -713,15 +842,12 @@
   }
 
   function requestRow(request) {
-    const summary = request.items.map((item) => {
-      const product = getProduct(item.productId);
-      return `${product?.name || "Продукт"} — ${number(item.quantity)} ${product?.unit || ""}`;
-    }).join("; ");
+    const summary = requestSummary(request);
     return `
       <button class="row link-row request-link" data-id="${request.id}" type="button">
         <div class="row-main">
           <strong>${escapeHtml(summary)}</strong>
-          <span>${date(request.createdAt)}</span>
+          <span>${date(request.createdAt)}${isRemoteRequest(request) ? ` · от ${escapeHtml(request.createdBy)}` : ""}</span>
         </div>
         <span class="status ${request.status}">${request.status === "open" ? "Активен" : money(requestTotal(request))}</span>
       </button>`;
@@ -733,6 +859,50 @@
 
   function requestTotal(request) {
     return (request.purchases || []).reduce((sum, item) => sum + item.price, 0);
+  }
+
+  function requestSummary(request) {
+    return request.items.map((item) => {
+      const product = getProduct(item.productId);
+      return `${product?.name || "Продукт"} — ${number(item.quantity)} ${product?.unit || ""}`;
+    }).join("; ");
+  }
+
+  function isRemoteRequest(request) {
+    const currentEmail = state.user?.email?.toLowerCase();
+    const creator = request.createdBy?.toLowerCase();
+    return Boolean(currentEmail && creator && creator !== "local" && creator !== currentEmail);
+  }
+
+  function notifyRemoteRequest(request) {
+    const summary = requestSummary(request);
+    if (window.NativeGoogle?.notifyRequest) {
+      window.NativeGoogle.notifyRequest(request.id, summary, request.createdBy || "");
+    } else {
+      showToast(`Новый запрос: ${summary}`);
+    }
+  }
+
+  function mergeVersioned(localValues, remoteValues) {
+    const merged = new Map(localValues.map((value) => [value.id, value]));
+    remoteValues.forEach((remote) => {
+      const local = merged.get(remote.id);
+      if (!local || timestamp(remote.updatedAt) > timestamp(local.updatedAt)) {
+        merged.set(remote.id, remote);
+      }
+    });
+    return [...merged.values()];
+  }
+
+  function timestamp(value) {
+    const result = Date.parse(value || "");
+    return Number.isFinite(result) ? result : 0;
+  }
+
+  function updateProductQuantity(product, quantity) {
+    product.quantity = Number(quantity) || 0;
+    product.updatedAt = new Date().toISOString();
+    product.updatedBy = state.user?.email || "local";
   }
 
   function getProduct(productId) {
