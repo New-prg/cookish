@@ -17,6 +17,8 @@
   let accessToken = null;
   let authResolve = null;
   let toastTimer = null;
+  let syncTimer = null;
+  let syncInProgress = false;
 
   const app = document.getElementById("app");
   const title = document.getElementById("page-title");
@@ -31,8 +33,10 @@
     if (route === "products") {
       navigate("product-new");
     } else if (route === "requests") {
+      draftItems = [];
       navigate("request-new");
-    } else if (route.includes("-new") || route === "request-detail" || route === "request-answer") {
+    } else if (route.includes("-new") || route === "request-edit" || route === "request-detail" || route === "request-answer") {
+      draftItems = [];
       navigate(route.startsWith("product") ? "products" : "requests");
     }
   });
@@ -46,14 +50,25 @@
 
   function loadState() {
     try {
-      return { ...defaultState, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
+      const loaded = { ...defaultState, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
+      loaded.products = loaded.products.map((product) => ({ ...product, quantity: Number(product.quantity) || 0 }));
+      loaded.requests = loaded.requests.map((request) => ({
+        ...request,
+        items: request.items.map((item) => ({
+          ...item,
+          stockAtRequest: Number(item.stockAtRequest ?? loaded.products.find((product) => product.id === item.productId)?.quantity) || 0,
+        })),
+      }));
+      return loaded;
     } catch {
       return structuredClone(defaultState);
     }
   }
 
-  function saveState() {
+  function saveState(sync = true) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    mirrorStateForBackgroundSync();
+    if (sync) queueAutoSync();
   }
 
   function navigate(next, id = null) {
@@ -70,7 +85,7 @@
     document.querySelectorAll(".bottom-nav button").forEach((button) => {
       button.classList.toggle("active", button.dataset.route === rootRoute);
     });
-    nav.hidden = route.includes("-new") || route === "request-answer";
+    nav.hidden = route.includes("-new") || route === "request-edit" || route === "request-answer";
     document.body.style.paddingBottom = nav.hidden ? "env(safe-area-inset-bottom)" : "";
     configureHeader();
 
@@ -79,6 +94,7 @@
     else if (route === "product-new") renderProductForm();
     else if (route === "requests") renderRequests();
     else if (route === "request-new") renderRequestForm();
+    else if (route === "request-edit") renderRequestForm();
     else if (route === "request-detail") renderRequestDetail();
     else if (route === "request-answer") renderRequestAnswer();
     else if (route === "profile") renderProfile();
@@ -91,6 +107,7 @@
       "product-new": ["Новый продукт", "Отмена", true],
       requests: ["Запросы", "Создать", false],
       "request-new": ["Новый запрос", "Отмена", true],
+      "request-edit": ["Редактирование", "Отмена", true],
       "request-detail": ["Запрос", "Назад", false],
       "request-answer": ["Закупка", "Отмена", true],
       profile: ["Профиль", "", false],
@@ -133,6 +150,7 @@
               <strong>${escapeHtml(product.name)}</strong>
               <span>${escapeHtml(product.category || "Без категории")} · ${escapeHtml(product.unit)}</span>
             </div>
+            <div class="row-value"><strong>${number(product.quantity)} ${escapeHtml(product.unit)}</strong></div>
             <button class="text-button delete-product" data-id="${product.id}" type="button">Удалить</button>
           </div>
         `).join("")
@@ -163,6 +181,7 @@
             <option value="уп.">уп.</option>
           </select>
         </label>
+        <label class="field"><span>Текущий остаток</span><input name="quantity" type="number" min="0" step="0.01" value="0" required></label>
         <button class="button full" type="submit">Сохранить</button>
       </form>
     `;
@@ -174,6 +193,7 @@
         name: data.get("name").trim(),
         category: data.get("category").trim(),
         unit: data.get("unit"),
+        quantity: Number(data.get("quantity")),
       });
       saveState();
       navigate("products");
@@ -199,35 +219,80 @@
       document.getElementById("go-products").onclick = () => navigate("product-new");
       return;
     }
-    if (!draftItems.length) draftItems = [{ key: id("item"), productId: state.products[0].id, quantity: 1 }];
+    const editing = route === "request-edit";
+    const editedRequest = editing ? getRequest(routeId) : null;
+    if (editing && !editedRequest) return navigate("requests");
+    if (!draftItems.length) {
+      draftItems = editedRequest
+        ? editedRequest.items.map((item) => ({
+            key: id("item"),
+            productId: item.productId,
+            quantity: item.quantity,
+            stockAtRequest: item.stockAtRequest ?? getProduct(item.productId)?.quantity ?? 0,
+          }))
+        : [{
+            key: id("item"),
+            productId: state.products[0].id,
+            quantity: 1,
+            stockAtRequest: state.products[0].quantity || 0,
+          }];
+    }
     app.innerHTML = `
       <form id="request-form" class="form">
-        <label class="field"><span>Наименование запроса</span><input name="title" required value="Закупка"></label>
         <div id="request-items">${draftItems.map(draftItemRow).join("")}</div>
         <button id="add-request-item" class="button secondary full" type="button">Добавить позицию</button>
-        <button class="button full" style="margin-top:16px" type="submit">Создать запрос</button>
+        <button class="button full" style="margin-top:16px" type="submit">${editing ? "Сохранить изменения" : "Создать запрос"}</button>
       </form>
     `;
     bindDraftItems();
     document.getElementById("add-request-item").onclick = () => {
-      draftItems.push({ key: id("item"), productId: state.products[0].id, quantity: 1 });
+      draftItems.push({
+        key: id("item"),
+        productId: state.products[0].id,
+        quantity: 1,
+        stockAtRequest: state.products[0].quantity || 0,
+      });
       renderRequestForm();
     };
     document.getElementById("request-form").addEventListener("submit", (event) => {
       event.preventDefault();
       syncDraftFromForm();
-      const data = new FormData(event.currentTarget);
-      state.requests.push({
-        id: id("request"),
-        title: data.get("title").trim(),
-        createdAt: new Date().toISOString(),
-        status: "open",
-        items: draftItems.map(({ productId, quantity }) => ({ productId, quantity: Number(quantity) })),
+      const items = draftItems.map(({ productId, quantity, stockAtRequest }) => ({
+        productId,
+        quantity: Number(quantity),
+        stockAtRequest: Number(stockAtRequest),
+      }));
+      items.forEach((item) => {
+        const product = getProduct(item.productId);
+        if (product) product.quantity = item.stockAtRequest;
       });
+      if (editedRequest) {
+        editedRequest.items = items;
+        editedRequest.updatedAt = new Date().toISOString();
+        if (editedRequest.purchases) {
+          editedRequest.purchases = editedRequest.purchases.filter((purchase) =>
+            items.some((item) => item.productId === purchase.productId)
+          );
+          if (editedRequest.status === "done") {
+            items.forEach((item) => {
+              const product = getProduct(item.productId);
+              const purchase = editedRequest.purchases.find((value) => value.productId === item.productId);
+              if (product && purchase) product.quantity = item.stockAtRequest + purchase.quantity;
+            });
+          }
+        }
+      } else {
+        state.requests.push({
+          id: id("request"),
+          createdAt: new Date().toISOString(),
+          status: "open",
+          items,
+        });
+      }
       draftItems = [];
       saveState();
-      navigate("requests");
-      showToast("Запрос создан.");
+      navigate(editedRequest ? "request-detail" : "requests", editedRequest?.id || null);
+      showToast(editedRequest ? "Запрос изменён." : "Запрос создан.");
     });
   }
 
@@ -239,12 +304,22 @@
             `<option value="${product.id}" ${product.id === item.productId ? "selected" : ""}>${escapeHtml(product.name)}</option>`
           ).join("")}</select>
         </label>
-        <label class="field"><span>Количество</span><input class="draft-quantity" type="number" min="0.01" step="0.01" value="${item.quantity}" required></label>
-        <button class="icon-button remove-item" type="button" aria-label="Удалить">×</button>
+        <div class="request-item-fields">
+          <label class="field"><span>Остаток</span><input class="draft-stock" type="number" min="0" step="0.01" value="${item.stockAtRequest ?? 0}" required></label>
+          <label class="field"><span>Запросить</span><input class="draft-quantity" type="number" min="0.01" step="0.01" value="${item.quantity}" required></label>
+          <button class="icon-button remove-item" type="button" aria-label="Удалить">×</button>
+        </div>
       </div>`;
   }
 
   function bindDraftItems() {
+    document.querySelectorAll(".draft-product").forEach((select) => {
+      select.onchange = () => {
+        const row = select.closest(".request-item");
+        const product = getProduct(select.value);
+        row.querySelector(".draft-stock").value = product?.quantity ?? 0;
+      };
+    });
     document.querySelectorAll(".remove-item").forEach((button) => {
       button.onclick = () => {
         syncDraftFromForm();
@@ -262,6 +337,7 @@
       if (!item) return;
       item.productId = row.querySelector(".draft-product").value;
       item.quantity = Number(row.querySelector(".draft-quantity").value);
+      item.stockAtRequest = Number(row.querySelector(".draft-stock").value);
     });
   }
 
@@ -275,28 +351,32 @@
         <div class="row">
           <div class="row-main">
             <strong>${escapeHtml(product?.name || "Удалённый продукт")}</strong>
-            <span>Запрошено: ${number(item.quantity)} ${escapeHtml(product?.unit || "")}</span>
+            <span>Остаток: ${number(item.stockAtRequest || 0)} · Запрошено: ${number(item.quantity)} ${escapeHtml(product?.unit || "")}</span>
           </div>
-          ${purchase ? `<div class="row-value">${money(purchase.quantity * purchase.price)}</div>` : ""}
+          ${purchase ? `<div class="row-value">${money(purchase.price)}</div>` : ""}
         </div>`;
     }).join("");
     app.innerHTML = `
       <section class="section">
-        <h2 style="margin:0 0 6px">${escapeHtml(request.title)}</h2>
         <span class="status ${request.status}">${request.status === "open" ? "Активен" : "Выполнен"}</span>
         <p class="muted">${date(request.createdAt)}</p>
       </section>
       <section>
         ${rows}
       </section>
-      ${request.status === "open" ? `
-        <section class="section"><button id="answer-request" class="button full" type="button">Заполнить закупку</button></section>
-      ` : `
-        <section class="section"><strong>Итого: ${money(requestTotal(request))}</strong></section>
-      `}
+      <section class="section">
+        ${request.status === "done" ? `<p><strong>Итого: ${money(requestTotal(request))}</strong></p>` : ""}
+        <div class="button-row">
+          <button id="edit-request" class="button secondary" type="button">Редактировать запрос</button>
+          <button id="answer-request" class="button" type="button">${request.status === "open" ? "Заполнить закупку" : "Редактировать закупку"}</button>
+        </div>
+      </section>
     `;
-    const button = document.getElementById("answer-request");
-    if (button) button.onclick = () => navigate("request-answer", request.id);
+    document.getElementById("edit-request").onclick = () => {
+      draftItems = [];
+      navigate("request-edit", request.id);
+    };
+    document.getElementById("answer-request").onclick = () => navigate("request-answer", request.id);
   }
 
   function renderRequestAnswer() {
@@ -304,19 +384,20 @@
     if (!request) return navigate("requests");
     app.innerHTML = `
       <form id="answer-form" class="form">
-        <p class="muted">Укажите фактически купленное количество и цену за единицу.</p>
+        <p class="muted">Укажите фактически купленное количество и итоговую цену позиции.</p>
         ${request.items.map((item) => {
           const product = getProduct(item.productId);
+          const existing = request.purchases?.find((purchase) => purchase.productId === item.productId);
           return `
             <div class="section" style="padding-left:0;padding-right:0">
               <strong>${escapeHtml(product?.name || "Продукт")}</strong>
               <div class="button-row">
-                <label class="field" style="flex:1;margin:0"><span>Куплено</span><input name="qty-${item.productId}" type="number" min="0" step="0.01" value="${item.quantity}" required></label>
-                <label class="field" style="flex:1;margin:0"><span>Цена, ₽</span><input name="price-${item.productId}" type="number" min="0" step="0.01" required></label>
+                <label class="field" style="flex:1;margin:0"><span>Куплено</span><input name="qty-${item.productId}" type="number" min="0" step="0.01" value="${existing?.quantity ?? item.quantity}" required></label>
+                <label class="field" style="flex:1;margin:0"><span>Цена позиции, ₽</span><input name="price-${item.productId}" type="number" min="0" step="0.01" value="${existing?.price ?? ""}" required></label>
               </div>
             </div>`;
         }).join("")}
-        <button class="button full" type="submit">Завершить закупку</button>
+        <button class="button full" type="submit">${request.status === "done" ? "Сохранить изменения" : "Завершить закупку"}</button>
       </form>
     `;
     document.getElementById("answer-form").addEventListener("submit", (event) => {
@@ -328,7 +409,13 @@
         price: Number(data.get(`price-${item.productId}`)),
       }));
       request.status = "done";
-      request.completedAt = new Date().toISOString();
+      request.completedAt = request.completedAt || new Date().toISOString();
+      request.updatedAt = new Date().toISOString();
+      request.items.forEach((item) => {
+        const product = getProduct(item.productId);
+        const purchase = request.purchases.find((value) => value.productId === item.productId);
+        if (product && purchase) product.quantity = Number(item.stockAtRequest || 0) + purchase.quantity;
+      });
       saveState();
       navigate("request-detail", request.id);
       showToast("Закупка сохранена.");
@@ -364,6 +451,11 @@
           <p><strong>${escapeHtml(state.spreadsheetTitle || "Подключённая таблица")}</strong></p>
           <p class="muted">${escapeHtml(state.spreadsheetId)}</p>
           <button id="sync-sheet" class="button full" type="button">Синхронизировать</button>
+          <div class="button-row">
+            <button id="open-sheet" class="button secondary" type="button">Открыть таблицу</button>
+            <button id="share-sheet" class="button secondary" type="button">Поделиться</button>
+          </div>
+          ${state.lastSyncAt ? `<p class="muted">Последняя синхронизация: ${dateTime(state.lastSyncAt)}</p>` : ""}
           <button id="disconnect-sheet" class="text-button error" type="button" style="margin-top:8px">Отключить таблицу</button>
         ` : `
           <label class="field"><span>Ссылка или ID существующей таблицы</span><input id="sheet-input" autocomplete="off"></label>
@@ -420,9 +512,20 @@
         "Данные синхронизированы."
       );
     });
+    document.getElementById("open-sheet")?.addEventListener("click", () => {
+      const url = spreadsheetUrl();
+      if (window.NativeGoogle?.openUrl) window.NativeGoogle.openUrl(url);
+      else window.open(url, "_blank");
+    });
+    document.getElementById("share-sheet")?.addEventListener("click", () => {
+      const url = spreadsheetUrl();
+      if (window.NativeGoogle?.shareText) window.NativeGoogle.shareText("Таблица закупок", url);
+      else if (navigator.share) navigator.share({ title: "Таблица закупок", url });
+    });
     document.getElementById("disconnect-sheet")?.addEventListener("click", () => {
       state.spreadsheetId = "";
       state.spreadsheetTitle = "";
+      state.lastSyncAt = "";
       saveState();
       renderProfile();
     });
@@ -469,9 +572,37 @@
       email: user.email || "",
       picture: user.picture || "",
     };
-    saveState();
+    saveState(false);
     if (showSuccess) showToast("Вход выполнен.");
     return accessToken;
+  }
+
+  function mirrorStateForBackgroundSync() {
+    if (!window.NativeGoogle?.configureBackgroundSync) return;
+    window.NativeGoogle.configureBackgroundSync(
+      JSON.stringify(state),
+      state.spreadsheetId || "",
+      state.user?.email || ""
+    );
+  }
+
+  function queueAutoSync(delay = 700) {
+    if (!state.spreadsheetId || !state.user) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => autoSync(), delay);
+  }
+
+  async function autoSync() {
+    if (syncInProgress || !state.spreadsheetId || !state.user) return;
+    syncInProgress = true;
+    try {
+      const token = accessToken || await authorizeGoogle(false);
+      if (token) await setupSpreadsheet(token, state.spreadsheetId);
+    } catch (error) {
+      console.warn("Automatic sync failed", error);
+    } finally {
+      syncInProgress = false;
+    }
   }
 
   async function setupSpreadsheet(token, spreadsheetId) {
@@ -506,21 +637,31 @@
     }
     await writeSpreadsheetData(token, spreadsheetId);
     state.spreadsheetTitle = metadata.properties.title;
+    state.lastSyncAt = new Date().toISOString();
+    saveState(false);
     return metadata.properties.title;
   }
 
   async function writeSpreadsheetData(token, spreadsheetId) {
-    const requestRows = state.requests.map((request) => [
-      request.id, request.title, request.createdAt, request.status === "open" ? "Активен" : "Выполнен",
-    ]);
+    const requestRows = state.requests.flatMap((request) =>
+      request.items.map((item) => [
+        request.id,
+        item.productId,
+        item.quantity,
+        item.stockAtRequest || 0,
+        request.status === "open" ? "Активен" : "Выполнен",
+        request.createdAt,
+        request.completedAt || "",
+      ])
+    );
     const purchaseRows = state.requests.flatMap((request) =>
       (request.purchases || []).map((purchase) => [
-        request.id, purchase.productId, purchase.quantity, purchase.price, purchase.quantity * purchase.price,
+        request.id, purchase.productId, purchase.quantity, purchase.price,
       ])
     );
     await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, token, {
       method: "POST",
-      body: JSON.stringify({ ranges: ["Продукты!A:E", "Запросы!A:E", "Покупки!A:F"] }),
+      body: JSON.stringify({ ranges: ["Продукты!A:F", "Запросы!A:H", "Покупки!A:E"] }),
     });
     await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, token, {
       method: "POST",
@@ -528,18 +669,18 @@
         valueInputOption: "USER_ENTERED",
         data: [
           {
-            range: "Продукты!A1:D",
-            values: [["id", "Наименование", "Категория", "Единица"], ...state.products.map((item) =>
-              [item.id, item.name, item.category, item.unit]
+            range: "Продукты!A1:E",
+            values: [["id", "Наименование", "Категория", "Единица", "Остаток"], ...state.products.map((item) =>
+              [item.id, item.name, item.category, item.unit, item.quantity || 0]
             )],
           },
           {
-            range: "Запросы!A1:D",
-            values: [["id", "Наименование", "Дата", "Статус"], ...requestRows],
+            range: "Запросы!A1:G",
+            values: [["request_id", "product_id", "Запрошено", "Остаток", "Статус", "Создан", "Закрыт"], ...requestRows],
           },
           {
-            range: "Покупки!A1:E",
-            values: [["request_id", "product_id", "Количество", "Цена", "Сумма"], ...purchaseRows],
+            range: "Покупки!A1:D",
+            values: [["request_id", "product_id", "Куплено", "Цена позиции"], ...purchaseRows],
           },
         ],
       }),
@@ -572,11 +713,15 @@
   }
 
   function requestRow(request) {
+    const summary = request.items.map((item) => {
+      const product = getProduct(item.productId);
+      return `${product?.name || "Продукт"} — ${number(item.quantity)} ${product?.unit || ""}`;
+    }).join("; ");
     return `
       <button class="row link-row request-link" data-id="${request.id}" type="button">
         <div class="row-main">
-          <strong>${escapeHtml(request.title)}</strong>
-          <span>${date(request.createdAt)} · ${request.items.length} поз.</span>
+          <strong>${escapeHtml(summary)}</strong>
+          <span>${date(request.createdAt)}</span>
         </div>
         <span class="status ${request.status}">${request.status === "open" ? "Активен" : money(requestTotal(request))}</span>
       </button>`;
@@ -587,7 +732,7 @@
   }
 
   function requestTotal(request) {
-    return (request.purchases || []).reduce((sum, item) => sum + item.quantity * item.price, 0);
+    return (request.purchases || []).reduce((sum, item) => sum + item.price, 0);
   }
 
   function getProduct(productId) {
@@ -603,6 +748,10 @@
     const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
     if (match) return match[1];
     return /^[a-zA-Z0-9_-]{20,}$/.test(trimmed) ? trimmed : null;
+  }
+
+  function spreadsheetUrl() {
+    return `https://docs.google.com/spreadsheets/d/${state.spreadsheetId}/edit`;
   }
 
   function setSyncStatus(message, error = false) {
@@ -641,6 +790,15 @@
       .format(new Date(value));
   }
 
+  function dateTime(value) {
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
+  }
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -655,4 +813,7 @@
   }
 
   render();
+  mirrorStateForBackgroundSync();
+  setInterval(() => queueAutoSync(0), 15 * 60 * 1000);
+  if (state.spreadsheetId && state.user) queueAutoSync(1200);
 })();

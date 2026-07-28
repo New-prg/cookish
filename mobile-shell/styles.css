@@ -200,15 +200,19 @@ input:focus, select:focus {
 .button-row .button { flex: 1; }
 
 .request-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px 42px;
-  gap: 8px;
-  align-items: end;
   padding: 12px 0;
   border-bottom: 1px solid var(--line);
 }
 
 .request-item .field { margin: 0; }
+
+.request-item-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 42px;
+  gap: 8px;
+  align-items: end;
+  margin-top: 10px;
+}
 
 .icon-button {
   width: 42px;
