@@ -1,9 +1,0 @@
-.git
-.vinext
-.wrangler
-dist
-node_modules
-site-package.tar.gz
-.codex-dev.*
-.env
-npm-debug.log*

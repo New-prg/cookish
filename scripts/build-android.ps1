@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$junction = Join-Path $env:USERPROFILE "listok-build"
+$junction = Join-Path $env:USERPROFILE "cookish-build"
 $androidSdk = Join-Path $env:LOCALAPPDATA "Android\Sdk"
 $javaHome = "C:\Program Files\Android\Android Studio\jbr"
 
@@ -37,5 +37,5 @@ try {
 $sourceApk = Join-Path $projectRoot "android\app\build\outputs\apk\debug\app-debug.apk"
 $outputDir = Join-Path $projectRoot "output"
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-Copy-Item -LiteralPath $sourceApk -Destination (Join-Path $outputDir "Listok-debug.apk") -Force
-Write-Output (Join-Path $outputDir "Listok-debug.apk")
+Copy-Item -LiteralPath $sourceApk -Destination (Join-Path $outputDir "Cookish-debug.apk") -Force
+Write-Output (Join-Path $outputDir "Cookish-debug.apk")

@@ -9,13 +9,21 @@ function loadModel() {
   const marker = "  render();\n  mirrorStateForBackgroundSync();";
   assert.ok(source.includes(marker), "Test export marker was not found");
   const instrumented = source.replace(marker, `
-  globalThis.__listokModel = {
+  globalThis.__cookishModel = {
+    activeResponses,
+    appendRequestVersion,
     buildSyncPackage,
+    isRequestFulfilled,
+    materializePurchasedProduct,
     mergeRequests,
+    mergeVersioned,
     migrateRequest,
     normalizeRequest,
+    openFoodFactsSuggestion,
     parseProductRow,
     parseResponseRow,
+    plannedRationRequestItems,
+    restoreRequestVersion,
   };
   return;
 ${marker}`);
@@ -50,7 +58,7 @@ ${marker}`);
   };
   context.globalThis = context;
   vm.runInNewContext(instrumented, context, { filename: "mobile-shell/app.js" });
-  return context.__listokModel;
+  return context.__cookishModel;
 }
 
 const model = loadModel();
@@ -59,12 +67,157 @@ const baseProduct = {
   name: "Вода",
   category: "",
   unit: "л",
-  baseQuantity: 0,
-  baseUpdatedAt: "2026-01-01T00:00:00.000Z",
-  quantity: 0,
   updatedAt: "2026-01-01T00:00:00.000Z",
   updatedBy: "a@example.com",
 };
+
+test("sync package preserves completed first-run setup", () => {
+  const result = model.buildSyncPackage({
+    onboardingCompleted: true,
+    products: [],
+    requests: [],
+    spreadsheetId: "sheet_123",
+    user: { email: "a@example.com" },
+  });
+
+  assert.equal(result.schemaVersion, 10);
+  assert.equal(result.onboardingCompleted, true);
+});
+
+test("product nutrition survives Google Sheets round-trip", () => {
+  const nutrition = {
+    calories: 52,
+    protein: 2.8,
+    fat: 2.5,
+    carbs: 4.7,
+    fiber: 0,
+    vitamins: "B12: 0,4 мкг",
+    minerals: "Кальций: 120 мг",
+    source: "Встроенный справочник",
+  };
+  const parsed = model.parseProductRow([
+    "product_milk", "Молоко 2,5%", "Молочные продукты", "л",
+    "2026-01-01T00:01:00.000Z", "a@example.com", JSON.stringify(nutrition),
+    nutrition.source, "4605035006964", "Минеральная вода", "2026-01-02T00:00:00.000Z",
+  ]);
+
+  assert.equal(JSON.stringify(parsed.nutrition), JSON.stringify(nutrition));
+  assert.equal(parsed.barcode, "4605035006964");
+  assert.equal(parsed.ingredients, "Минеральная вода");
+  assert.equal(parsed.deletedAt, "2026-01-02T00:00:00.000Z");
+});
+
+test("newer local product deletion survives an older remote merge", () => {
+  const local = {
+    ...baseProduct,
+    deletedAt: "2026-08-03T12:00:00.000Z",
+    updatedAt: "2026-08-03T12:00:00.000Z",
+  };
+  const remote = {
+    ...baseProduct,
+    updatedAt: "2026-08-03T11:00:00.000Z",
+  };
+
+  const merged = model.mergeVersioned([local], [remote]);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].deletedAt, "2026-08-03T12:00:00.000Z");
+});
+
+test("Open Food Facts name search result becomes a complete local suggestion", () => {
+  const suggestion = model.openFoodFactsSuggestion({
+    code: "4605035006964",
+    product_name_ru: "Вода минеральная Псыж газ",
+    brands: "Псыж",
+    quantity: "1.5 л",
+    categories_tags: ["en:waters"],
+    nutriments: {},
+    ingredients_text_ru: "Вода минеральная природная",
+  });
+
+  assert.equal(suggestion.name, "Вода минеральная Псыж газ");
+  assert.equal(suggestion.barcode, "4605035006964");
+  assert.equal(suggestion.unit, "л");
+  assert.equal(suggestion.catalogSource, "Open Food Facts");
+  assert.equal(suggestion.nutrition.calories, 0);
+  assert.equal(suggestion.nutrition.protein, 0);
+});
+
+test("replacement purchase keeps product records independent from purchase quantities", () => {
+  const result = model.buildSyncPackage({
+    schemaVersion: 4,
+    products: [
+      { ...baseProduct, id: "product_requested" },
+      { ...baseProduct, id: "product_replacement" },
+    ],
+    requests: [{
+      id: "request_replacement",
+      status: "done",
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:02:00.000Z",
+      items: [{ productId: "product_requested", quantity: 2, stockAtRequest: 0 }],
+      responses: [{
+        id: "response_replacement",
+        requestId: "request_replacement",
+        createdAt: "2026-01-01T00:02:00.000Z",
+        updatedAt: "2026-01-01T00:02:00.000Z",
+        items: [{
+          productId: "product_requested",
+          purchasedProductId: "product_replacement",
+          quantity: 2,
+          price: 150,
+        }],
+      }],
+    }],
+  });
+
+  assert.equal(result.requests[0].responses[0].items[0].purchasedProductId, "product_replacement");
+  assert.equal("quantity" in result.products.find((item) => item.id === "product_requested"), false);
+  assert.equal("quantity" in result.products.find((item) => item.id === "product_replacement"), false);
+});
+
+test("scanned replacement fully corrects a manual request item instead of adding a product", () => {
+  const products = [{
+    ...baseProduct,
+    id: "product_manual",
+    name: "Молоко",
+    barcode: "",
+    nutrition: null,
+  }];
+  const purchasedProductId = model.materializePurchasedProduct({ products }, {
+    productId: "product_manual",
+    purchasedProduct: {
+      name: "Молоко Простоквашино 2,5%",
+      category: "Молочные продукты",
+      unit: "л",
+      barcode: "4607053473544",
+      ingredients: "Молоко нормализованное",
+      nutrition: { calories: 52, source: "Open Food Facts" },
+      catalogSource: "Open Food Facts",
+    },
+  }, "2026-01-01T00:03:00.000Z");
+
+  assert.equal(purchasedProductId, "product_manual");
+  assert.equal(products.length, 1);
+  assert.equal(products[0].name, "Молоко Простоквашино 2,5%");
+  assert.equal(products[0].barcode, "4607053473544");
+});
+
+test("deleted request and its transactions stay deleted after an older remote merge", () => {
+  const remote = requestWithResponses([
+    response("response_deleted_with_request", 2, "2026-01-01T00:02:00.000Z"),
+  ], "2026-01-01T00:02:00.000Z");
+  const local = structuredClone(remote);
+  local.updatedAt = "2026-01-01T00:04:00.000Z";
+  local.deletedAt = "2026-01-01T00:04:00.000Z";
+  local.responses[0].updatedAt = "2026-01-01T00:04:00.000Z";
+  local.responses[0].deletedAt = "2026-01-01T00:04:00.000Z";
+
+  const merged = model.mergeRequests([local], [remote])[0];
+
+  assert.equal(merged.deletedAt, "2026-01-01T00:04:00.000Z");
+  assert.equal(merged.responses[0].deletedAt, "2026-01-01T00:04:00.000Z");
+});
 
 function requestWithResponses(responses, updatedAt = "2026-01-01T00:01:00.000Z") {
   return {
@@ -113,15 +266,16 @@ test("package deduplicates resends and sums distinct responses", () => {
   assert.equal(result.requests.length, 1);
   assert.equal(result.requests[0].responses.length, 2);
   assert.equal(result.requests[0].responses.find((item) => item.id === "response_a").items[0].quantity, 2);
-  assert.equal(result.products[0].quantity, 5);
+  assert.equal("quantity" in result.products[0], false);
 });
 
-test("manual stock checkpoint excludes older responses", () => {
+test("sync package removes legacy stock fields", () => {
   const state = {
     products: [{
       ...baseProduct,
       baseQuantity: 7,
       baseUpdatedAt: "2026-01-01T00:05:00.000Z",
+      quantity: 9,
       updatedAt: "2026-01-01T00:05:00.000Z",
     }],
     requests: [requestWithResponses([
@@ -129,7 +283,11 @@ test("manual stock checkpoint excludes older responses", () => {
     ])],
   };
 
-  assert.equal(model.buildSyncPackage(state).products[0].quantity, 7);
+  const result = model.buildSyncPackage(state);
+  assert.equal("baseQuantity" in result.products[0], false);
+  assert.equal("baseUpdatedAt" in result.products[0], false);
+  assert.equal("quantity" in result.products[0], false);
+  assert.equal("stockAtRequest" in result.requests[0].items[0], false);
 });
 
 test("legacy purchase becomes one stable response without double counting", () => {
@@ -153,5 +311,172 @@ test("legacy purchase becomes one stable response without double counting", () =
 
   assert.equal(result.requests[0].responses.length, 1);
   assert.equal(result.requests[0].responses[0].id, "response_legacy_request_legacy");
-  assert.equal(result.products[0].quantity, 2);
+  assert.equal("quantity" in result.products[0], false);
+});
+
+test("partial response keeps a multi-product request active", () => {
+  const request = model.normalizeRequest({
+    id: "request_multi",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:01:00.000Z",
+    items: [
+      { productId: "product_water", quantity: 2, stockAtRequest: 0 },
+      { productId: "product_bread", quantity: 3, stockAtRequest: 0 },
+    ],
+    responses: [response("response_partial", 2, "2026-01-01T00:01:00.000Z")],
+  });
+
+  assert.equal(request.items.length, 2);
+  assert.equal(model.isRequestFulfilled(request), false);
+  assert.equal(request.status, "open");
+  assert.equal(request.completedAt, "");
+});
+
+test("request closes only when every product is fulfilled across responses", () => {
+  const request = model.normalizeRequest({
+    id: "request_fulfilled",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:03:00.000Z",
+    items: [
+      { productId: "product_water", quantity: 2, stockAtRequest: 0 },
+      { productId: "product_bread", quantity: 3, stockAtRequest: 0 },
+    ],
+    responses: [
+      response("response_water", 2, "2026-01-01T00:01:00.000Z"),
+      {
+        ...response("response_bread", 3, "2026-01-01T00:02:00.000Z"),
+        items: [{ productId: "product_bread", quantity: 3, price: 120 }],
+      },
+    ],
+  });
+
+  assert.equal(model.isRequestFulfilled(request), true);
+  assert.equal(request.status, "done");
+});
+
+test("request versions restore items and responses atomically", () => {
+  const request = model.normalizeRequest({
+    id: "request_history",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    createdBy: "a@example.com",
+    updatedBy: "a@example.com",
+    items: [
+      { productId: "product_water", quantity: 2, stockAtRequest: 0 },
+      { productId: "product_bread", quantity: 3, stockAtRequest: 0 },
+    ],
+    responses: [],
+  });
+  const initial = request.history[0];
+  request.items[0].quantity = 9;
+  request.responses.push(response("response_changed", 1, "2026-01-01T00:02:00.000Z"));
+  request.updatedAt = "2026-01-01T00:02:00.000Z";
+  model.appendRequestVersion(
+    request,
+    "Ответ добавлен",
+    request.updatedAt,
+    "a@example.com",
+    "transaction_changed"
+  );
+
+  model.restoreRequestVersion(
+    request,
+    initial,
+    "2026-01-01T00:03:00.000Z",
+    "a@example.com"
+  );
+
+  assert.equal(request.items.map((item) => item.quantity).join(","), "2,3");
+  assert.equal(model.activeResponses(request).length, 0);
+  assert.equal(Boolean(request.responses[0].deletedAt), true);
+  assert.equal(request.status, "open");
+  assert.equal(request.history.at(-1).action, "Откат: Исходная версия");
+});
+
+test("rolled back response stays deleted after merging an older remote copy", () => {
+  const remote = requestWithResponses([
+    response("response_remote", 2, "2026-01-01T00:02:00.000Z"),
+  ], "2026-01-01T00:02:00.000Z");
+  const local = structuredClone(remote);
+  local.updatedAt = "2026-01-01T00:03:00.000Z";
+  local.responses[0].updatedAt = "2026-01-01T00:03:00.000Z";
+  local.responses[0].deletedAt = "2026-01-01T00:03:00.000Z";
+
+  const merged = model.mergeRequests([local], [remote])[0];
+
+  assert.equal(model.activeResponses(merged).length, 0);
+  assert.equal(merged.status, "open");
+  assert.equal(merged.responses[0].deletedAt, "2026-01-01T00:03:00.000Z");
+});
+
+test("ration sync preserves an arbitrary number of meals and their products", () => {
+  const date = "2026-08-03";
+  const meals = ["breakfast", "lunch", "dinner", "snack"].map((id, index) => ({
+    id,
+    name: id,
+    time: ["08:00", "13:00", "19:00", "21:30"][index],
+    items: [{ id: `${id}_item`, productId: `product_${id}`, name: id }],
+    order: index,
+  }));
+
+  const result = model.buildSyncPackage({
+    products: [],
+    requests: [],
+    rationDays: {
+      [date]: { date, meals, updatedAt: "2026-08-03T08:00:00.000Z", updatedBy: "local" },
+    },
+    rationView: "month",
+    rationAnchor: date,
+  });
+
+  assert.equal(result.schemaVersion, 10);
+  assert.equal(result.rationView, "month");
+  assert.equal(result.rationAnchor, date);
+  assert.equal(result.rationDays[`local|${date}`].meals.length, 4);
+  assert.equal(result.rationDays[`local|${date}`].meals[3].items[0].productId, "product_snack");
+  assert.equal(result.rationDays[`local|${date}`].meals[3].time, "21:30");
+  assert.equal(result.rationDays[`local|${date}`].owner, "local");
+});
+
+test("ration days are namespaced by user while products remain shared", () => {
+  const result = model.buildSyncPackage({
+    user: { email: "Owner@Example.com" },
+    products: [{ ...baseProduct }],
+    requests: [],
+    rationDays: {
+      "2026-08-04": { date: "2026-08-04", meals: [], updatedAt: "2026-08-04T08:00:00.000Z" },
+      "other@example.com|2026-08-04": { date: "2026-08-04", owner: "other@example.com", meals: [], updatedAt: "2026-08-04T09:00:00.000Z" },
+    },
+  });
+
+  assert.ok(result.rationDays["owner@example.com|2026-08-04"]);
+  assert.ok(result.rationDays["other@example.com|2026-08-04"]);
+  assert.equal(result.products[0].id, baseProduct.id);
+});
+
+test("ration request includes only selected positions and rounds portions to packages", () => {
+  const chickenItems = Array.from({ length: 7 }, (_, index) => ({
+    id: `chicken_${index}`, productId: "chicken", portionSize: 150, packageSize: 1000, measureUnit: "г",
+  }));
+  const source = {
+    products: [{ id: "chicken", name: "Куриная грудка", unit: "кг" }, { id: "rice", name: "Рис", unit: "кг" }],
+    rationDays: {
+      "local|2026-08-03": {
+        date: "2026-08-03", owner: "local",
+        meals: [{ id: "meal", name: "Обед", items: [...chickenItems, { id: "rice_0", productId: "rice", portionSize: 100, packageSize: 1000 }] }],
+      },
+    },
+  };
+
+  const items = model.plannedRationRequestItems(
+    source,
+    ["2026-08-03"],
+    new Set(chickenItems.map((item) => item.id))
+  );
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0].productId, "chicken");
+  assert.equal(items[0].plannedAmount, 1050);
+  assert.equal(items[0].quantity, 2);
+  assert.equal(items[0].packageSize, 1000);
 });

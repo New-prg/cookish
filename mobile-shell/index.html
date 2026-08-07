@@ -4,25 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#ffffff" />
-    <title>Листок</title>
+    <title>Cookish</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <header class="topbar">
       <h1 id="page-title">Сводка</h1>
+      <span id="sync-chip" class="sync-chip" hidden aria-live="polite"></span>
+      <div id="ration-header-picker" class="ration-header-picker" hidden></div>
       <button id="header-action" class="text-button" type="button" hidden></button>
     </header>
 
-    <main id="app" aria-live="polite"></main>
+    <main id="app"></main>
 
     <nav class="bottom-nav" aria-label="Основная навигация">
-      <button data-route="summary" class="active"><span>⌂</span>Сводка</button>
-      <button data-route="products"><span>□</span>Продукты</button>
-      <button data-route="requests"><span>≡</span>Запросы</button>
-      <button data-route="profile"><span>○</span>Профиль</button>
+      <button data-route="summary" class="active" aria-current="page"><span aria-hidden="true">⌂</span>Сводка</button>
+      <button data-route="requests"><span aria-hidden="true">≡</span>Запросы</button>
+      <button data-route="ration"><span aria-hidden="true">▦</span>Рацион</button>
+      <button data-route="profile"><span aria-hidden="true">○</span>Профиль</button>
     </nav>
 
-    <div id="toast" role="status"></div>
+    <div id="toast" role="status" aria-live="polite">
+      <span id="toast-message"></span>
+      <button id="toast-action" type="button" hidden></button>
+    </div>
     <script src="./app.js"></script>
   </body>
 </html>

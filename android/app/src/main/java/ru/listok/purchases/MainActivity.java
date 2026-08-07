@@ -1,15 +1,21 @@
 package ru.listok.purchases;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.content.Intent;
 import android.content.IntentSender;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.work.Constraints;
@@ -26,6 +32,8 @@ import com.google.android.gms.auth.api.identity.AuthorizationResult;
 import com.google.android.gms.auth.api.identity.Identity;
 import com.google.android.gms.common.api.ApiException;
 import com.google.android.gms.common.api.Scope;
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
 
 import org.json.JSONObject;
 
@@ -34,14 +42,42 @@ import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends BridgeActivity {
     private static final int GOOGLE_AUTH_REQUEST = 9104;
-    private static final String PERIODIC_SYNC_WORK = "listok-sheets-periodic-sync";
-    private static final String IMMEDIATE_SYNC_WORK = "listok-sheets-immediate-sync";
+    private static final String PERIODIC_SYNC_WORK = "cookish-sheets-periodic-sync";
+    private static final String IMMEDIATE_SYNC_WORK = "cookish-sheets-immediate-sync";
+    private boolean backgroundAccessRequestPending = false;
+    private OnBackPressedCallback webBackCallback;
 
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         SheetsSyncWorker.createNotificationChannel(this);
         bridge.getWebView().addJavascriptInterface(new GoogleAuthorizationBridge(), "NativeGoogle");
+        webBackCallback = new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                handleWebBackPressed();
+            }
+        };
+        getOnBackPressedDispatcher().addCallback(this, webBackCallback);
+    }
+
+    private void handleWebBackPressed() {
+        if (bridge == null || bridge.getWebView() == null) {
+            performDefaultBack();
+            return;
+        }
+        bridge.getWebView().evaluateJavascript(
+            "window.__handleNativeBack ? window.__handleNativeBack() : false",
+            result -> {
+                if (!"true".equals(result)) performDefaultBack();
+            }
+        );
+    }
+
+    private void performDefaultBack() {
+        webBackCallback.setEnabled(false);
+        getOnBackPressedDispatcher().onBackPressed();
+        webBackCallback.setEnabled(true);
     }
 
     private final class GoogleAuthorizationBridge {
@@ -82,6 +118,16 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public void scanBarcode() {
+            runOnUiThread(() -> new IntentIntegrator(MainActivity.this)
+                .setDesiredBarcodeFormats(IntentIntegrator.PRODUCT_CODE_TYPES)
+                .setPrompt("Наведите камеру на штрихкод товара")
+                .setBeepEnabled(true)
+                .setOrientationLocked(false)
+                .initiateScan());
+        }
+
+        @JavascriptInterface
         public void configureBackgroundSync(String stateJson, String spreadsheetId, String email) {
             getSharedPreferences(SheetsSyncWorker.PREFERENCES, MODE_PRIVATE)
                 .edit()
@@ -96,7 +142,6 @@ public class MainActivity extends BridgeActivity {
                 manager.cancelUniqueWork(IMMEDIATE_SYNC_WORK);
                 return;
             }
-            requestNotificationPermission();
 
             Constraints constraints = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -123,9 +168,34 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public void getBackgroundAccessStatus() {
+            runOnUiThread(() -> sendBackgroundAccessStatus());
+        }
+
+        @JavascriptInterface
+        public void requestBackgroundAccess() {
+            runOnUiThread(() -> {
+                backgroundAccessRequestPending = true;
+                if (!notificationsGranted()) {
+                    requestNotificationPermission();
+                    return;
+                }
+                requestBatteryOptimizationExemption();
+                if (isBatteryOptimizationDisabled()) {
+                    backgroundAccessRequestPending = false;
+                    enqueueImmediateBackgroundSync();
+                }
+                sendBackgroundAccessStatus();
+            });
+        }
+
+        @JavascriptInterface
         public void openUrl(String url) {
             runOnUiThread(() -> {
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                if (url == null) return;
+                String trimmed = url.trim();
+                if (!(trimmed.startsWith("https://") || trimmed.startsWith("http://"))) return;
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(trimmed));
                 startActivity(intent);
             });
         }
@@ -166,9 +236,127 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    @SuppressLint("BatteryLife")
+    private void requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || isBatteryOptimizationDisabled()) return;
+        try {
+            Intent intent = new Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:" + getPackageName())
+            );
+            startActivity(intent);
+        } catch (RuntimeException error) {
+            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+        }
+    }
+
+    private boolean notificationsGranted() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean isBatteryOptimizationDisabled() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+        PowerManager manager = (PowerManager) getSystemService(POWER_SERVICE);
+        return manager != null && manager.isIgnoringBatteryOptimizations(getPackageName());
+    }
+
+    private void sendBackgroundAccessStatus() {
+        if (bridge == null) return;
+        boolean notifications = notificationsGranted();
+        boolean battery = isBatteryOptimizationDisabled();
+        SharedPreferences preferences = getSharedPreferences(
+            SheetsSyncWorker.PREFERENCES,
+            MODE_PRIVATE
+        );
+        long lastBackgroundSyncAt = preferences.getLong(
+            SheetsSyncWorker.KEY_LAST_BACKGROUND_SYNC_AT,
+            0
+        );
+        String lastBackgroundSyncError = preferences.getString(
+            SheetsSyncWorker.KEY_LAST_BACKGROUND_SYNC_ERROR,
+            ""
+        );
+        String payload = "{\"notificationsGranted\":" + notifications +
+            ",\"batteryOptimizationDisabled\":" + battery +
+            ",\"fullyGranted\":" + (notifications && battery) +
+            ",\"lastBackgroundSyncAt\":" + lastBackgroundSyncAt +
+            ",\"lastBackgroundSyncError\":" + JSONObject.quote(lastBackgroundSyncError) + "}";
+        runOnUiThread(() -> bridge.getWebView().evaluateJavascript(
+            "window.__onNativeBackgroundAccess && window.__onNativeBackgroundAccess(" + JSONObject.quote(payload) + ")",
+            null
+        ));
+    }
+
+    private void enqueueImmediateBackgroundSync() {
+        SharedPreferences preferences = getSharedPreferences(
+            SheetsSyncWorker.PREFERENCES,
+            MODE_PRIVATE
+        );
+        if (
+            preferences.getString(SheetsSyncWorker.KEY_SPREADSHEET_ID, "").isEmpty() ||
+            preferences.getString(SheetsSyncWorker.KEY_EMAIL, "").isEmpty()
+        ) return;
+        Constraints constraints = new Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build();
+        OneTimeWorkRequest immediate = new OneTimeWorkRequest.Builder(SheetsSyncWorker.class)
+            .setConstraints(constraints)
+            .build();
+        WorkManager.getInstance(getApplicationContext()).enqueueUniqueWork(
+            IMMEDIATE_SYNC_WORK,
+            ExistingWorkPolicy.REPLACE,
+            immediate
+        );
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (backgroundAccessRequestPending && notificationsGranted() && isBatteryOptimizationDisabled()) {
+            backgroundAccessRequestPending = false;
+            enqueueImmediateBackgroundSync();
+        }
+        sendBackgroundAccessStatus();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+        int requestCode,
+        @NonNull String[] permissions,
+        @NonNull int[] grantResults
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 9205) {
+            if (notificationsGranted()) {
+                requestBatteryOptimizationExemption();
+            } else {
+                backgroundAccessRequestPending = false;
+            }
+            sendBackgroundAccessStatus();
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        IntentResult barcodeResult = IntentIntegrator.parseActivityResult(
+            requestCode,
+            resultCode,
+            data
+        );
+        if (barcodeResult != null) {
+            if (barcodeResult.getContents() == null) {
+                evaluateBarcodeCallback("{\"ok\":false,\"cancelled\":true}");
+            } else {
+                evaluateBarcodeCallback(
+                    "{\"ok\":true,\"barcode\":" +
+                        JSONObject.quote(barcodeResult.getContents()) + "}"
+                );
+            }
+            return;
+        }
         if (requestCode != GOOGLE_AUTH_REQUEST) return;
         try {
             AuthorizationResult result = Identity.getAuthorizationClient(this)
@@ -200,6 +388,14 @@ public class MainActivity extends BridgeActivity {
     private void evaluateGoogleCallback(String payload) {
         runOnUiThread(() -> bridge.getWebView().evaluateJavascript(
             "window.__onNativeGoogleAuth(" + JSONObject.quote(payload) + ")",
+            null
+        ));
+    }
+
+    private void evaluateBarcodeCallback(String payload) {
+        runOnUiThread(() -> bridge.getWebView().evaluateJavascript(
+            "window.__onNativeBarcodeScan && window.__onNativeBarcodeScan(" +
+                JSONObject.quote(payload) + ")",
             null
         ));
     }
