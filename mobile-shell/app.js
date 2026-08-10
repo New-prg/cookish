@@ -1125,7 +1125,7 @@
         <button id="add-request-item" class="keep-add-line" type="button">＋ Позиция</button>
         ${answerActionDialog()}
         <div class="keep-note-actions">
-          <p class="muted">Галочка — куплено. Свайп или долгий тап по строке — цена, количество и штрихкод. Тап по названию товара — карточка.</p>
+          <p class="muted">Галочка — куплено. Сдвиньте строку влево — «Заполнить» (цена и штрихкод). Тап по названию — карточка, × — удалить.</p>
           ${history.length > 1 ? `
             <details class="section" style="padding:0;border:0">
               <summary class="section-title" style="cursor:pointer;list-style:none">История изменений</summary>
@@ -1196,33 +1196,29 @@
     const progress = currentRequest && productId && !isBlank
       ? requestProgressLabel(currentRequest, { productId, quantity: item.quantity, unit: item.unit || product?.unit }, purchased)
       : "";
-    const unitValue = item.unit || product?.unit || requestItemUnit(item) || "шт.";
     const editingName = Boolean(item.editingName) || !resolved;
     return `
       <div class="request-item${isBlank ? " is-blank" : ""}${fullyBought ? " is-bought" : ""}${filled ? " is-purchase-filled" : ""}${resolved ? " is-resolved" : ""}" data-key="${item.key}" data-product-id="${escapeAttr(productId)}">
-        <label class="request-check-wrap">
-          <input class="request-purchase-check" type="checkbox" ${fullyBought ? "checked" : ""} ${isBlank ? "disabled" : ""} aria-label="Куплено: ${escapeAttr(productName)}">
-        </label>
-        <div class="request-item-main">
-          <div class="request-item-fields">
-            <div class="request-product-field">
-              <label class="visually-hidden" for="product-${item.key}">Название продукта</label>
-              <input id="product-${item.key}" class="draft-product keep-item-input" list="${listId}" autocomplete="off" placeholder="Продукт" value="${escapeAttr(item.query || "")}" ${editingName ? "" : "hidden"}>
-              <button class="product-chip" type="button" data-product-id="${escapeAttr(productId)}" ${resolved && !editingName ? "" : "hidden"} aria-label="Открыть карточку ${escapeAttr(product?.name || productName)}">${escapeHtml(product?.name || item.query || "")}</button>
+        <div class="request-swipe-bg" aria-hidden="true"><span class="request-swipe-label">Заполнить</span></div>
+        <div class="request-item-surface">
+          <label class="request-check-wrap">
+            <input class="request-purchase-check" type="checkbox" ${fullyBought ? "checked" : ""} ${isBlank ? "disabled" : ""} aria-label="Куплено: ${escapeAttr(productName)}">
+          </label>
+          <div class="request-item-main">
+            <div class="request-item-fields">
+              <div class="request-product-field">
+                <label class="visually-hidden" for="product-${item.key}">Название продукта</label>
+                <input id="product-${item.key}" class="draft-product keep-item-input" list="${listId}" autocomplete="off" placeholder="Продукт" value="${escapeAttr(item.query || "")}" ${editingName ? "" : "hidden"}>
+                <button class="product-chip" type="button" data-product-id="${escapeAttr(productId)}" ${resolved && !editingName ? "" : "hidden"} aria-label="Открыть карточку ${escapeAttr(product?.name || productName)}">${escapeHtml(product?.name || item.query || "")}</button>
+              </div>
             </div>
-            <div class="qty-stepper" ${isBlank ? "hidden" : ""}>
-              <button class="qty-dec" type="button" aria-label="Уменьшить количество" tabindex="${isBlank ? "-1" : "0"}">−</button>
-              <input class="draft-quantity" type="number" min="0.01" step="0.01" inputmode="decimal" value="${escapeAttr(item.quantity || 1)}" aria-label="Количество для ${escapeAttr(productName)}" ${isBlank ? "tabindex=\"-1\"" : ""}>
-              <span class="qty-unit-label">${escapeHtml(unitValue)}</span>
-              <button class="qty-inc" type="button" aria-label="Увеличить количество" tabindex="${isBlank ? "-1" : "0"}">+</button>
-            </div>
+            <datalist id="${listId}">${productSuggestionOptions(item.query)}</datalist>
+            <div class="draft-product-meta" hidden></div>
+            ${progress ? `<p class="request-progress-meta">${progress}</p>` : ""}
+            ${filled ? `<p class="request-filled-badge">${escapeHtml(purchaseFilledLabel(currentRequest, productId, receipt))}</p>` : ""}
           </div>
-          <datalist id="${listId}">${productSuggestionOptions(item.query)}</datalist>
-          <div class="draft-product-meta" hidden></div>
-          ${progress ? `<p class="request-progress-meta">${progress}</p>` : ""}
-          ${filled ? `<p class="request-filled-badge">${escapeHtml(purchaseFilledLabel(currentRequest, productId, receipt))}</p>` : ""}
+          <button class="keep-remove-item remove-item" type="button" aria-label="Удалить ${escapeAttr(productName)}" ${isBlank ? "tabindex=\"-1\"" : ""}>×</button>
         </div>
-        <button class="keep-remove-item remove-item" type="button" aria-label="Удалить ${escapeAttr(productName)}" ${isBlank ? "tabindex=\"-1\"" : ""}>×</button>
       </div>`;
   }
 
@@ -1271,11 +1267,8 @@
         if (removeButton) {
           removeButton.tabIndex = hasText ? 0 : -1;
           removeButton.setAttribute("aria-hidden", hasText ? "false" : "true");
+          removeButton.disabled = !hasText;
         }
-        const quantity = row.querySelector(".draft-quantity");
-        if (quantity) quantity.tabIndex = hasText ? 0 : -1;
-        const stepper = row.querySelector(".qty-stepper");
-        if (stepper) stepper.hidden = !hasText;
         const purchaseCheck = row.querySelector(".request-purchase-check");
         const list = row.querySelector("datalist");
         if (list) list.innerHTML = productSuggestionOptions(input.value);
@@ -1287,13 +1280,11 @@
             if (!item.unit || item.unit === getProduct(item.productId)?.unit) {
               item.unit = selected.unit || item.unit || "шт.";
             }
-            updateRowUnitLabel(row, item.unit || selected.unit || "шт.");
             if (purchaseCheck) purchaseCheck.disabled = !hasText;
           } else if (!hasText) {
             item.productId = "";
             item.unit = "";
             row.dataset.productId = "";
-            updateRowUnitLabel(row, "шт.");
             if (purchaseCheck) {
               purchaseCheck.checked = false;
               purchaseCheck.disabled = true;
@@ -1322,7 +1313,6 @@
         if (item) item.editingName = false;
         commitRequestFieldChange();
         if (item && row) {
-          const product = getProduct(item.productId) || (item.query ? null : null);
           const resolved = item.productId ? getProduct(item.productId) : null;
           if (resolved) setRowProductPresentation(row, item, resolved);
         }
@@ -1338,39 +1328,7 @@
         addEmptyRequestLine();
       };
     });
-    document.querySelectorAll(".draft-quantity").forEach((input) => {
-      input.oninput = () => {
-        const row = input.closest(".request-item");
-        const item = draftItems.find((value) => value.key === row.dataset.key);
-        if (!item) return;
-        item.quantity = Math.max(0.01, Number(input.value) || 1);
-      };
-      input.onblur = () => commitRequestFieldChange();
-      input.onkeydown = (event) => {
-        if (event.key !== "Enter") return;
-        event.preventDefault();
-        commitRequestFieldChange();
-        addEmptyRequestLine();
-      };
-    });
-    document.querySelectorAll(".qty-dec, .qty-inc").forEach((button) => {
-      button.onclick = () => {
-        const row = button.closest(".request-item");
-        const item = draftItems.find((value) => value.key === row?.dataset.key);
-        const input = row?.querySelector(".draft-quantity");
-        if (!item || !input) return;
-        const current = Math.max(0.01, Number(input.value) || 1);
-        const next = button.classList.contains("qty-inc")
-          ? current + 1
-          : Math.max(0.01, current - 1);
-        const rounded = Math.round(next * 100) / 100;
-        input.value = String(rounded);
-        item.quantity = rounded;
-        commitRequestFieldChange();
-      };
-    });
     document.querySelectorAll(".product-chip").forEach((chip) => {
-      let chipLongPress = null;
       chip.onclick = (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -1378,7 +1336,12 @@
           chip.dataset.suppressClick = "";
           return;
         }
-        const productId = chip.dataset.productId || chip.closest(".request-item")?.dataset.productId;
+        const row = chip.closest(".request-item");
+        if (row?.dataset.swiped === "1") {
+          row.dataset.swiped = "";
+          return;
+        }
+        const productId = chip.dataset.productId || row?.dataset.productId;
         if (!isRealProductId(productId)) return showToast("Сначала сохраните продукт.");
         openProductCardFromRequest(productId);
       };
@@ -1386,21 +1349,6 @@
         event.preventDefault();
         enterRowNameEdit(chip.closest(".request-item"));
       };
-      chip.addEventListener("touchstart", () => {
-        chipLongPress = setTimeout(() => {
-          chipLongPress = null;
-          chip.dataset.suppressClick = "1";
-          enterRowNameEdit(chip.closest(".request-item"));
-        }, 480);
-      }, { passive: true });
-      chip.addEventListener("touchend", () => {
-        if (chipLongPress) clearTimeout(chipLongPress);
-        chipLongPress = null;
-      }, { passive: true });
-      chip.addEventListener("touchmove", () => {
-        if (chipLongPress) clearTimeout(chipLongPress);
-        chipLongPress = null;
-      }, { passive: true });
       chip.addEventListener("contextmenu", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -1408,25 +1356,38 @@
       });
     });
     document.querySelectorAll(".remove-item").forEach((button) => {
-      button.onclick = () => {
+      const stopGesture = (event) => {
+        event.stopPropagation();
+      };
+      button.addEventListener("pointerdown", stopGesture);
+      button.addEventListener("touchstart", stopGesture, { passive: true });
+      button.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const row = button.closest(".request-item");
+        const key = row?.dataset.key;
+        if (!key) return;
         syncDraftFromForm();
-        const key = button.closest(".request-item").dataset.key;
-        const hasOtherFilled = [...document.querySelectorAll(".request-item")].some((row) =>
-          row.dataset.key !== key && row.querySelector(".draft-product")?.value.trim()
+        const draft = draftItems.find((item) => item.key === key);
+        const hasText = Boolean(String(draft?.query || row?.querySelector(".draft-product")?.value || "").trim());
+        if (!hasText) return;
+        const hasOtherFilled = draftItems.some((item) =>
+          item.key !== key && String(item.query || "").trim()
         );
-        const currentFilled = Boolean(document.querySelector(`.request-item[data-key="${key}"] .draft-product`)?.value.trim());
-        if (!hasOtherFilled && !currentFilled) return;
+        if (!hasOtherFilled && !hasText) return;
         draftItems = draftItems.filter((value) => value.key !== key);
-        if (!draftItems.length) draftItems = [{ key: id("item"), productId: "", query: "", quantity: 1, unit: "", editingName: true }];
+        if (!draftItems.length) {
+          draftItems = [{ key: id("item"), productId: "", query: "", quantity: 1, unit: "", editingName: true }];
+        }
         commitRequestFieldChange();
         renderRequestForm();
       };
     });
-  }
-
-  function updateRowUnitLabel(row, unit) {
-    const label = row?.querySelector(".qty-unit-label");
-    if (label) label.textContent = unit || "шт.";
+    document.querySelectorAll(".request-check-wrap").forEach((wrap) => {
+      const stopGesture = (event) => event.stopPropagation();
+      wrap.addEventListener("pointerdown", stopGesture);
+      wrap.addEventListener("touchstart", stopGesture, { passive: true });
+    });
   }
 
   function setRowProductPresentation(row, item, product) {
@@ -1445,9 +1406,13 @@
       }
     }
     row.classList.toggle("is-resolved", resolved && !editing);
-    updateRowUnitLabel(row, item?.unit || product?.unit || "шт.");
-    const stepper = row.querySelector(".qty-stepper");
-    if (stepper) stepper.hidden = !String(item?.query || "").trim();
+    const removeButton = row.querySelector(".remove-item");
+    const hasText = Boolean(String(item?.query || "").trim());
+    if (removeButton) {
+      removeButton.tabIndex = hasText ? 0 : -1;
+      removeButton.disabled = !hasText;
+      removeButton.setAttribute("aria-hidden", hasText ? "false" : "true");
+    }
   }
 
   function enterRowNameEdit(row) {
@@ -1498,80 +1463,134 @@
   function bindRequestRowGestures(request) {
     const token = ++requestGestureToken;
     document.querySelectorAll(".request-item").forEach((row) => {
+      if (row.classList.contains("is-blank")) return;
+      const surface = row.querySelector(".request-item-surface");
+      const swipeLabel = row.querySelector(".request-swipe-label");
+      if (!surface) return;
+
       let startX = 0;
       let startY = 0;
+      let currentX = 0;
       let tracking = false;
-      let longPressTimer = null;
-      let moved = false;
+      let horizontal = false;
+      let pointerId = null;
 
-      const clearLongPress = () => {
-        if (longPressTimer) {
-          clearTimeout(longPressTimer);
-          longPressTimer = null;
+      const threshold = () => Math.max(96, Math.round(window.innerWidth / 3));
+      const maxPull = () => Math.min(window.innerWidth * 0.55, threshold() * 1.35);
+
+      const setOffset = (x, { animate = false } = {}) => {
+        currentX = x;
+        if (animate) surface.classList.remove("is-dragging");
+        else surface.classList.add("is-dragging");
+        surface.style.transform = `translate3d(${x}px,0,0)`;
+        const progress = Math.min(1, Math.abs(x) / threshold());
+        row.classList.toggle("is-swiping", x < -4);
+        row.classList.toggle("is-swipe-armed", progress >= 1);
+        // Tint the sliding tile as the user pulls (WebView-friendly rgba, no color-mix).
+        surface.style.backgroundColor = progress > 0
+          ? `rgba(31, 93, 59, ${Math.min(0.22, 0.05 + progress * 0.18).toFixed(3)})`
+          : "";
+        if (swipeLabel) {
+          swipeLabel.style.opacity = String(Math.min(1, 0.35 + progress * 0.65));
+          swipeLabel.style.transform = progress >= 1 ? "scale(1.04)" : "translateX(0)";
         }
       };
 
-      const openDetails = () => {
-        if (token !== requestGestureToken) return;
-        openPurchaseDetailsForRow(request, row);
+      const resetSurface = ({ animate = true } = {}) => {
+        setOffset(0, { animate });
+        window.setTimeout(() => {
+          if (currentX === 0) {
+            surface.classList.remove("is-dragging");
+            surface.style.backgroundColor = "";
+            row.classList.remove("is-swiping", "is-swipe-armed");
+            if (swipeLabel) swipeLabel.style.opacity = "";
+          }
+        }, animate ? 220 : 0);
       };
 
-      row.addEventListener("touchstart", (event) => {
-        if (event.touches.length !== 1) return;
-        if (event.target.closest(".request-check-wrap, .remove-item, .qty-stepper, .product-chip, .draft-product, .draft-quantity")) {
-          tracking = false;
+      const openFill = () => {
+        if (token !== requestGestureToken) return;
+        row.dataset.swiped = "1";
+        setOffset(-threshold(), { animate: true });
+        try {
+          navigator.vibrate?.(12);
+        } catch {}
+        window.setTimeout(() => {
+          openPurchaseDetailsForRow(request, row);
+          resetSurface({ animate: true });
+        }, 160);
+      };
+
+      const onPointerDown = (event) => {
+        if (event.pointerType === "mouse" && event.button !== 0) return;
+        if (event.target.closest(".request-check-wrap, .remove-item")) return;
+        // Allow swipe from chip, input, main — any point on the tile.
+        tracking = true;
+        horizontal = false;
+        pointerId = event.pointerId;
+        startX = event.clientX;
+        startY = event.clientY;
+        currentX = 0;
+        row.dataset.swiped = "";
+        surface.classList.add("is-dragging");
+        try {
+          surface.setPointerCapture?.(event.pointerId);
+        } catch {}
+      };
+
+      const onPointerMove = (event) => {
+        if (!tracking || (pointerId != null && event.pointerId !== pointerId)) return;
+        const dx = event.clientX - startX;
+        const dy = event.clientY - startY;
+        if (!horizontal) {
+          if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+          if (Math.abs(dy) > Math.abs(dx)) {
+            tracking = false;
+            resetSurface({ animate: true });
+            return;
+          }
+          horizontal = true;
+          row.dataset.swiped = "1";
+          const chip = row.querySelector(".product-chip");
+          if (chip) chip.dataset.suppressClick = "1";
+        }
+        // Only pull left to reveal «Заполнить».
+        const pull = Math.max(-maxPull(), Math.min(0, dx));
+        setOffset(pull, { animate: false });
+        if (event.cancelable && horizontal) event.preventDefault();
+      };
+
+      const onPointerUp = (event) => {
+        if (!tracking || (pointerId != null && event.pointerId !== pointerId)) return;
+        tracking = false;
+        pointerId = null;
+        const dx = currentX;
+        const armed = -dx >= threshold();
+        if (horizontal && armed) {
+          openFill();
           return;
         }
-        const touch = event.touches[0];
-        startX = touch.clientX;
-        startY = touch.clientY;
-        tracking = true;
-        moved = false;
-        clearLongPress();
-        longPressTimer = setTimeout(() => {
-          longPressTimer = null;
+        if (!horizontal) {
+          surface.classList.remove("is-dragging");
+          return;
+        }
+        resetSurface({ animate: true });
+        window.setTimeout(() => {
+          const chip = row.querySelector(".product-chip");
+          if (chip) chip.dataset.suppressClick = "";
+          row.dataset.swiped = "";
+        }, 0);
+      };
+
+      surface.addEventListener("pointerdown", onPointerDown);
+      surface.addEventListener("pointermove", onPointerMove, { passive: false });
+      surface.addEventListener("pointerup", onPointerUp);
+      surface.addEventListener("pointercancel", onPointerUp);
+      surface.addEventListener("lostpointercapture", () => {
+        if (tracking) {
           tracking = false;
-          openDetails();
-        }, 480);
-      }, { passive: true });
-
-      row.addEventListener("touchmove", (event) => {
-        if (!tracking || event.touches.length !== 1) return;
-        const touch = event.touches[0];
-        const dx = touch.clientX - startX;
-        const dy = touch.clientY - startY;
-        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
-          moved = true;
-          clearLongPress();
+          resetSurface({ animate: true });
         }
-        if (Math.abs(dy) > Math.abs(dx)) {
-          tracking = false;
-          clearLongPress();
-        }
-      }, { passive: true });
-
-      row.addEventListener("touchend", (event) => {
-        clearLongPress();
-        if (!tracking) return;
-        tracking = false;
-        const touch = event.changedTouches[0];
-        if (!touch) return;
-        const dx = touch.clientX - startX;
-        const dy = touch.clientY - startY;
-        if (Math.abs(dx) >= 56 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-          openDetails();
-        }
-      }, { passive: true });
-
-      row.addEventListener("touchcancel", () => {
-        tracking = false;
-        clearLongPress();
-      }, { passive: true });
-
-      row.addEventListener("contextmenu", (event) => {
-        if (event.target.closest(".request-check-wrap, .remove-item, .draft-product, .draft-quantity, .product-chip")) return;
-        event.preventDefault();
-        openDetails();
       });
     });
   }
@@ -1936,7 +1955,7 @@
         key: row.dataset.key,
         productId,
         query,
-        quantity: Math.max(0.01, Number(row.querySelector(".draft-quantity")?.value) || previous?.quantity || 1),
+        quantity: Math.max(0.01, Number(previous?.quantity) || 1),
         unit: (previous?.unit || product?.unit || "").trim(),
         editingName: Boolean(previous?.editingName) && !row.querySelector(".draft-product")?.hidden,
       });
@@ -2040,10 +2059,6 @@
         setRowProductPresentation(row, item, product);
       } else {
         setRowProductPresentation(row, item, null);
-      }
-      const qtyInput = row.querySelector(".draft-quantity");
-      if (qtyInput && Number(qtyInput.value) !== Number(item.quantity)) {
-        qtyInput.value = String(item.quantity || 1);
       }
     });
     return true;

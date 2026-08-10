@@ -26,8 +26,17 @@ npm run android:apk
 Запуск одной командой (телефон **или** эмулятор):
 
 ```powershell
-.\run.ps1
+.\run.cmd
+# или (обход ExecutionPolicy):
+powershell -ExecutionPolicy Bypass -File .\run.ps1
+# или:
+npm run
+# только USB-телефон:
+npm run run:phone
 ```
+
+Если `.\run.ps1` пишет *running scripts is disabled* — это политика PowerShell.
+Используйте `.\run.cmd`, `npm run` или `Bypass` как выше (не нужно менять политику системы).
 
 Что делает скрипт автоматически:
 
@@ -43,17 +52,16 @@ npm run android:apk
 
 | Команда | Действие |
 |---------|----------|
-| `.\run.ps1` | Полный цикл: **USB-телефон если есть, иначе эмулятор** |
-| `.\run.ps1 -Usb` / `-UsbOrEmulator` | То же явно (проверка USB → fallback на эмулятор) |
-| `.\run.ps1 -Emulator` | Всегда эмулятор (телефон игнорируется) |
-| `.\run.ps1 -PhysicalOnly` | Только USB-телефон (ошибка, если нет) |
-| `.\run.ps1 -Avd NAME` | Свой AVD (создаст при отсутствии) |
-| `.\run.ps1 -SkipDeps` | Не качать npm/SDK |
-| `.\run.ps1 -SkipBuild` | Только install/launch |
-| `.\run.ps1 -SkipTests` | Без unit-тестов |
-| `.\run.ps1 -Serial ID` | Конкретное устройство |
-| `.\run.ps1 -OpenStudio` | Открыть модуль в Android Studio |
-| `.\run.ps1 -OpenStudio -NoDevice` | Только IDE |
+| `.\run.cmd` / `npm run` | Полный цикл: **USB-телефон если есть, иначе эмулятор** |
+| `.\run.cmd -Usb` | То же явно (USB → fallback на эмулятор) |
+| `.\run.cmd -Emulator` | Всегда эмулятор |
+| `.\run.cmd -PhysicalOnly` / `npm run run:phone` | Только USB-телефон |
+| `.\run.cmd -Avd NAME` | Свой AVD |
+| `.\run.cmd -SkipDeps` | Не качать npm/SDK |
+| `.\run.cmd -SkipBuild` | Только install/launch |
+| `.\run.cmd -SkipTests` | Без unit-тестов |
+| `.\run.cmd -Serial ID` | Конкретное устройство |
+| `.\run.cmd -OpenStudio` | Открыть модуль в Android Studio |
 
 Для Google-входа и Google Sheets в Google Cloud должны быть:
 

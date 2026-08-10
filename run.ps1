@@ -2,19 +2,19 @@
 # Auto-installs missing SDK packages / cmdline-tools, creates and boots an
 # emulator when no device is present, then builds, installs, and launches.
 #
-# Usage:
-#   .\run.ps1                         # USB phone if connected, else emulator (default)
-#   .\run.ps1 -UsbOrEmulator          # same as default, explicit
-#   .\run.ps1 -Usb                    # alias of -UsbOrEmulator
-#   .\run.ps1 -Emulator               # force emulator (ignore phone)
-#   .\run.ps1 -PhysicalOnly           # USB phone required (fail if missing)
-#   .\run.ps1 -Avd NAME               # use/create this AVD
-#   .\run.ps1 -SkipBuild              # reinstall existing debug APK only
-#   .\run.ps1 -SkipTests              # skip Node unit tests
-#   .\run.ps1 -SkipDeps               # do not install npm/SDK packages
-#   .\run.ps1 -Serial DEVICE_ID
-#   .\run.ps1 -OpenStudio
-#   .\run.ps1 -OpenStudio -NoDevice
+# Usage (prefer .\run.cmd if ExecutionPolicy blocks .ps1):
+#   .\run.cmd                         # USB phone if connected, else emulator (default)
+#   .\run.cmd -UsbOrEmulator          # same as default, explicit
+#   .\run.cmd -Usb                    # alias of -UsbOrEmulator
+#   .\run.cmd -Emulator               # force emulator (ignore phone)
+#   .\run.cmd -PhysicalOnly           # USB phone required (fail if missing)
+#   .\run.cmd -Avd NAME               # use/create this AVD
+#   .\run.cmd -SkipBuild              # reinstall existing debug APK only
+#   .\run.cmd -SkipTests              # skip Node unit tests
+#   .\run.cmd -SkipDeps               # do not install npm/SDK packages
+#   .\run.cmd -Serial DEVICE_ID
+#   .\run.cmd -OpenStudio
+#   powershell -ExecutionPolicy Bypass -File .\run.ps1 -Usb
 
 [CmdletBinding()]
 param(
