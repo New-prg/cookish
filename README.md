@@ -43,9 +43,10 @@ npm run android:apk
 
 | Команда | Действие |
 |---------|----------|
-| `.\run.ps1` | Полный цикл; телефон если подключён, иначе эмулятор |
-| `.\run.ps1 -Emulator` | Всегда эмулятор |
-| `.\run.ps1 -PhysicalOnly` | Только USB-телефон |
+| `.\run.ps1` | Полный цикл: **USB-телефон если есть, иначе эмулятор** |
+| `.\run.ps1 -Usb` / `-UsbOrEmulator` | То же явно (проверка USB → fallback на эмулятор) |
+| `.\run.ps1 -Emulator` | Всегда эмулятор (телефон игнорируется) |
+| `.\run.ps1 -PhysicalOnly` | Только USB-телефон (ошибка, если нет) |
 | `.\run.ps1 -Avd NAME` | Свой AVD (создаст при отсутствии) |
 | `.\run.ps1 -SkipDeps` | Не качать npm/SDK |
 | `.\run.ps1 -SkipBuild` | Только install/launch |

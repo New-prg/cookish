@@ -1,4 +1,4 @@
-# Shared Android Studio / SDK / emulator helpers for Cookish.
+﻿# Shared Android Studio / SDK / emulator helpers for Cookish.
 # Dot-source: . "$PSScriptRoot\android-env.ps1"
 
 $script:CookishDefaultAvdName = "Cookish_Pixel"
@@ -450,6 +450,27 @@ function Test-AndroidSdkPackagePath {
   return $false
 }
 
+function Test-SystemImageComplete {
+  param([string]$ImageDir)
+
+  if (-not (Test-Path -LiteralPath $ImageDir)) {
+    return $false
+  }
+  # Incomplete SDK Manager download leaves only .installer
+  if (Test-Path -LiteralPath (Join-Path $ImageDir ".installer")) {
+    $kernel = Join-Path $ImageDir "kernel-ranchu"
+    $kernelQemu = Join-Path $ImageDir "kernel-qemu"
+    if (-not ((Test-Path -LiteralPath $kernel) -or (Test-Path -LiteralPath $kernelQemu))) {
+      return $false
+    }
+  }
+  $hasKernel = (Test-Path -LiteralPath (Join-Path $ImageDir "kernel-ranchu")) -or
+               (Test-Path -LiteralPath (Join-Path $ImageDir "kernel-qemu"))
+  $hasSystem = (Test-Path -LiteralPath (Join-Path $ImageDir "system.img")) -or
+               (Test-Path -LiteralPath (Join-Path $ImageDir "system"))
+  return ($hasKernel -and $hasSystem)
+}
+
 function Find-InstalledSystemImagePackage {
   param([string]$SdkPath)
 
@@ -466,6 +487,10 @@ function Find-InstalledSystemImagePackage {
       $tagDir = $_
       Get-ChildItem -LiteralPath $tagDir.FullName -Directory -ErrorAction SilentlyContinue | ForEach-Object {
         $abiDir = $_
+        if (-not (Test-SystemImageComplete -ImageDir $abiDir.FullName)) {
+          Write-Warning "Incomplete system image (skip): $($abiDir.FullName)"
+          return
+        }
         $packageId = "system-images;{0};{1};{2}" -f $apiDir.Name, $tagDir.Name, $abiDir.Name
         $score = 0
         if ($tagDir.Name -match 'playstore') { $score += 100 }
@@ -625,6 +650,93 @@ function Set-AvdConfigValues {
   [System.IO.File]::WriteAllLines($configPath, $out, $utf8NoBom)
 }
 
+function New-CookishAvdFilesystem {
+  param(
+    [string]$SdkPath,
+    [string]$AvdName,
+    [string]$SystemImagePackage
+  )
+
+  # system-images;android-37.1;google_apis_playstore_ps16k;x86_64
+  $parts = $SystemImagePackage -split ';'
+  if ($parts.Count -lt 4) {
+    throw "Unexpected system image id: $SystemImagePackage"
+  }
+  $api = $parts[1]          # android-37.1
+  $tag = $parts[2]          # google_apis_playstore_ps16k
+  $abi = $parts[3]          # x86_64
+  $imageRel = "system-images\$api\$tag\$abi"
+  $imageAbs = Join-Path $SdkPath $imageRel
+  if (-not (Test-Path -LiteralPath $imageAbs)) {
+    throw "System image path missing: $imageAbs"
+  }
+
+  $androidDir = Join-Path $env:USERPROFILE ".android"
+  $avdRoot = Join-Path $androidDir "avd"
+  $avdDir = Join-Path $avdRoot ("{0}.avd" -f $AvdName)
+  $iniPath = Join-Path $avdRoot ("{0}.ini" -f $AvdName)
+  New-Item -ItemType Directory -Path $avdDir -Force | Out-Null
+
+  $tagId = if ($tag -match 'playstore') { "google_apis_playstore" } elseif ($tag -match 'google') { "google_apis" } else { "default" }
+  $tagDisplay = if ($tagId -eq "google_apis_playstore") { "Google Play" } elseif ($tagId -eq "google_apis") { "Google APIs" } else { $tag }
+  $playStore = if ($tag -match 'playstore') { "true" } else { "false" }
+  $cpuArch = if ($abi -match 'x86_64') { "x86_64" } elseif ($abi -match 'x86') { "x86" } elseif ($abi -match 'arm64') { "arm64" } else { $abi }
+
+  $ini = @(
+    "avd.ini.encoding=UTF-8",
+    "path=$avdDir",
+    "path.rel=avd\$AvdName.avd",
+    "target=$api"
+  ) -join "`r`n"
+
+  $config = @"
+AvdId=$AvdName
+PlayStore.enabled=$playStore
+abi.type=$abi
+avd.ini.displayname=$AvdName
+avd.ini.encoding=UTF-8
+disk.dataPartition.size=4G
+fastboot.forceColdBoot=no
+fastboot.forceFastBoot=yes
+hw.accelerometer=yes
+hw.audioInput=yes
+hw.battery=yes
+hw.camera.back=virtualscene
+hw.camera.front=emulated
+hw.cpu.arch=$cpuArch
+hw.cpu.ncore=4
+hw.dPad=no
+hw.device.manufacturer=Google
+hw.device.name=pixel_6
+hw.gps=yes
+hw.gpu.enabled=yes
+hw.gpu.mode=auto
+hw.initialOrientation=Portrait
+hw.keyboard=yes
+hw.lcd.density=420
+hw.lcd.height=2400
+hw.lcd.width=1080
+hw.mainKeys=no
+hw.ramSize=2048
+hw.sdCard=yes
+hw.sensors.orientation=yes
+hw.sensors.proximity=yes
+hw.trackBall=no
+image.sysdir.1=$imageRel\
+runtime.network.latency=none
+runtime.network.speed=full
+sdcard.size=512M
+showDeviceFrame=yes
+tag.display=$tagDisplay
+tag.id=$tagId
+vm.heapSize=256
+"@
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllText($iniPath, $ini + "`r`n", $utf8NoBom)
+  [System.IO.File]::WriteAllText((Join-Path $avdDir "config.ini"), $config.Trim() + "`r`n", $utf8NoBom)
+}
+
 function Ensure-CookishAvd {
   param(
     $EnvInfo,
@@ -637,9 +749,10 @@ function Ensure-CookishAvd {
     return $AvdName
   }
 
-  if ($existing.Count -gt 0 -and $AvdName -eq $script:CookishDefaultAvdName) {
-    # Prefer any existing AVD rather than forcing a new download/create when default name missing.
-    # Still create our managed AVD for a predictable setup.
+  # If user did not force a specific new name and some AVD already exists, reuse it.
+  if ($existing.Count -gt 0 -and $AvdName -eq $script:CookishDefaultAvdName -and -not $env:COOKISH_AVD) {
+    Write-Host "  Reusing existing AVD: $($existing[0])"
+    return $existing[0]
   }
 
   $systemImage = $EnvInfo.SystemImagePackage
@@ -647,40 +760,41 @@ function Ensure-CookishAvd {
     $systemImage = Find-InstalledSystemImagePackage -SdkPath $EnvInfo.SdkPath
   }
   if (-not $systemImage) {
-    throw "No system image installed. Re-run with network so SDK packages can be downloaded."
-  }
-
-  $avdManager = $EnvInfo.AvdManagerPath
-  if (-not $avdManager) {
-    throw "avdmanager not found. cmdline-tools install may have failed."
+    throw "No system image installed. Re-run without -SkipDeps (with network/VPN) so SDK packages can be downloaded."
   }
 
   Write-CookishStep "Creating AVD $AvdName"
   Write-Host "  Image : $systemImage"
   Write-Host "  Device: pixel_6"
 
-  $env:JAVA_HOME = $EnvInfo.JavaHome
-  $env:ANDROID_HOME = $EnvInfo.SdkPath
-  $env:ANDROID_SDK_ROOT = $EnvInfo.SdkPath
+  $avdManager = $EnvInfo.AvdManagerPath
+  if ($avdManager) {
+    $env:JAVA_HOME = $EnvInfo.JavaHome
+    $env:ANDROID_HOME = $EnvInfo.SdkPath
+    $env:ANDROID_SDK_ROOT = $EnvInfo.SdkPath
 
-  # avdmanager prompts "Do you wish to create a custom hardware profile?" -> no
-  $createArgs = @(
-    "create", "avd",
-    "--force",
-    "--name", $AvdName,
-    "--package", $systemImage,
-    "--device", "pixel_6"
-  )
+    $createArgs = @(
+      "create", "avd",
+      "--force",
+      "--name", $AvdName,
+      "--package", $systemImage,
+      "--device", "pixel_6"
+    )
 
-  $result = Invoke-NativeBatch -BatPath $avdManager -BatArgs $createArgs -StdinText "no`r`n" -ExtraEnv @{
-    JAVA_HOME        = $EnvInfo.JavaHome
-    ANDROID_HOME     = $EnvInfo.SdkPath
-    ANDROID_SDK_ROOT = $EnvInfo.SdkPath
-  }
-  if ($result.StdOut) { Write-Host $result.StdOut }
-  if ($result.StdErr) { Write-Host $result.StdErr }
-  if ($result.ExitCode -ne 0) {
-    throw "avdmanager create avd failed (exit $($result.ExitCode))"
+    $result = Invoke-NativeBatch -BatPath $avdManager -BatArgs $createArgs -StdinText "no`r`n" -ExtraEnv @{
+      JAVA_HOME        = $EnvInfo.JavaHome
+      ANDROID_HOME     = $EnvInfo.SdkPath
+      ANDROID_SDK_ROOT = $EnvInfo.SdkPath
+    }
+    if ($result.StdOut) { Write-Host $result.StdOut }
+    if ($result.StdErr) { Write-Host $result.StdErr }
+    if ($result.ExitCode -ne 0) {
+      Write-Warning "avdmanager failed; falling back to filesystem AVD create."
+      New-CookishAvdFilesystem -SdkPath $EnvInfo.SdkPath -AvdName $AvdName -SystemImagePackage $systemImage
+    }
+  } else {
+    Write-Host "  avdmanager missing - creating AVD via config files (offline)"
+    New-CookishAvdFilesystem -SdkPath $EnvInfo.SdkPath -AvdName $AvdName -SystemImagePackage $systemImage
   }
 
   Set-AvdConfigValues -AvdName $AvdName -Values @{
@@ -734,34 +848,34 @@ function Wait-ForAdbDevice {
   )
 
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
-  Write-Host "  Waiting for device $Serial (timeout ${TimeoutSec}s)..."
+  $nextReport = (Get-Date).AddSeconds(5)
+  Write-Host "  Waiting for boot_completed on $Serial (timeout ${TimeoutSec}s)..."
 
   do {
-    if ($Serial) {
-      & $EnvInfo.AdbPath -s $Serial wait-for-device 2>$null | Out-Null
-    } else {
-      & $EnvInfo.AdbPath wait-for-device 2>$null | Out-Null
-    }
-
+    # Avoid blocking forever inside wait-for-device when device vanishes.
+    $stateLine = & $EnvInfo.AdbPath devices | Where-Object { $_ -match [regex]::Escape($Serial) }
     $boot = ""
-    try {
-      if ($Serial) {
+    if ($stateLine -match '\sdevice\s*$' -or $stateLine -match '\sdevice$') {
+      try {
         $boot = (& $EnvInfo.AdbPath -s $Serial shell getprop sys.boot_completed 2>$null | Out-String).Trim()
-      } else {
-        $boot = (& $EnvInfo.AdbPath shell getprop sys.boot_completed 2>$null | Out-String).Trim()
+      } catch {
+        $boot = ""
       }
-    } catch {
-      $boot = ""
     }
 
     if ($boot -eq "1") {
-      # Give system UI a moment after boot_completed.
       Start-Sleep -Seconds 2
       return
     }
 
     if ((Get-Date) -gt $deadline) {
       throw "Timed out waiting for Android boot_completed on $Serial"
+    }
+    if ((Get-Date) -ge $nextReport) {
+      $left = [int]($deadline - (Get-Date)).TotalSeconds
+      $shown = if ($boot) { $boot } else { "not ready" }
+      Write-Host "  ... boot_completed=$shown (${left}s left)"
+      $nextReport = (Get-Date).AddSeconds(10)
     }
     Start-Sleep -Seconds 3
   } while ($true)
@@ -787,6 +901,21 @@ function Configure-EmulatorRuntime {
   }
 }
 
+function Get-EmulatorLogTail {
+  param([string]$LogPath, [int]$Lines = 20)
+  $chunks = @()
+  foreach ($path in @($LogPath, [System.IO.Path]::ChangeExtension($LogPath, ".err.log"))) {
+    if ($path -and (Test-Path -LiteralPath $path)) {
+      $tail = Get-Content -LiteralPath $path -Tail $Lines -ErrorAction SilentlyContinue
+      if ($tail) {
+        $chunks += "--- $(Split-Path $path -Leaf) ---"
+        $chunks += $tail
+      }
+    }
+  }
+  return ($chunks -join "`n")
+}
+
 function Start-CookishEmulator {
   param(
     $EnvInfo,
@@ -798,6 +927,37 @@ function Start-CookishEmulator {
     throw "emulator.exe not found."
   }
 
+  # Validate AVD system image before waiting forever.
+  $avdConfig = Join-Path $env:USERPROFILE (".android\avd\{0}.avd\config.ini" -f $AvdName)
+  if (Test-Path -LiteralPath $avdConfig) {
+    $sysdir = $null
+    foreach ($line in Get-Content -LiteralPath $avdConfig) {
+      if ($line -match '^\s*image\.sysdir\.1\s*=\s*(.+)\s*$') {
+        $sysdir = $Matches[1].Trim().TrimEnd('\', '/')
+        break
+      }
+    }
+    if ($sysdir) {
+      $imageDir = if ([System.IO.Path]::IsPathRooted($sysdir)) { $sysdir } else { Join-Path $EnvInfo.SdkPath $sysdir }
+      if (-not (Test-SystemImageComplete -ImageDir $imageDir)) {
+        throw @"
+System image for AVD '$AvdName' is incomplete or missing:
+  $imageDir
+
+Typical cause: download interrupted (folder has only .installer, no kernel-ranchu).
+
+Fix (with VPN/network), then re-run WITHOUT -SkipDeps:
+  1) Remove broken image folder (optional):
+       Remove-Item -Recurse -Force "$imageDir"
+  2) Full run:
+       powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 -Emulator
+
+Or install a system image in Android Studio: Device Manager -> Create Device -> Download image.
+"@
+      }
+    }
+  }
+
   # Already running?
   $running = @(Get-AdbDevices -EnvInfo $EnvInfo | Where-Object { $_.IsEmulator -and $_.State -eq "device" })
   if ($running.Count -gt 0) {
@@ -805,13 +965,19 @@ function Start-CookishEmulator {
     return $running[0].Serial
   }
 
+  $emuProc = $null
   # Offline/booting emulator serials
   $booting = @(Get-AdbDevices -EnvInfo $EnvInfo | Where-Object { $_.IsEmulator })
   if ($booting.Count -eq 0) {
     Write-CookishStep "Starting emulator $AvdName"
+    Write-Host "  Stages: launch process -> wait adb (up to 5 min) -> wait boot_completed (up to 5 min)"
     $logDir = Split-Path $LogPath -Parent
     if ($logDir) {
       New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
+    # Truncate old logs so we only see this run
+    foreach ($p in @($LogPath, [System.IO.Path]::ChangeExtension($LogPath, ".err.log"))) {
+      if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
     }
 
     $emuArgs = @(
@@ -824,7 +990,8 @@ function Start-CookishEmulator {
 
     $stdout = $LogPath
     $stderr = [System.IO.Path]::ChangeExtension($LogPath, ".err.log")
-    Start-Process -FilePath $EnvInfo.EmulatorPath -ArgumentList $emuArgs -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Normal | Out-Null
+    $emuProc = Start-Process -FilePath $EnvInfo.EmulatorPath -ArgumentList $emuArgs -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Normal -PassThru
+    Write-Host "  PID: $($emuProc.Id)"
     Write-Host "  Log: $LogPath"
   } else {
     Write-Host "  Emulator is booting: $($booting[0].Serial)"
@@ -833,21 +1000,54 @@ function Start-CookishEmulator {
   # Wait until any emulator appears in adb, then until boot completes.
   $deadline = (Get-Date).AddSeconds(300)
   $serial = $null
+  $nextReport = (Get-Date).AddSeconds(5)
   do {
+    if ($emuProc -and $emuProc.HasExited) {
+      $tail = Get-EmulatorLogTail -LogPath $LogPath
+      throw @"
+Emulator process exited early (code $($emuProc.ExitCode)). It never reached adb.
+
+$tail
+
+If you see 'missing a kernel file', the system image is incomplete - re-run without -SkipDeps (VPN).
+"@
+    }
+
     $emu = @(Get-AdbDevices -EnvInfo $EnvInfo | Where-Object { $_.IsEmulator -and ($_.State -eq "device" -or $_.State -eq "offline") })
     if ($emu.Count -gt 0) {
       $serial = $emu[0].Serial
+      Write-Host "  adb sees emulator: $serial [$($emu[0].State)]"
       break
     }
     if ((Get-Date) -gt $deadline) {
-      throw "Emulator did not appear in adb. Check $LogPath"
+      $tail = Get-EmulatorLogTail -LogPath $LogPath
+      throw "Emulator did not appear in adb within 5 minutes.`n$tail"
+    }
+    if ((Get-Date) -ge $nextReport) {
+      $left = [int]($deadline - (Get-Date)).TotalSeconds
+      Write-Host "  ... still waiting for adb emulator-* (${left}s left)"
+      $nextReport = (Get-Date).AddSeconds(10)
     }
     Start-Sleep -Seconds 2
   } while ($true)
 
+  Write-Host "  Waiting for Android boot (sys.boot_completed=1)..."
   Wait-ForAdbDevice -EnvInfo $EnvInfo -Serial $serial -TimeoutSec 300
+  Write-Host "  Boot complete."
   Configure-EmulatorRuntime -EnvInfo $EnvInfo -Serial $serial
   return $serial
+}
+
+function Get-PhysicalAdbDevices {
+  param(
+    $EnvInfo,
+    [switch]$ReadyOnly
+  )
+  $all = @(Get-AdbDevices -EnvInfo $EnvInfo | Where-Object { -not $_.IsEmulator })
+  if ($ReadyOnly) {
+    return @($all | Where-Object { $_.State -eq "device" })
+  }
+  return $all
 }
 
 function Resolve-CookishTargetDevice {
@@ -857,25 +1057,40 @@ function Resolve-CookishTargetDevice {
     [string]$AvdName,
     [switch]$PreferEmulator,
     [switch]$PhysicalOnly,
+    [switch]$UsbOrEmulator,
     [string]$EmulatorLogPath
   )
+
+  # Default and -UsbOrEmulator: USB phone if ready, else emulator.
+  $autoUsbThenEmu = $UsbOrEmulator -or ((-not $PreferEmulator) -and (-not $PhysicalOnly))
+
+  # Refresh adb once so a just-plugged phone is visible.
+  if ($EnvInfo.AdbPath -and ($autoUsbThenEmu -or $PhysicalOnly)) {
+    Write-Host "  Refreshing adb device list..."
+    & $EnvInfo.AdbPath start-server 2>$null | Out-Null
+    Start-Sleep -Milliseconds 400
+  }
 
   $devices = @(Get-AdbDevices -EnvInfo $EnvInfo)
   $ready = @($devices | Where-Object { $_.State -eq "device" })
   $other = @($devices | Where-Object { $_.State -ne "device" })
 
-  if ($other.Count -gt 0) {
-    foreach ($d in $other) {
-      Write-Host "  $($d.Serial)  [$($d.State)]" -ForegroundColor Yellow
+  if ($devices.Count -eq 0) {
+    Write-Host "  adb devices: (none)"
+  } else {
+    foreach ($d in $devices) {
+      $kind = if ($d.IsEmulator) { "emulator" } else { "usb/phone" }
+      $color = if ($d.State -eq "device") { "Green" } else { "Yellow" }
+      Write-Host "  $($d.Serial)  [$($d.State)]  ($kind)" -ForegroundColor $color
     }
   }
 
   if ($Serial) {
     $match = $ready | Where-Object { $_.Serial -eq $Serial }
     if ($match) {
+      Write-Host "  Using -Serial $Serial"
       return $Serial
     }
-    # Wait if device is known but still booting
     $known = $devices | Where-Object { $_.Serial -eq $Serial }
     if ($known) {
       Wait-ForAdbDevice -EnvInfo $EnvInfo -Serial $Serial -TimeoutSec 240
@@ -884,34 +1099,44 @@ function Resolve-CookishTargetDevice {
     throw "Device '$Serial' not found. Connected: $(($devices | ForEach-Object { "$($_.Serial)($($_.State))" }) -join ', ')"
   }
 
-  if ($PhysicalOnly) {
-    $physical = @($ready | Where-Object { -not $_.IsEmulator })
-    if ($physical.Count -eq 0) {
-      throw "No physical device connected (-PhysicalOnly)."
-    }
-    if ($physical.Count -gt 1) {
-      throw "Several physical devices: $(($physical | ForEach-Object Serial) -join ', '). Pass -Serial."
-    }
-    return $physical[0].Serial
-  }
-
+  # --- USB phone check ---
   if (-not $PreferEmulator) {
-    $physical = @($ready | Where-Object { -not $_.IsEmulator })
-    if ($physical.Count -eq 1) {
-      Write-Host "  Using physical device $($physical[0].Serial)"
-      return $physical[0].Serial
+    Write-Host "  Checking USB phone..."
+    $physicalReady = @(Get-PhysicalAdbDevices -EnvInfo $EnvInfo -ReadyOnly)
+    $physicalAny = @(Get-PhysicalAdbDevices -EnvInfo $EnvInfo)
+
+    $unauthorized = @($physicalAny | Where-Object { $_.State -eq "unauthorized" })
+    if ($unauthorized.Count -gt 0) {
+      Write-Host "  Phone seen but unauthorized: $($unauthorized[0].Serial)" -ForegroundColor Yellow
+      Write-Host "  Unlock the phone and accept 'Allow USB debugging'." -ForegroundColor Yellow
+      if ($PhysicalOnly) {
+        throw "USB phone is unauthorized. Accept the RSA prompt on the phone, then re-run."
+      }
     }
-    if ($physical.Count -gt 1) {
-      throw "Several physical devices: $(($physical | ForEach-Object Serial) -join ', '). Pass -Serial or -Emulator."
+
+    if ($physicalReady.Count -eq 1) {
+      Write-Host "  USB phone found: $($physicalReady[0].Serial)" -ForegroundColor Green
+      return $physicalReady[0].Serial
     }
+    if ($physicalReady.Count -gt 1) {
+      throw "Several USB phones: $(($physicalReady | ForEach-Object Serial) -join ', '). Pass -Serial DEVICE_ID."
+    }
+
+    if ($PhysicalOnly) {
+      throw "No USB phone in 'device' state (-PhysicalOnly). Enable USB debugging and reconnect the cable."
+    }
+
+    if ($autoUsbThenEmu) {
+      Write-Host "  No USB phone ready - will use emulator." -ForegroundColor Yellow
+    }
+  } else {
+    Write-Host "  -Emulator: skipping USB phone, using emulator."
   }
 
+  # --- Emulator ---
   $readyEmu = @($ready | Where-Object { $_.IsEmulator })
-  if ($readyEmu.Count -ge 1 -and -not $PreferEmulator) {
-    return $readyEmu[0].Serial
-  }
-  if ($readyEmu.Count -ge 1 -and $PreferEmulator) {
-    # Still fine to reuse running emulator
+  if ($readyEmu.Count -ge 1) {
+    Write-Host "  Reusing running emulator: $($readyEmu[0].Serial)" -ForegroundColor Green
     Configure-EmulatorRuntime -EnvInfo $EnvInfo -Serial $readyEmu[0].Serial
     return $readyEmu[0].Serial
   }

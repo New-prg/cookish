@@ -3,13 +3,15 @@
 # emulator when no device is present, then builds, installs, and launches.
 #
 # Usage:
-#   .\run.ps1
-#   .\run.ps1 -Emulator              # force emulator (even if a phone is connected)
-#   .\run.ps1 -PhysicalOnly          # require a USB phone
-#   .\run.ps1 -Avd NAME              # use/create this AVD
-#   .\run.ps1 -SkipBuild             # reinstall existing debug APK only
-#   .\run.ps1 -SkipTests             # skip Node unit tests
-#   .\run.ps1 -SkipDeps              # do not install npm/SDK packages
+#   .\run.ps1                         # USB phone if connected, else emulator (default)
+#   .\run.ps1 -UsbOrEmulator          # same as default, explicit
+#   .\run.ps1 -Usb                    # alias of -UsbOrEmulator
+#   .\run.ps1 -Emulator               # force emulator (ignore phone)
+#   .\run.ps1 -PhysicalOnly           # USB phone required (fail if missing)
+#   .\run.ps1 -Avd NAME               # use/create this AVD
+#   .\run.ps1 -SkipBuild              # reinstall existing debug APK only
+#   .\run.ps1 -SkipTests              # skip Node unit tests
+#   .\run.ps1 -SkipDeps               # do not install npm/SDK packages
 #   .\run.ps1 -Serial DEVICE_ID
 #   .\run.ps1 -OpenStudio
 #   .\run.ps1 -OpenStudio -NoDevice
@@ -23,14 +25,20 @@ param(
   [switch]$NoDevice,
   [switch]$Emulator,
   [switch]$PhysicalOnly,
+  [Alias("Usb")]
+  [switch]$UsbOrEmulator,
   [string]$Serial,
   [string]$Avd
 )
 
 $ErrorActionPreference = "Stop"
 
-if ($Emulator -and $PhysicalOnly) {
-  throw "Use only one of -Emulator or -PhysicalOnly."
+$modeCount = 0
+if ($Emulator) { $modeCount++ }
+if ($PhysicalOnly) { $modeCount++ }
+if ($UsbOrEmulator) { $modeCount++ }
+if ($modeCount -gt 1) {
+  throw "Use only one device mode: -UsbOrEmulator (or -Usb), -Emulator, or -PhysicalOnly."
 }
 
 $projectRoot = $PSScriptRoot
@@ -71,10 +79,17 @@ if (-not $SkipDeps) {
   Ensure-NodeDependencies -ProjectRoot $projectRoot
   $script:env = Ensure-AndroidSdkDependencies -EnvInfo $script:env -CompileSdk "36" -BuildTools "36.0.0"
 } else {
+  Write-Host "  SkipDeps: not downloading npm/SDK packages"
   $script:env = Refresh-CookishAndroidEnvTools -EnvInfo $script:env
   if (-not $script:env.AdbPath) {
-    throw "adb not found. Re-run without -SkipDeps."
+    throw "adb not found. Re-run without -SkipDeps (needs network/VPN for SDK install)."
   }
+  if (-not $script:env.EmulatorPath -and -not $PhysicalOnly) {
+    throw "emulator.exe not found. Re-run without -SkipDeps (or connect a USB phone with -PhysicalOnly)."
+  }
+  $script:env | Add-Member -NotePropertyName SystemImagePackage -NotePropertyValue (
+    Find-InstalledSystemImagePackage -SdkPath $script:env.SdkPath
+  ) -Force
 }
 
 Write-Host "  adb    : $($script:env.AdbPath)"
@@ -118,13 +133,26 @@ if (-not $SkipTests -and -not $SkipBuild) {
 }
 
 # --- device / emulator ---
-Write-CookishStep "Resolving Android device"
+$deviceMode = if ($Emulator) {
+  "emulator-only"
+} elseif ($PhysicalOnly) {
+  "usb-only"
+} else {
+  "usb-or-emulator"
+}
+
+Write-CookishStep "Resolving Android device ($deviceMode)"
+if ($deviceMode -eq "usb-or-emulator") {
+  Write-Host "  Policy: use USB phone if ready, otherwise start emulator"
+}
+
 $script:Serial = Resolve-CookishTargetDevice `
   -EnvInfo $script:env `
   -Serial $Serial `
   -AvdName $avdName `
   -PreferEmulator:$Emulator `
   -PhysicalOnly:$PhysicalOnly `
+  -UsbOrEmulator:($deviceMode -eq "usb-or-emulator") `
   -EmulatorLogPath $emulatorLog
 
 $env:ANDROID_SERIAL = $script:Serial
@@ -183,4 +211,4 @@ Write-Host "Done. Cookish ($packageName) is running on $script:Serial" -Foregrou
 if (Test-Path -LiteralPath $apkOutput) {
   Write-Host "APK copy: $apkOutput"
 }
-Write-Host "AVD name: $avdName  |  Emulator log: $emulatorLog"
+Write-Host "Device mode: $deviceMode  |  AVD: $avdName  |  Emulator log: $emulatorLog"
