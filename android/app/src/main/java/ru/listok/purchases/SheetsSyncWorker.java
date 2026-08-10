@@ -117,7 +117,11 @@ public class SheetsSyncWorker extends Worker {
         Map<String, List<JSONArray>> rationDays = mergeRationDays(remote.rationDays, local.rationDays);
 
         JSONArray productValues = new JSONArray()
-            .put(row("id", "Наименование", "Категория", "Единица", "Обновлён", "Кем обновлён", "Пищевая ценность JSON", "Источник данных", "Штрихкод", "Состав", "Удалён"));
+            .put(row(
+                "id", "Наименование", "Категория", "Единица", "Обновлён", "Кем обновлён",
+                "Пищевая ценность JSON", "Источник данных", "Штрихкод", "Состав", "Удалён",
+                "Подтверждён", "Тип", "generic_key", "Бренд", "catalog_source"
+            ));
         for (JSONArray product : products) productValues.put(product);
 
         JSONArray requestValues = new JSONArray()
@@ -141,7 +145,7 @@ public class SheetsSyncWorker extends Worker {
 
         clearRemote(token, spreadsheetId, remote.hasRationSheet);
         JSONArray data = new JSONArray()
-            .put(range("Продукты!A1:K", productValues))
+            .put(range("Продукты!A1:P", productValues))
             .put(range("Запросы!A1:M", requestValues))
             .put(range("Покупки!A1:L", responseValues));
         if (remote.hasRationSheet) {
@@ -161,7 +165,7 @@ public class SheetsSyncWorker extends Worker {
         try {
             response = get(
                 "https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheetId +
-                    "/values:batchGet?ranges=" + encode("Продукты!A2:N") +
+                    "/values:batchGet?ranges=" + encode("Продукты!A2:P") +
                     "&ranges=" + encode("Запросы!A2:N") +
                     "&ranges=" + encode("Покупки!A2:L") +
                     "&ranges=" + encode("Рацион!A2:N"),
@@ -171,7 +175,7 @@ public class SheetsSyncWorker extends Worker {
             hasRationSheet = false;
             response = get(
                 "https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheetId +
-                    "/values:batchGet?ranges=" + encode("Продукты!A2:N") +
+                    "/values:batchGet?ranges=" + encode("Продукты!A2:P") +
                     "&ranges=" + encode("Запросы!A2:N") +
                     "&ranges=" + encode("Покупки!A2:L"),
                 token
@@ -252,7 +256,12 @@ public class SheetsSyncWorker extends Worker {
                 product.isNull("nutrition") ? "" : product.optJSONObject("nutrition").optString("source"),
                 product.optString("barcode"),
                 product.optString("ingredients"),
-                product.optString("deletedAt")
+                product.optString("deletedAt"),
+                product.optBoolean("confirmed", false) ? "true" : "false",
+                product.optString("kind"),
+                product.optString("genericKey"),
+                product.optString("brand"),
+                product.optString("catalogSource")
             ));
         }
 
@@ -522,7 +531,7 @@ public class SheetsSyncWorker extends Worker {
     private void clearRemote(String token, String spreadsheetId, boolean includeRation)
         throws IOException, JSONException {
         JSONArray ranges = new JSONArray()
-            .put("Продукты!A:N")
+            .put("Продукты!A:P")
             .put("Запросы!A:N")
             .put("Покупки!A:L");
         if (includeRation) ranges.put("Рацион!A:N");
@@ -643,9 +652,13 @@ public class SheetsSyncWorker extends Worker {
     }
 
     private static JSONArray normalizeProductRow(JSONArray source) {
-        boolean legacyStockSchema = source.length() >= 14 || (
-            source.length() >= 8 && isNumeric(source.opt(4)) && !stringAt(source, 7).isEmpty()
-        );
+        // Modern rows store ISO updatedAt at index 4; legacy stock quantity is a plain number.
+        String maybeStock = stringAt(source, 4);
+        boolean index4IsIsoDate = maybeStock.matches("^\\d{4}-\\d{2}-\\d{2}.*");
+        boolean legacyStockSchema = !index4IsIsoDate
+            && source.length() >= 8
+            && isNumeric(source.opt(4))
+            && !stringAt(source, 7).isEmpty();
         return row(
             stringAt(source, 0),
             stringAt(source, 1),
@@ -657,7 +670,12 @@ public class SheetsSyncWorker extends Worker {
             stringAt(source, legacyStockSchema ? 10 : 7),
             stringAt(source, legacyStockSchema ? 11 : 8),
             stringAt(source, legacyStockSchema ? 12 : 9),
-            stringAt(source, legacyStockSchema ? 13 : 10)
+            stringAt(source, legacyStockSchema ? 13 : 10),
+            stringAt(source, legacyStockSchema ? 14 : 11),
+            stringAt(source, legacyStockSchema ? 15 : 12),
+            stringAt(source, legacyStockSchema ? 16 : 13),
+            stringAt(source, legacyStockSchema ? 17 : 14),
+            stringAt(source, legacyStockSchema ? 18 : 15)
         );
     }
 

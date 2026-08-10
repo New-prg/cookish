@@ -82,6 +82,8 @@
   let requestAutosaveTimer = null;
   let syncStatusLabel = "";
   let confirmResolve = null;
+  let productEditReturn = null;
+  let requestGestureToken = 0;
 
   const app = document.getElementById("app");
   const title = document.getElementById("page-title");
@@ -161,7 +163,7 @@
       if (typeof stored.onboardingCompleted !== "boolean") {
         loaded.onboardingCompleted = Boolean(stored.user && stored.spreadsheetId);
       }
-      loaded.products = loaded.products.map((product) => ({
+      loaded.products = loaded.products.map((product) => normalizeProductRecord({
         ...product,
         updatedAt: product.updatedAt || new Date(0).toISOString(),
         updatedBy: product.updatedBy || "local",
@@ -249,8 +251,12 @@
     }
     if (formDirty && !confirm("Отменить изменения? Несохранённые данные будут потеряны.")) return true;
     draftItems = [];
-    if (route === "product-new" || route === "product-edit") navigate("products");
-    else if (route === "products") navigate("profile");
+    if (route === "product-new" || route === "product-edit") {
+      const ret = productEditReturn;
+      productEditReturn = null;
+      if (ret?.route) navigate(ret.route, ret.id || null);
+      else navigate("products");
+    } else if (route === "products") navigate("profile");
     else if (route === "request-detail") navigate("request-edit", routeId);
     else return false;
     return true;
@@ -370,7 +376,7 @@
       summary: ["Сводка", "", false],
       products: ["Продукты", "Добавить", false],
       "product-new": ["Новый продукт", "Отмена", true],
-      "product-edit": ["Редактирование", "Отмена", true],
+      "product-edit": ["Редактирование", productEditReturn ? "Назад" : "Отмена", true],
       requests: ["Запросы", "Создать", false],
       "request-edit": ["Запрос", "Готово", true],
       "request-detail": ["Запрос", "Назад", false],
@@ -571,17 +577,62 @@
     return "";
   }
 
+  function normalizeGenericKey(value) {
+    return normalizeProductName(value).replace(/[^a-zа-яё0-9]+/gi, "_").replace(/^_|_$/g, "");
+  }
+
+  function genericKeyFromParts(category, name, fallback = "") {
+    if (category) return normalizeGenericKey(category);
+    const first = String(name || "").trim().split(/\s+/)[0] || fallback;
+    return normalizeGenericKey(first);
+  }
+
+  function inferProductKind(product) {
+    if (product?.kind === "generic" || product?.kind === "sku") return product.kind;
+    if (product?.barcode || product?.brand) return "sku";
+    return "generic";
+  }
+
+  function isProductConfirmed(product) {
+    if (!product) return false;
+    if (product.confirmed === true) return true;
+    if (product.confirmed === false) return false;
+    // Legacy rows without the flag: barcode-backed cards are treated as confirmed SKUs.
+    return Boolean(product.barcode);
+  }
+
+  function normalizeProductRecord(product) {
+    if (!product) return product;
+    const category = product.category || "";
+    const name = product.name || "";
+    return {
+      ...product,
+      category,
+      brand: product.brand || "",
+      kind: inferProductKind(product),
+      genericKey: product.genericKey || genericKeyFromParts(category, name),
+      confirmed: isProductConfirmed(product),
+      catalogSource: product.catalogSource || "",
+    };
+  }
+
   function resolveOrCreateProduct(draft, products, changedAt) {
     const key = normalizeProductName(draft.query);
     const existing = products.find((product) => !product.deletedAt && normalizeProductName(product.name) === key);
     if (existing) return existing;
     const catalog = [...remoteProductSuggestions, ...FOOD_CATALOG]
       .find((product) => normalizeProductName(product.name) === key);
+    const category = catalog?.category || "";
+    const name = draft.query.trim();
     const product = {
       id: id("product"),
-      name: draft.query.trim(),
-      category: catalog?.category || "",
+      name,
+      category,
       unit: catalog?.unit || "шт.",
+      brand: catalog?.brand || "",
+      kind: catalog?.kind || (catalog?.barcode ? "sku" : "generic"),
+      genericKey: catalog?.genericKey || genericKeyFromParts(category, name),
+      confirmed: false,
       updatedAt: changedAt,
       updatedBy: state.user?.email || "local",
       nutrition: catalog ? structuredClone(catalog.nutrition) : null,
@@ -673,16 +724,22 @@
   function openFoodFactsSuggestion(product) {
     const name = String(product.product_name_ru || product.product_name || product.generic_name_ru || "").trim();
     if (!name) return null;
+    const brand = Array.isArray(product.brands) ? product.brands.join(", ") : String(product.brands || "").trim();
+    const category = openFoodFactsCategory(product);
+    const genericName = String(product.generic_name_ru || product.generic_name || "").trim();
     return {
       id: `off_${product.code || normalizeProductName(name)}`,
       name,
-      brand: Array.isArray(product.brands) ? product.brands.join(", ") : String(product.brands || "").trim(),
-      category: openFoodFactsCategory(product),
+      brand,
+      category,
+      genericKey: genericKeyFromParts(category, genericName || name),
+      kind: product.code ? "sku" : "generic",
       unit: openFoodFactsUnit(product),
       barcode: String(product.code || ""),
       ingredients: String(product.ingredients_text_ru || product.ingredients_text || "").trim(),
       nutrition: openFoodFactsNutrition(product),
       catalogSource: "Open Food Facts",
+      confirmed: false,
     };
   }
 
@@ -956,11 +1013,18 @@
       event.preventDefault();
       const data = new FormData(event.currentTarget);
       const changedAt = new Date().toISOString();
+      const name = data.get("name").trim();
+      const category = data.get("category").trim();
+      const barcode = data.get("barcode").trim();
       const values = {
-        name: data.get("name").trim(),
-        barcode: data.get("barcode").trim(),
-        category: data.get("category").trim(),
+        name,
+        barcode,
+        category,
         unit: data.get("unit"),
+        brand: product?.brand || "",
+        kind: barcode ? "sku" : (product?.kind || "generic"),
+        genericKey: product?.genericKey || genericKeyFromParts(category, name),
+        confirmed: true,
         updatedAt: changedAt,
         updatedBy: state.user?.email || "local",
         nutrition: nutritionFromForm(data, event.currentTarget.dataset.nutritionSource || product?.nutrition?.source || "Введено пользователем"),
@@ -970,7 +1034,10 @@
       if (product) Object.assign(product, values);
       else state.products.push({ id: id("product"), ...values });
       saveState();
-      navigate("products");
+      const ret = productEditReturn;
+      productEditReturn = null;
+      if (ret?.route) navigate(ret.route, ret.id || null);
+      else navigate("products");
       showToast(product ? "Продукт изменён." : "Продукт добавлен.");
     });
   }
@@ -1011,16 +1078,32 @@
 
   function ensureRequestDraftRows(request) {
     if (!draftItems.length) {
-      draftItems = (request.items || []).map((item) => ({
-        key: id("item"),
-        productId: item.productId,
-        query: getProduct(item.productId)?.name || "",
-        quantity: item.quantity,
-        unit: item.unit || requestItemUnit(item),
-      }));
+      draftItems = (request.items || []).map((item) => {
+        const product = getProduct(item.productId);
+        return {
+          key: id("item"),
+          productId: item.productId,
+          query: product?.name || "",
+          quantity: item.quantity,
+          unit: item.unit || product?.unit || requestItemUnit(item),
+          editingName: false,
+        };
+      });
+    } else {
+      // Refresh chip labels after product card edits without wiping in-progress typing.
+      draftItems = draftItems.map((item) => {
+        if (!item.productId || item.editingName) return item;
+        const product = getProduct(item.productId);
+        if (!product) return item;
+        return {
+          ...item,
+          query: product.name,
+          unit: product.unit || item.unit || "шт.",
+        };
+      });
     }
     if (!draftItems.some((item) => !String(item.query || "").trim())) {
-      draftItems.push({ key: id("item"), productId: "", query: "", quantity: 1, unit: "" });
+      draftItems.push({ key: id("item"), productId: "", query: "", quantity: 1, unit: "", editingName: true });
     }
   }
 
@@ -1042,7 +1125,7 @@
         <button id="add-request-item" class="keep-add-line" type="button">＋ Позиция</button>
         ${answerActionDialog()}
         <div class="keep-note-actions">
-          <p class="muted">Отметьте галочкой купленные позиции. «···» — цена и детали. Один запрос = один чек.</p>
+          <p class="muted">Галочка — куплено. Свайп или долгий тап по строке — цена, количество и штрихкод. Тап по названию товара — карточка.</p>
           ${history.length > 1 ? `
             <details class="section" style="padding:0;border:0">
               <summary class="section-title" style="cursor:pointer;list-style:none">История изменений</summary>
@@ -1099,38 +1182,71 @@
     const currentRequest = request || getRequest(routeId);
     // Only real product ids (never catalog_*) so purchase price keys match request items.
     const productId = resolveDraftProductId(item.query, item.productId || "");
+    const product = productId ? getProduct(productId) : null;
+    const resolved = Boolean(product && !isBlank);
     const purchased = currentRequest && productId
       ? responseItemTotal(currentRequest, productId)
       : { quantity: 0, price: 0 };
+    const receipt = currentRequest && productId ? receiptLine(currentRequest, productId) : null;
     const remaining = currentRequest && productId
       ? remainingRequestQuantity(currentRequest, productId)
       : 0;
-    const fullyBought = Boolean(productId && !isBlank && remaining <= 0);
+    const fullyBought = Boolean(productId && !isBlank && remaining <= 0 && purchased.quantity > 0);
+    const filled = Boolean(receipt && isPurchaseDetailsFilled(receipt, productId));
     const progress = currentRequest && productId && !isBlank
-      ? requestProgressLabel(currentRequest, { productId, quantity: item.quantity, unit: item.unit }, purchased)
+      ? requestProgressLabel(currentRequest, { productId, quantity: item.quantity, unit: item.unit || product?.unit }, purchased)
       : "";
-    const unitValue = item.unit || requestItemUnit(item);
+    const unitValue = item.unit || product?.unit || requestItemUnit(item) || "шт.";
+    const editingName = Boolean(item.editingName) || !resolved;
     return `
-      <div class="request-item${isBlank ? " is-blank" : ""}${fullyBought ? " is-bought" : ""}" data-key="${item.key}" data-product-id="${escapeAttr(productId)}">
+      <div class="request-item${isBlank ? " is-blank" : ""}${fullyBought ? " is-bought" : ""}${filled ? " is-purchase-filled" : ""}${resolved ? " is-resolved" : ""}" data-key="${item.key}" data-product-id="${escapeAttr(productId)}">
         <label class="request-check-wrap">
           <input class="request-purchase-check" type="checkbox" ${fullyBought ? "checked" : ""} ${isBlank ? "disabled" : ""} aria-label="Куплено: ${escapeAttr(productName)}">
         </label>
         <div class="request-item-main">
           <div class="request-item-fields">
-            <label class="visually-hidden" for="product-${item.key}">Название продукта</label>
-            <input id="product-${item.key}" class="draft-product keep-item-input" list="${listId}" autocomplete="off" placeholder="Продукт" value="${escapeAttr(item.query || "")}">
-            <label class="request-quantity-field">
+            <div class="request-product-field">
+              <label class="visually-hidden" for="product-${item.key}">Название продукта</label>
+              <input id="product-${item.key}" class="draft-product keep-item-input" list="${listId}" autocomplete="off" placeholder="Продукт" value="${escapeAttr(item.query || "")}" ${editingName ? "" : "hidden"}>
+              <button class="product-chip" type="button" data-product-id="${escapeAttr(productId)}" ${resolved && !editingName ? "" : "hidden"} aria-label="Открыть карточку ${escapeAttr(product?.name || productName)}">${escapeHtml(product?.name || item.query || "")}</button>
+            </div>
+            <div class="qty-stepper" ${isBlank ? "hidden" : ""}>
+              <button class="qty-dec" type="button" aria-label="Уменьшить количество" tabindex="${isBlank ? "-1" : "0"}">−</button>
               <input class="draft-quantity" type="number" min="0.01" step="0.01" inputmode="decimal" value="${escapeAttr(item.quantity || 1)}" aria-label="Количество для ${escapeAttr(productName)}" ${isBlank ? "tabindex=\"-1\"" : ""}>
-              <input class="draft-unit" type="text" inputmode="text" autocomplete="off" maxlength="12" value="${escapeAttr(unitValue)}" aria-label="Единица для ${escapeAttr(productName)}" placeholder="ед." ${isBlank ? "tabindex=\"-1\"" : ""}>
-            </label>
+              <span class="qty-unit-label">${escapeHtml(unitValue)}</span>
+              <button class="qty-inc" type="button" aria-label="Увеличить количество" tabindex="${isBlank ? "-1" : "0"}">+</button>
+            </div>
           </div>
           <datalist id="${listId}">${productSuggestionOptions(item.query)}</datalist>
           <div class="draft-product-meta" hidden></div>
           ${progress ? `<p class="request-progress-meta">${progress}</p>` : ""}
+          ${filled ? `<p class="request-filled-badge">${escapeHtml(purchaseFilledLabel(currentRequest, productId, receipt))}</p>` : ""}
         </div>
-        <button class="request-item-details text-button" type="button" ${isBlank ? "hidden" : ""} aria-label="Детали покупки ${escapeAttr(productName)}">···</button>
         <button class="keep-remove-item remove-item" type="button" aria-label="Удалить ${escapeAttr(productName)}" ${isBlank ? "tabindex=\"-1\"" : ""}>×</button>
       </div>`;
+  }
+
+  function isPurchaseDetailsFilled(line, requestedProductId = "") {
+    if (!line) return false;
+    if (Number(line.price) > 0) return true;
+    if (line.completionMode === "filled") return true;
+    if (line.purchasedProductId && requestedProductId && line.purchasedProductId !== requestedProductId) return true;
+    return false;
+  }
+
+  function purchaseFilledLabel(request, productId, line) {
+    const parts = [];
+    const purchasedId = line?.purchasedProductId || productId;
+    if (purchasedId && purchasedId !== productId) {
+      const purchased = getProduct(purchasedId);
+      if (purchased?.name) parts.push(purchased.name);
+    }
+    if (Number(line?.price) > 0) parts.push(money(line.price));
+    if (!parts.length && Number(line?.quantity) > 0) {
+      const unit = requestItemUnit(request?.items?.find((item) => item.productId === productId));
+      parts.push(`${number(line.quantity)} ${unit}`);
+    }
+    return parts.join(" · ") || "Детали заполнены";
   }
 
   function commitRequestFieldChange() {
@@ -1145,7 +1261,10 @@
         productNameSearchSequence += 1;
         const row = input.closest(".request-item");
         const item = draftItems.find((value) => value.key === row.dataset.key);
-        if (item) item.query = input.value;
+        if (item) {
+          item.query = input.value;
+          item.editingName = true;
+        }
         const hasText = Boolean(input.value.trim());
         row.classList.toggle("is-blank", !hasText);
         const removeButton = row.querySelector(".remove-item");
@@ -1155,42 +1274,35 @@
         }
         const quantity = row.querySelector(".draft-quantity");
         if (quantity) quantity.tabIndex = hasText ? 0 : -1;
-        const unitInput = row.querySelector(".draft-unit");
-        if (unitInput) unitInput.tabIndex = hasText ? 0 : -1;
+        const stepper = row.querySelector(".qty-stepper");
+        if (stepper) stepper.hidden = !hasText;
         const purchaseCheck = row.querySelector(".request-purchase-check");
-        const details = row.querySelector(".request-item-details");
         const list = row.querySelector("datalist");
         if (list) list.innerHTML = productSuggestionOptions(input.value);
         const selected = suggestionByName(input.value);
         if (item) {
-          const previousProduct = item.productId ? getProduct(item.productId) : null;
-          const previousDefaultUnit = previousProduct?.unit || "";
           if (selected) {
-            // Never store catalog/OFF-only ids — they break purchase/price matching after save.
             item.productId = resolveDraftProductId(input.value, item.productId);
             row.dataset.productId = item.productId || "";
-            if (!item.unit || item.unit === previousDefaultUnit) {
-              item.unit = selected.unit || "шт.";
-              if (unitInput) unitInput.value = item.unit;
+            if (!item.unit || item.unit === getProduct(item.productId)?.unit) {
+              item.unit = selected.unit || item.unit || "шт.";
             }
-            // Allow purchase controls once the name is valid; real id is assigned on commit.
+            updateRowUnitLabel(row, item.unit || selected.unit || "шт.");
             if (purchaseCheck) purchaseCheck.disabled = !hasText;
-            if (details) details.hidden = !hasText;
           } else if (!hasText) {
             item.productId = "";
             item.unit = "";
             row.dataset.productId = "";
-            if (unitInput) unitInput.value = "";
+            updateRowUnitLabel(row, "шт.");
             if (purchaseCheck) {
               purchaseCheck.checked = false;
               purchaseCheck.disabled = true;
             }
-            if (details) details.hidden = true;
+            setRowProductPresentation(row, item, null);
           } else {
             item.productId = resolveDraftProductId(input.value, item.productId);
             row.dataset.productId = item.productId || "";
             if (purchaseCheck) purchaseCheck.disabled = false;
-            if (details) details.hidden = false;
           }
         }
         setDraftProductMeta(row.dataset.key, selected
@@ -1203,39 +1315,97 @@
           const query = input.value;
           productNameSearchTimer = setTimeout(() => searchOpenFoodFactsByName(query, row.dataset.key), 450);
         }
-        // Do not persist while typing — only on blur / Enter / Готово.
       };
-      input.onblur = () => commitRequestFieldChange();
+      input.onblur = () => {
+        const row = input.closest(".request-item");
+        const item = draftItems.find((value) => value.key === row?.dataset.key);
+        if (item) item.editingName = false;
+        commitRequestFieldChange();
+        if (item && row) {
+          const product = getProduct(item.productId) || (item.query ? null : null);
+          const resolved = item.productId ? getProduct(item.productId) : null;
+          if (resolved) setRowProductPresentation(row, item, resolved);
+        }
+      };
       input.onkeydown = (event) => {
         if (event.key !== "Enter") return;
         event.preventDefault();
         if (!input.value.trim()) return;
+        const row = input.closest(".request-item");
+        const item = draftItems.find((value) => value.key === row?.dataset.key);
+        if (item) item.editingName = false;
         commitRequestFieldChange();
         addEmptyRequestLine();
       };
     });
-    document.querySelectorAll(".draft-quantity, .draft-unit").forEach((input) => {
+    document.querySelectorAll(".draft-quantity").forEach((input) => {
       input.oninput = () => {
         const row = input.closest(".request-item");
         const item = draftItems.find((value) => value.key === row.dataset.key);
         if (!item) return;
-        if (input.classList.contains("draft-quantity")) {
-          item.quantity = Math.max(0.01, Number(input.value) || 1);
-        } else {
-          item.unit = input.value;
-        }
+        item.quantity = Math.max(0.01, Number(input.value) || 1);
       };
       input.onblur = () => commitRequestFieldChange();
       input.onkeydown = (event) => {
         if (event.key !== "Enter") return;
         event.preventDefault();
         commitRequestFieldChange();
-        if (input.classList.contains("draft-quantity")) {
-          input.closest(".request-item")?.querySelector(".draft-unit")?.focus();
-        } else {
-          addEmptyRequestLine();
-        }
+        addEmptyRequestLine();
       };
+    });
+    document.querySelectorAll(".qty-dec, .qty-inc").forEach((button) => {
+      button.onclick = () => {
+        const row = button.closest(".request-item");
+        const item = draftItems.find((value) => value.key === row?.dataset.key);
+        const input = row?.querySelector(".draft-quantity");
+        if (!item || !input) return;
+        const current = Math.max(0.01, Number(input.value) || 1);
+        const next = button.classList.contains("qty-inc")
+          ? current + 1
+          : Math.max(0.01, current - 1);
+        const rounded = Math.round(next * 100) / 100;
+        input.value = String(rounded);
+        item.quantity = rounded;
+        commitRequestFieldChange();
+      };
+    });
+    document.querySelectorAll(".product-chip").forEach((chip) => {
+      let chipLongPress = null;
+      chip.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (chip.dataset.suppressClick === "1") {
+          chip.dataset.suppressClick = "";
+          return;
+        }
+        const productId = chip.dataset.productId || chip.closest(".request-item")?.dataset.productId;
+        if (!isRealProductId(productId)) return showToast("Сначала сохраните продукт.");
+        openProductCardFromRequest(productId);
+      };
+      chip.ondblclick = (event) => {
+        event.preventDefault();
+        enterRowNameEdit(chip.closest(".request-item"));
+      };
+      chip.addEventListener("touchstart", () => {
+        chipLongPress = setTimeout(() => {
+          chipLongPress = null;
+          chip.dataset.suppressClick = "1";
+          enterRowNameEdit(chip.closest(".request-item"));
+        }, 480);
+      }, { passive: true });
+      chip.addEventListener("touchend", () => {
+        if (chipLongPress) clearTimeout(chipLongPress);
+        chipLongPress = null;
+      }, { passive: true });
+      chip.addEventListener("touchmove", () => {
+        if (chipLongPress) clearTimeout(chipLongPress);
+        chipLongPress = null;
+      }, { passive: true });
+      chip.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        enterRowNameEdit(chip.closest(".request-item"));
+      });
     });
     document.querySelectorAll(".remove-item").forEach((button) => {
       button.onclick = () => {
@@ -1247,11 +1417,59 @@
         const currentFilled = Boolean(document.querySelector(`.request-item[data-key="${key}"] .draft-product`)?.value.trim());
         if (!hasOtherFilled && !currentFilled) return;
         draftItems = draftItems.filter((value) => value.key !== key);
-        if (!draftItems.length) draftItems = [{ key: id("item"), productId: "", query: "", quantity: 1, unit: "" }];
+        if (!draftItems.length) draftItems = [{ key: id("item"), productId: "", query: "", quantity: 1, unit: "", editingName: true }];
         commitRequestFieldChange();
         renderRequestForm();
       };
     });
+  }
+
+  function updateRowUnitLabel(row, unit) {
+    const label = row?.querySelector(".qty-unit-label");
+    if (label) label.textContent = unit || "шт.";
+  }
+
+  function setRowProductPresentation(row, item, product) {
+    if (!row) return;
+    const input = row.querySelector(".draft-product");
+    const chip = row.querySelector(".product-chip");
+    const resolved = Boolean(product && String(item?.query || "").trim());
+    const editing = Boolean(item?.editingName) || !resolved;
+    if (input) input.hidden = resolved && !editing;
+    if (chip) {
+      chip.hidden = !resolved || editing;
+      if (product) {
+        chip.textContent = product.name;
+        chip.dataset.productId = product.id;
+        chip.setAttribute("aria-label", `Открыть карточку ${product.name}`);
+      }
+    }
+    row.classList.toggle("is-resolved", resolved && !editing);
+    updateRowUnitLabel(row, item?.unit || product?.unit || "шт.");
+    const stepper = row.querySelector(".qty-stepper");
+    if (stepper) stepper.hidden = !String(item?.query || "").trim();
+  }
+
+  function enterRowNameEdit(row) {
+    if (!row) return;
+    const item = draftItems.find((value) => value.key === row.dataset.key);
+    if (item) item.editingName = true;
+    const product = item?.productId ? getProduct(item.productId) : null;
+    setRowProductPresentation(row, item, product);
+    const input = row.querySelector(".draft-product");
+    if (input) {
+      input.hidden = false;
+      input.focus();
+      input.select?.();
+    }
+  }
+
+  function openProductCardFromRequest(productId) {
+    clearTimeout(requestAutosaveTimer);
+    syncDraftFromForm();
+    if (!persistRequestDraft({ silent: false })) return;
+    productEditReturn = { route: "request-edit", id: routeId };
+    navigate("product-edit", productId, null, { skipRequestPersist: true });
   }
 
   function bindRequestPurchaseChecks(request) {
@@ -1274,20 +1492,100 @@
         toggleRequestItemPurchase(request.id, productId, checkbox.checked);
       };
     });
-    document.querySelectorAll(".request-item-details").forEach((button) => {
-      button.onclick = () => {
-        const row = button.closest(".request-item");
-        if (!row) return;
-        clearTimeout(requestAutosaveTimer);
-        syncDraftFromForm();
-        if (!persistRequestDraft({ silent: false })) return;
-        const productId = ensureRowProductId(row);
-        if (!productId) return showToast("Сначала укажите продукт.");
-        const current = getRequest(request.id);
-        if (!current) return;
-        openInlinePurchaseDetails(current, productId);
+    bindRequestRowGestures(request);
+  }
+
+  function bindRequestRowGestures(request) {
+    const token = ++requestGestureToken;
+    document.querySelectorAll(".request-item").forEach((row) => {
+      let startX = 0;
+      let startY = 0;
+      let tracking = false;
+      let longPressTimer = null;
+      let moved = false;
+
+      const clearLongPress = () => {
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
       };
+
+      const openDetails = () => {
+        if (token !== requestGestureToken) return;
+        openPurchaseDetailsForRow(request, row);
+      };
+
+      row.addEventListener("touchstart", (event) => {
+        if (event.touches.length !== 1) return;
+        if (event.target.closest(".request-check-wrap, .remove-item, .qty-stepper, .product-chip, .draft-product, .draft-quantity")) {
+          tracking = false;
+          return;
+        }
+        const touch = event.touches[0];
+        startX = touch.clientX;
+        startY = touch.clientY;
+        tracking = true;
+        moved = false;
+        clearLongPress();
+        longPressTimer = setTimeout(() => {
+          longPressTimer = null;
+          tracking = false;
+          openDetails();
+        }, 480);
+      }, { passive: true });
+
+      row.addEventListener("touchmove", (event) => {
+        if (!tracking || event.touches.length !== 1) return;
+        const touch = event.touches[0];
+        const dx = touch.clientX - startX;
+        const dy = touch.clientY - startY;
+        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+          moved = true;
+          clearLongPress();
+        }
+        if (Math.abs(dy) > Math.abs(dx)) {
+          tracking = false;
+          clearLongPress();
+        }
+      }, { passive: true });
+
+      row.addEventListener("touchend", (event) => {
+        clearLongPress();
+        if (!tracking) return;
+        tracking = false;
+        const touch = event.changedTouches[0];
+        if (!touch) return;
+        const dx = touch.clientX - startX;
+        const dy = touch.clientY - startY;
+        if (Math.abs(dx) >= 56 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+          openDetails();
+        }
+      }, { passive: true });
+
+      row.addEventListener("touchcancel", () => {
+        tracking = false;
+        clearLongPress();
+      }, { passive: true });
+
+      row.addEventListener("contextmenu", (event) => {
+        if (event.target.closest(".request-check-wrap, .remove-item, .draft-product, .draft-quantity, .product-chip")) return;
+        event.preventDefault();
+        openDetails();
+      });
     });
+  }
+
+  function openPurchaseDetailsForRow(request, row) {
+    if (!row || row.classList.contains("is-blank")) return;
+    clearTimeout(requestAutosaveTimer);
+    syncDraftFromForm();
+    if (!persistRequestDraft({ silent: false })) return;
+    const productId = ensureRowProductId(row);
+    if (!productId) return showToast("Сначала укажите продукт.");
+    const current = getRequest(request.id);
+    if (!current) return;
+    openInlinePurchaseDetails(current, productId);
   }
 
   function ensureRowProductId(row) {
@@ -1417,8 +1715,7 @@
       const remaining = remainingRequestQuantity(request, productId);
       const line = receiptLine(request, productId);
       if (remaining <= 0 && line) {
-        draftItems = [];
-        renderRequestForm();
+        patchRequestItemRow(requestId, productId);
         return;
       }
       const requested = Number(request.items.find((item) => item.productId === productId)?.quantity || 0);
@@ -1427,7 +1724,7 @@
         purchasedProductId: productId,
         quantity: requested || remaining || 1,
         price: Number(line?.price) || 0,
-        completionMode: "closed",
+        completionMode: line && isPurchaseDetailsFilled(line, productId) ? (line.completionMode || "filled") : "closed",
       });
       return;
     }
@@ -1459,20 +1756,24 @@
     const receipt = ensureSingleReceipt(nextRequest, changedAt);
     let line = receipt.items.find((item) => item.productId === resolvedProductId);
     const isNewLine = !line;
+    const filled = safePrice > 0
+      || Boolean(draftItem.purchasedProduct)
+      || (purchasedProductId && purchasedProductId !== resolvedProductId)
+      || draftItem.completionMode === "filled";
     if (!line) {
       line = {
         productId: resolvedProductId,
         purchasedProductId,
         quantity,
         price: safePrice,
-        completionMode: draftItem.completionMode || (safePrice > 0 ? "filled" : "closed"),
+        completionMode: filled ? "filled" : (draftItem.completionMode || "closed"),
       };
       receipt.items.push(line);
     } else {
       line.quantity = quantity;
       line.price = safePrice;
       line.purchasedProductId = purchasedProductId;
-      line.completionMode = draftItem.completionMode || (safePrice > 0 ? "filled" : (line.completionMode || "closed"));
+      line.completionMode = filled ? "filled" : (draftItem.completionMode || line.completionMode || "closed");
     }
     receipt.updatedAt = changedAt;
     receipt.updatedBy = state.user?.email || "local";
@@ -1488,8 +1789,8 @@
     );
     commitState(nextState);
     formDirty = false;
-    draftItems = [];
-    renderRequestForm();
+    patchRequestItemRow(requestId, resolvedProductId);
+    // If scan created/updated products, chip labels may need refresh for this row only.
     showToast(isNewLine ? "Позиция отмечена как купленная." : "Цена и детали сохранены.");
   }
 
@@ -1504,8 +1805,7 @@
     const before = receipt.items.length;
     receipt.items = receipt.items.filter((item) => item.productId !== productId);
     if (receipt.items.length === before) {
-      draftItems = [];
-      renderRequestForm();
+      patchRequestItemRow(requestId, productId);
       return;
     }
     receipt.updatedAt = changedAt;
@@ -1517,9 +1817,91 @@
     appendRequestVersion(nextRequest, "Отметка покупки снята", changedAt, nextRequest.updatedBy);
     commitState(nextState);
     formDirty = false;
-    draftItems = [];
-    renderRequestForm();
+    patchRequestItemRow(requestId, productId);
     showToast("Отметка покупки снята.");
+  }
+
+  function patchRequestItemRow(requestId, productId) {
+    if (route !== "request-edit" || routeId !== requestId) {
+      draftItems = [];
+      if (route === "request-edit") renderRequestForm();
+      return;
+    }
+    const request = getRequest(requestId);
+    if (!request) return;
+    const row = [...document.querySelectorAll(".request-item")].find((element) => {
+      const draft = draftItems.find((item) => item.key === element.dataset.key);
+      const rowProductId = draft?.productId || element.dataset.productId || "";
+      return rowProductId === productId;
+    });
+    if (!row) {
+      // Keep draft memory; rebuild only this form when row is missing.
+      renderRequestForm();
+      return;
+    }
+    const draft = draftItems.find((item) => item.key === row.dataset.key);
+    const requestItem = request.items.find((item) => item.productId === productId);
+    const purchased = responseItemTotal(request, productId);
+    const remaining = remainingRequestQuantity(request, productId);
+    const line = receiptLine(request, productId);
+    const fullyBought = Boolean(productId && remaining <= 0 && purchased.quantity > 0);
+    const filled = Boolean(line && isPurchaseDetailsFilled(line, productId));
+    row.classList.toggle("is-bought", fullyBought);
+    row.classList.toggle("is-purchase-filled", filled);
+    row.dataset.productId = productId;
+    const checkbox = row.querySelector(".request-purchase-check");
+    if (checkbox) checkbox.checked = fullyBought;
+    const progress = row.querySelector(".request-progress-meta");
+    const progressText = requestItem
+      ? requestProgressLabel(request, requestItem, purchased)
+      : "";
+    if (progress) {
+      progress.textContent = progressText;
+      progress.hidden = !progressText;
+    } else if (progressText) {
+      const main = row.querySelector(".request-item-main");
+      const meta = document.createElement("p");
+      meta.className = "request-progress-meta";
+      meta.textContent = progressText;
+      main?.appendChild(meta);
+    }
+    let badge = row.querySelector(".request-filled-badge");
+    if (filled) {
+      const label = purchaseFilledLabel(request, productId, line);
+      if (!badge) {
+        badge = document.createElement("p");
+        badge.className = "request-filled-badge";
+        row.querySelector(".request-item-main")?.appendChild(badge);
+      }
+      badge.textContent = label;
+      badge.hidden = false;
+    } else if (badge) {
+      badge.hidden = true;
+      badge.textContent = "";
+    }
+    // Refresh spent total in meta header without full re-render when possible.
+    const spentNode = document.querySelector(".keep-note-meta strong");
+    const spent = requestTotal(request);
+    if (spentNode) {
+      if (spent > 0) spentNode.textContent = money(spent);
+      else spentNode.remove();
+    } else if (spent > 0) {
+      const meta = document.querySelector(".keep-note-meta");
+      if (meta) {
+        const strong = document.createElement("strong");
+        strong.textContent = money(spent);
+        meta.appendChild(strong);
+      }
+    }
+    const status = document.querySelector(".keep-note-meta .status");
+    if (status) {
+      status.className = `status ${request.status}`;
+      status.textContent = requestStatusLabel(request);
+    }
+    if (draft) {
+      const product = getProduct(productId);
+      if (product) setRowProductPresentation(row, draft, product);
+    }
   }
 
   function addEmptyRequestLine() {
@@ -1545,16 +1927,18 @@
     // Rebuild draft from DOM so memory and rows never drift after autosave.
     const nextDraft = [];
     document.querySelectorAll(".request-item").forEach((row) => {
-      const query = row.querySelector(".draft-product")?.value || "";
       const previous = draftItems.find((value) => value.key === row.dataset.key);
+      const query = row.querySelector(".draft-product")?.value || previous?.query || "";
       const productId = resolveDraftProductId(query, previous?.productId || row.dataset.productId || "");
+      const product = productId ? getProduct(productId) : null;
       row.dataset.productId = productId;
       nextDraft.push({
         key: row.dataset.key,
         productId,
         query,
-        quantity: Math.max(0.01, Number(row.querySelector(".draft-quantity")?.value) || 1),
-        unit: (row.querySelector(".draft-unit")?.value || previous?.unit || "").trim(),
+        quantity: Math.max(0.01, Number(row.querySelector(".draft-quantity")?.value) || previous?.quantity || 1),
+        unit: (previous?.unit || product?.unit || "").trim(),
+        editingName: Boolean(previous?.editingName) && !row.querySelector(".draft-product")?.hidden,
       });
     });
     if (nextDraft.length) draftItems = nextDraft;
@@ -1574,7 +1958,8 @@
     for (const draft of filledDraftItems) {
       const product = resolveOrCreateProduct(draft, nextState.products, new Date().toISOString());
       const previous = editedRequest.items.find((item) => item.productId === product.id) || {};
-      const unit = String(draft.unit || previous.unit || product.unit || "шт.").trim() || "шт.";
+      // Unit comes from the product card (not a free-text field on the line).
+      const unit = String(previous.unit || product.unit || draft.unit || "шт.").trim() || "шт.";
       items.push({
         ...previous,
         productId: product.id,
@@ -1624,27 +2009,42 @@
     draftItems = draftItems
       .filter((item) => keysInDom.has(item.key))
       .map((item) => {
-        if (!item.query.trim()) return item;
+        if (!item.query.trim()) return { ...item, editingName: true };
         const saved = items.find((value) => normalizeProductName(getProduct(value.productId)?.name || "") === normalizeProductName(item.query));
         if (!saved) return item;
+        const product = getProduct(saved.productId);
         return {
           ...item,
           productId: saved.productId,
-          query: getProduct(saved.productId)?.name || item.query,
+          query: product?.name || item.query,
           quantity: saved.quantity,
-          unit: saved.unit || item.unit || "",
+          unit: saved.unit || product?.unit || item.unit || "",
+          editingName: false,
         };
       });
-    // Keep row product ids in sync so checkboxes/details write price to the real product.
+    // Keep row product ids and chip presentation in sync without full re-render.
     document.querySelectorAll(".request-item").forEach((row) => {
       const item = draftItems.find((value) => value.key === row.dataset.key);
       if (!item) return;
       row.dataset.productId = item.productId || "";
       const hasText = Boolean(String(item.query || "").trim());
       const purchaseCheck = row.querySelector(".request-purchase-check");
-      const details = row.querySelector(".request-item-details");
-      if (purchaseCheck) purchaseCheck.disabled = !hasText || !item.productId;
-      if (details) details.hidden = !hasText || !item.productId;
+      if (purchaseCheck) purchaseCheck.disabled = !hasText;
+      const product = item.productId ? getProduct(item.productId) : null;
+      if (product && hasText) {
+        const input = row.querySelector(".draft-product");
+        if (input && input.value.trim() !== product.name && !item.editingName) {
+          input.value = product.name;
+          item.query = product.name;
+        }
+        setRowProductPresentation(row, item, product);
+      } else {
+        setRowProductPresentation(row, item, null);
+      }
+      const qtyInput = row.querySelector(".draft-quantity");
+      if (qtyInput && Number(qtyInput.value) !== Number(item.quantity)) {
+        qtyInput.value = String(item.quantity || 1);
+      }
     });
     return true;
   }
@@ -1705,7 +2105,7 @@
                   <small class="answer-item-summary" ${existing || remaining <= 0 ? "" : "hidden"}>${existing ? answerItemSummary(existing, item) : remaining <= 0 ? "Уже закрыто" : ""}</small>
                 </span>
               </label>
-              <button class="answer-item-details" type="button" ${closed ? "disabled" : ""} aria-label="Указать детали покупки ${escapeAttr(product?.name || "продукта")}">Детали</button>
+              <button class="answer-item-details" type="button" ${closed ? "disabled" : ""} aria-label="Указать детали покупки ${escapeAttr(product?.name || "продукта")}">Ещё</button>
             </div>`;
         }).join("")}
         </div>
@@ -1758,11 +2158,15 @@
       <dialog id="answer-action-dialog" class="answer-dialog">
         <div id="answer-fill-view">
           <h2 id="answer-dialog-title">Детали покупки</h2>
+          <p id="purchase-requested-name" class="muted purchase-requested-name"></p>
           <p id="purchase-product-name" class="purchase-product-name"></p>
           <label class="field purchase-quantity-field"><span>Куплено</span><div class="input-with-unit"><input id="purchase-quantity" type="number" min="0.01" step="0.01" inputmode="decimal" required><strong id="purchase-quantity-unit"></strong></div></label>
           <label class="field purchase-price-field"><span>Сумма за позицию, ₽</span><input id="purchase-price" type="number" min="0" step="0.01" placeholder="Необязательно"></label>
-          <button id="scan-purchase-barcode" class="button secondary full" type="button">Сканировать купленный товар</button>
-          <p id="purchase-status" class="muted barcode-status">Сканируйте товар, если купили его впервые или взяли замену.</p>
+          <div class="purchase-product-section">
+            <span class="eyebrow">Товар</span>
+            <button id="scan-purchase-barcode" class="button secondary full" type="button">Сканировать штрихкод</button>
+            <p id="purchase-status" class="muted barcode-status">Скан обновит неподтверждённый товар или привяжет другой SKU к этой покупке.</p>
+          </div>
           <button id="save-purchase-item" class="button full" type="button">Готово</button>
         </div>
       </dialog>`;
@@ -1837,14 +2241,29 @@
       ? Number(existing.quantity)
       : Math.max(0.01, remaining || requested || 1);
     quantityInput.value = String(qty);
-    quantityInput.max = String(Math.max(qty, remaining || 0, requested || 0));
+    quantityInput.max = String(Math.max(qty, remaining || 0, requested || 0, qty));
     document.getElementById("purchase-quantity-unit").textContent = requestItemUnit(requestItem);
     const price = Number(existing?.price);
     priceInput.value = Number.isFinite(price) && price > 0 ? String(price) : "";
     purchaseFillProduct = existing?.purchasedProduct || null;
+    const requestedProduct = getProduct(productId);
     const purchased = getProduct(existing?.purchasedProductId || productId);
-    document.getElementById("purchase-product-name").textContent = purchased?.name || getProduct(productId)?.name || "";
-    setPurchaseStatus("Сканируйте товар, если купили его впервые или взяли замену.");
+    const requestedLabel = document.getElementById("purchase-requested-name");
+    if (requestedLabel) {
+      requestedLabel.textContent = requestedProduct
+        ? `Запрошено: ${requestedProduct.name}${isProductConfirmed(requestedProduct) ? "" : " · неподтверждённый"}`
+        : "";
+    }
+    document.getElementById("purchase-product-name").textContent = purchaseFillProduct
+      ? `Куплен: ${purchaseFillProduct.name}`
+      : purchased && purchased.id !== productId
+        ? `Куплен: ${purchased.name}`
+        : purchased?.name || requestedProduct?.name || "";
+    setPurchaseStatus(
+      isProductConfirmed(requestedProduct)
+        ? "Скан привяжет другой товар к покупке, не изменяя запрошенный."
+        : "Скан может обновить неподтверждённый товар или указать замену."
+    );
   }
 
   async function lookupPurchaseBarcode(barcode) {
@@ -1947,45 +2366,60 @@
   function materializePurchasedProduct(nextState, item, changedAt) {
     if (!item.purchasedProduct) return item.purchasedProductId || item.productId;
     const suggestion = item.purchasedProduct;
-    const requestedProduct = nextState.products.find((product) => product.id === item.productId);
-    if (requestedProduct && !isCatalogIdentifiedProduct(requestedProduct)) {
+    const requestedProduct = nextState.products.find((product) => product.id === item.productId && !product.deletedAt);
+    // Only unconfirmed cards may be rewritten in place (e.g. free-text "Молоко" + scan).
+    if (requestedProduct && !isProductConfirmed(requestedProduct)) {
+      const category = suggestion.category || requestedProduct.category || "";
       Object.assign(requestedProduct, {
         name: suggestion.name,
-        category: suggestion.category || "",
-        unit: suggestion.unit || "шт.",
-        barcode: suggestion.barcode || "",
-        ingredients: suggestion.ingredients || "",
-        nutrition: suggestion.nutrition ? structuredClone(suggestion.nutrition) : null,
-        catalogSource: suggestion.catalogSource || "Open Food Facts",
+        category,
+        brand: suggestion.brand || requestedProduct.brand || "",
+        unit: suggestion.unit || requestedProduct.unit || "шт.",
+        barcode: suggestion.barcode || requestedProduct.barcode || "",
+        ingredients: suggestion.ingredients || requestedProduct.ingredients || "",
+        nutrition: suggestion.nutrition ? structuredClone(suggestion.nutrition) : requestedProduct.nutrition,
+        catalogSource: suggestion.catalogSource || requestedProduct.catalogSource || "Open Food Facts",
+        kind: suggestion.kind || (suggestion.barcode ? "sku" : inferProductKind(requestedProduct)),
+        genericKey: suggestion.genericKey
+          || requestedProduct.genericKey
+          || genericKeyFromParts(category, suggestion.name || requestedProduct.name),
+        confirmed: false,
         updatedAt: changedAt,
         updatedBy: state.user?.email || "local",
       });
       return requestedProduct.id;
     }
     const existing = nextState.products.find((product) =>
-      (suggestion.barcode && product.barcode === suggestion.barcode)
-      || normalizeProductName(product.name) === normalizeProductName(suggestion.name)
+      !product.deletedAt && (
+        (suggestion.barcode && product.barcode === suggestion.barcode)
+        || normalizeProductName(product.name) === normalizeProductName(suggestion.name)
+      )
     );
     if (existing) return existing.id;
+    const category = suggestion.category || "";
     const product = {
-      id: id("product"), name: suggestion.name, category: suggestion.category || "", unit: suggestion.unit || "шт.",
-      barcode: suggestion.barcode || "", ingredients: suggestion.ingredients || "",
+      id: id("product"),
+      name: suggestion.name,
+      category,
+      brand: suggestion.brand || "",
+      unit: suggestion.unit || "шт.",
+      barcode: suggestion.barcode || "",
+      ingredients: suggestion.ingredients || "",
       catalogSource: suggestion.catalogSource || "Open Food Facts",
       nutrition: suggestion.nutrition ? structuredClone(suggestion.nutrition) : null,
-      updatedAt: changedAt, updatedBy: state.user?.email || "local",
+      kind: suggestion.kind || (suggestion.barcode ? "sku" : "generic"),
+      genericKey: suggestion.genericKey || genericKeyFromParts(category, suggestion.name),
+      confirmed: Boolean(suggestion.barcode),
+      updatedAt: changedAt,
+      updatedBy: state.user?.email || "local",
     };
     nextState.products.push(product);
     return product.id;
   }
 
   function isCatalogIdentifiedProduct(product) {
-    if (!product) return false;
-    const nutritionSource = String(product.nutrition?.source || "").toLowerCase();
-    return Boolean(
-      product.barcode
-      || product.catalogSource
-      || (nutritionSource && nutritionSource !== "введено пользователем")
-    );
+    // Kept for callers/tests; confirmed SKUs and barcode-backed cards are "identified".
+    return isProductConfirmed(product);
   }
 
   function saveAnswerTransaction(event, request, editedResponse) {
@@ -3481,7 +3915,7 @@
 
   async function readAndMergeSpreadsheetData(token, spreadsheetId) {
     const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet`);
-    url.searchParams.append("ranges", "Продукты!A2:N");
+    url.searchParams.append("ranges", "Продукты!A2:P");
     url.searchParams.append("ranges", "Запросы!A2:N");
     url.searchParams.append("ranges", "Покупки!A2:L");
     url.searchParams.append("ranges", "Рацион!A2:N");
@@ -3661,7 +4095,7 @@
     });
     await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, token, {
       method: "POST",
-      body: JSON.stringify({ ranges: ["Продукты!A:N", "Запросы!A:N", "Покупки!A:L", "Рацион!A:N"] }),
+      body: JSON.stringify({ ranges: ["Продукты!A:P", "Запросы!A:N", "Покупки!A:L", "Рацион!A:N"] }),
     });
     await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, token, {
       method: "POST",
@@ -3669,9 +4103,26 @@
         valueInputOption: "USER_ENTERED",
         data: [
           {
-            range: "Продукты!A1:K",
-            values: [["id", "Наименование", "Категория", "Единица", "Обновлён", "Кем обновлён", "Пищевая ценность JSON", "Источник данных", "Штрихкод", "Состав", "Удалён"], ...syncPackage.products.map((item) =>
-              [item.id, item.name, item.category, item.unit, item.updatedAt || "", item.updatedBy || "", item.nutrition ? JSON.stringify(item.nutrition) : "", item.nutrition?.source || "", item.barcode || "", item.ingredients || "", item.deletedAt || ""]
+            range: "Продукты!A1:P",
+            values: [["id", "Наименование", "Категория", "Единица", "Обновлён", "Кем обновлён", "Пищевая ценность JSON", "Источник данных", "Штрихкод", "Состав", "Удалён", "Подтверждён", "Тип", "generic_key", "Бренд", "catalog_source"], ...syncPackage.products.map((item) =>
+              [
+                item.id,
+                item.name,
+                item.category,
+                item.unit,
+                item.updatedAt || "",
+                item.updatedBy || "",
+                item.nutrition ? JSON.stringify(item.nutrition) : "",
+                item.nutrition?.source || "",
+                item.barcode || "",
+                item.ingredients || "",
+                item.deletedAt || "",
+                item.confirmed ? "true" : "false",
+                item.kind || "",
+                item.genericKey || "",
+                item.brand || "",
+                item.catalogSource || "",
+              ]
             )],
           },
           {
@@ -3869,10 +4320,18 @@
     const bought = Number(purchased.quantity) || 0;
     const requested = Number(item.quantity) || 0;
     const price = Number(purchased.price) || 0;
+    const line = receiptLine(request, item.productId);
+    const purchasedId = line?.purchasedProductId || item.productId;
+    const purchasedProduct = purchasedId && purchasedId !== item.productId ? getProduct(purchasedId) : null;
+    const swapPart = purchasedProduct ? ` → ${escapeHtml(purchasedProduct.name)}` : "";
     const pricePart = price > 0 ? ` · ${money(price)}` : "";
     if (!bought) return "Не куплено";
-    if (remainingRequestQuantity(request, item.productId) <= 0) return `✓ Закрыто${pricePart}`;
-    return `Куплено ${number(bought)} из ${number(requested)} ${escapeHtml(requestItemUnit(item))}${pricePart}`;
+    if (remainingRequestQuantity(request, item.productId) <= 0) {
+      return isPurchaseDetailsFilled(line, item.productId)
+        ? `✓ Закрыто${swapPart}${pricePart}`
+        : `✓ Куплено${swapPart}${pricePart}`;
+    }
+    return `Куплено ${number(bought)} из ${number(requested)} ${escapeHtml(requestItemUnit(item))}${swapPart}${pricePart}`;
   }
 
   function isRemoteRequest(request) {
@@ -4061,11 +4520,11 @@
     result.rationAnchor = /^\d{4}-\d{2}-\d{2}$/.test(result.rationAnchor || "") ? result.rationAnchor : todayDateKey();
     result.rationTemplates = Array.isArray(result.rationTemplates) ? result.rationTemplates : [];
     result.products = mergeVersioned([], (result.products || []).map((product) => {
-      const normalized = {
+      const normalized = normalizeProductRecord({
         ...product,
         updatedAt: product.updatedAt || new Date(0).toISOString(),
         updatedBy: product.updatedBy || "local",
-      };
+      });
       delete normalized.baseQuantity;
       delete normalized.baseUpdatedAt;
       delete normalized.quantity;
@@ -4075,15 +4534,23 @@
     return result;
   }
 
+  function isLegacyProductRow(row) {
+    if (!row || row.length < 8) return false;
+    const maybeStock = String(row[4] ?? "").trim();
+    // Modern rows store ISO updatedAt at index 4; legacy stock quantity is a plain number.
+    if (/^\d{4}-\d{2}-\d{2}/.test(maybeStock)) return false;
+    const looksLikeStock = maybeStock !== "" && Number.isFinite(Number(maybeStock));
+    return looksLikeStock && Boolean(row[7]);
+  }
+
   function parseProductRow(row) {
-    const legacyStockSchema = row.length >= 14 || (
-      row.length >= 8 && String(row[4] ?? "").trim() !== "" && Number.isFinite(Number(row[4])) && Boolean(row[7])
-    );
+    const legacyStockSchema = isLegacyProductRow(row);
     const updatedAt = String((legacyStockSchema ? row[7] : row[4]) || new Date(0).toISOString());
     let nutrition = null;
     const nutritionIndex = legacyStockSchema ? 9 : 6;
     try { nutrition = row[nutritionIndex] ? JSON.parse(String(row[nutritionIndex])) : null; } catch { nutrition = null; }
-    return {
+    const confirmedRaw = String(row[legacyStockSchema ? 14 : 11] || "").toLowerCase();
+    const product = {
       id: String(row[0]),
       name: String(row[1] || ""),
       category: String(row[2] || ""),
@@ -4094,7 +4561,14 @@
       barcode: String(row[legacyStockSchema ? 11 : 8] || ""),
       ingredients: String(row[legacyStockSchema ? 12 : 9] || ""),
       deletedAt: String(row[legacyStockSchema ? 13 : 10] || ""),
+      confirmed: confirmedRaw === "1" || confirmedRaw === "true" || confirmedRaw === "да",
+      kind: String(row[legacyStockSchema ? 15 : 12] || ""),
+      genericKey: String(row[legacyStockSchema ? 16 : 13] || ""),
+      brand: String(row[legacyStockSchema ? 17 : 14] || ""),
+      catalogSource: String(row[legacyStockSchema ? 18 : 15] || ""),
     };
+    if (!confirmedRaw) delete product.confirmed;
+    return normalizeProductRecord(product);
   }
 
   function isLegacyRequestRow(row) {

@@ -167,12 +167,16 @@ Same spreadsheet; both A and B may edit offline; notifications when the other cr
 | Enter | Commits current line and focuses/creates next |
 | ＋ Позиция | Tappable text aligned with list content, not a misaligned block button |
 | One product once | Duplicate product in same request is rejected with clear message |
-| Line unit | Editable per request line; default from product; does not rewrite product.unit |
+| Name-only text input | Line text is product name only (no qty/unit parsing from free text) |
+| Qty control | Compact stepper on the line after the product is present; default `1` |
+| Line unit | Taken from product card default; not a separate always-visible input |
+| Product chip | Resolved product becomes a tappable chip → product card; long-press/dblclick renames line |
 | Remove × | Visible for every non-empty line; hidden (space reserved) for blank trailing line |
 | Check = bought | Checkbox on main request list marks remaining quantity purchased |
 | Uncheck = undo latest mark | Unchecking removes latest purchase contribution for that product when possible |
-| Details ··· | Optional price / qty / barcode without leaving the note |
-| Bought styling | Checked/fully bought lines are visually distinct (e.g. strikethrough + muted) |
+| Purchase sheet | Swipe or long-press row opens price / bought qty / barcode sheet (no ··· button) |
+| Unconfirmed update | Barcode/OFF may rewrite only **unconfirmed** products; confirmed products get a separate purchased SKU |
+| Bought styling | Minimal check vs filled details (price / other SKU) are visually distinct |
 
 ### 5.4 Dialogs & confirms
 
@@ -246,7 +250,7 @@ Same spreadsheet; both A and B may edit offline; notifications when the other cr
 | REQ-4 | One product id once per request |
 | REQ-5 | Autosave of structure on field commit (see 5.2), not on every key |
 | REQ-6 | Checkbox purchase flow on the note (see 5.3) |
-| REQ-7 | Optional purchase details dialog (qty, price, scan replacement) |
+| REQ-7 | Optional purchase details via swipe/long-press sheet (qty, price, scan); no ··· button |
 | REQ-8 | Partial fulfillment keeps request open until all quantities met |
 | REQ-9 | Local history + rollback on note (disclose local-only if not synced) |
 | REQ-10 | Soft-delete request + responses with confirm |
@@ -260,11 +264,13 @@ Same spreadsheet; both A and B may edit offline; notifications when the other cr
 | ID | Requirement |
 |---|---|
 | PRD-1 | List, add, edit, soft-delete |
-| PRD-2 | Fields: name, category, unit, barcode, ingredients, nutrition block |
+| PRD-2 | Fields: name, category, unit, barcode, ingredients, nutrition block; plus kind/genericKey/brand/confirmed |
 | PRD-3 | Barcode scan + Open Food Facts lookup with user confirmation before save |
 | PRD-4 | Name search suggestions: local + catalog + OFF (debounced) |
 | PRD-5 | Deleting product blocked if used in requests/purchases |
 | PRD-6 | Undo delete via toast when allowed |
+| PRD-7 | Free-text create → unconfirmed product; saving product card sets confirmed |
+| PRD-8 | Category/generic from OFF when available; SKU purchase must not rewrite a different confirmed product |
 
 ### 6.5 Ration (Рацион)
 
@@ -319,7 +325,7 @@ Same spreadsheet; both A and B may edit offline; notifications when the other cr
 
 ```
 [ Status · date · author ]
-[ ✓ ] [ product name ........ ] [ qty ] [ unit ] [···] [×]
+[ ✓ ] [ product chip / name text ] [ qty stepper ] [×]
 [ ✓ ] [ ... ]
 [ ＋ Позиция ]
 
@@ -329,11 +335,12 @@ Same spreadsheet; both A and B may edit offline; notifications when the other cr
 
 **Interactions**
 
-- Type name → suggestions; unit prefilled from product when appropriate.  
-- Blur/Enter → persist lines + create product if new.  
-- Check → mark remaining qty bought.  
+- Type product name only → suggestions; qty defaults to 1; unit from product card.  
+- Blur/Enter → persist lines + create unconfirmed product if new; show chip.  
+- Tap chip → product card (return to note).  
+- Check → mark remaining qty bought (partial row update).  
 - Uncheck → undo latest mark for that product if possible.  
-- ··· → details dialog.  
+- Swipe / long-press row → purchase sheet (price, bought qty, barcode).  
 - Готово / back → commit pending field edits, return to list.
 
 ### 7.2 Ration selection sheet
@@ -393,9 +400,10 @@ Track qualitatively in early household use; instrument later if needed:
 A build may ship for household use only if:
 
 - [ ] Create request is empty note; multi-line add works after Enter/blur commit  
-- [ ] Units are per-line and editable  
+- [ ] Qty via compact stepper; unit from product (no free-text unit field on line)  
 - [ ] No product spam while typing names  
-- [ ] Checkbox buy/unbuy on request note without separate primary «Отметить покупки»  
+- [ ] Checkbox buy/unbuy on request note; swipe/long-press for purchase details (no ···)  
+- [ ] Confirmed product is not rewritten when a different SKU is scanned  
 - [ ] Bottom nav stable on Profile and long Ration  
 - [ ] Ration toolbar + selection actions usable on ≤360 px width  
 - [ ] Google login works with configured package + SHA-1  

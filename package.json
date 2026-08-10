@@ -9,7 +9,8 @@
     "build": "npm run android:apk",
     "test": "node --test tests/mobile-sync-model.test.mjs",
     "android:sync": "cap sync android",
-    "android:apk": "powershell -ExecutionPolicy Bypass -File scripts/build-android.ps1"
+    "android:apk": "powershell -ExecutionPolicy Bypass -File scripts/build-android.ps1",
+    "run": "powershell -ExecutionPolicy Bypass -File run.ps1"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",

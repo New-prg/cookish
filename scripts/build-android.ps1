@@ -1,13 +1,14 @@
 $ErrorActionPreference = "Stop"
 
-$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$junction = Join-Path $env:USERPROFILE "cookish-build"
-$androidSdk = Join-Path $env:LOCALAPPDATA "Android\Sdk"
-$javaHome = "C:\Program Files\Android\Android Studio\jbr"
+. (Join-Path $PSScriptRoot "android-env.ps1")
 
-$env:JAVA_HOME = $javaHome
-$env:ANDROID_HOME = $androidSdk
-$env:ANDROID_SDK_ROOT = $androidSdk
+$projectRoot = Get-CookishProjectRoot -FromScriptRoot $PSScriptRoot
+$envInfo = Initialize-CookishAndroidEnv -ProjectRoot $projectRoot
+$junction = Get-CookishBuildRoot -ProjectRoot $projectRoot
+
+Write-Host "JAVA_HOME=$($envInfo.JavaHome)"
+Write-Host "ANDROID_HOME=$($envInfo.SdkPath)"
+Write-Host "Build root=$junction"
 
 Push-Location $projectRoot
 try {
@@ -15,15 +16,6 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Capacitor sync failed." }
 } finally {
   Pop-Location
-}
-
-if (Test-Path -LiteralPath $junction) {
-  $item = Get-Item -LiteralPath $junction -Force
-  if ($item.LinkType -ne "Junction" -or $item.Target -notcontains $projectRoot) {
-    throw "Build path $junction exists and does not point to this project."
-  }
-} else {
-  New-Item -ItemType Junction -Path $junction -Target $projectRoot | Out-Null
 }
 
 Push-Location (Join-Path $junction "android")

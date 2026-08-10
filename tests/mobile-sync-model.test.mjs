@@ -6,18 +6,20 @@ import vm from "node:vm";
 function loadModel() {
   const sourcePath = new URL("../mobile-shell/app.js", import.meta.url);
   const source = fs.readFileSync(sourcePath, "utf8");
-  const marker = "  render();\n  mirrorStateForBackgroundSync();";
-  assert.ok(source.includes(marker), "Test export marker was not found");
-  const instrumented = source.replace(marker, `
+  const markerMatch = source.match(/  render\(\);\r?\n  mirrorStateForBackgroundSync\(\);/);
+  assert.ok(markerMatch, "Test export marker was not found");
+  const instrumented = source.replace(markerMatch[0], `
   globalThis.__cookishModel = {
     activeResponses,
     appendRequestVersion,
     buildSyncPackage,
+    isProductConfirmed,
     isRequestFulfilled,
     materializePurchasedProduct,
     mergeRequests,
     mergeVersioned,
     migrateRequest,
+    normalizeProductRecord,
     normalizeRequest,
     openFoodFactsSuggestion,
     parseProductRow,
@@ -26,7 +28,7 @@ function loadModel() {
     restoreRequestVersion,
   };
   return;
-${marker}`);
+${markerMatch[0]}`);
   const element = {
     addEventListener() {},
     classList: { add() {}, remove() {}, toggle() {} },
@@ -176,12 +178,13 @@ test("replacement purchase keeps product records independent from purchase quant
   assert.equal("quantity" in result.products.find((item) => item.id === "product_replacement"), false);
 });
 
-test("scanned replacement fully corrects a manual request item instead of adding a product", () => {
+test("scanned replacement fully corrects an unconfirmed request item instead of adding a product", () => {
   const products = [{
     ...baseProduct,
     id: "product_manual",
     name: "Молоко",
     barcode: "",
+    confirmed: false,
     nutrition: null,
   }];
   const purchasedProductId = model.materializePurchasedProduct({ products }, {
@@ -194,6 +197,8 @@ test("scanned replacement fully corrects a manual request item instead of adding
       ingredients: "Молоко нормализованное",
       nutrition: { calories: 52, source: "Open Food Facts" },
       catalogSource: "Open Food Facts",
+      kind: "sku",
+      brand: "Простоквашино",
     },
   }, "2026-01-01T00:03:00.000Z");
 
@@ -201,6 +206,55 @@ test("scanned replacement fully corrects a manual request item instead of adding
   assert.equal(products.length, 1);
   assert.equal(products[0].name, "Молоко Простоквашино 2,5%");
   assert.equal(products[0].barcode, "4607053473544");
+  assert.equal(products[0].confirmed, false);
+});
+
+test("confirmed product is not rewritten when a different SKU is scanned", () => {
+  const products = [{
+    ...baseProduct,
+    id: "product_domik",
+    name: "Молоко Домик в деревне",
+    barcode: "4600000000001",
+    confirmed: true,
+    kind: "sku",
+    category: "Молочные продукты",
+  }];
+  const purchasedProductId = model.materializePurchasedProduct({ products }, {
+    productId: "product_domik",
+    purchasedProduct: {
+      name: "Молоко Простоквашино 2,5%",
+      category: "Молочные продукты",
+      unit: "л",
+      barcode: "4607053473544",
+      ingredients: "Молоко нормализованное",
+      nutrition: { calories: 52, source: "Open Food Facts" },
+      catalogSource: "Open Food Facts",
+      kind: "sku",
+      brand: "Простоквашино",
+    },
+  }, "2026-01-01T00:03:00.000Z");
+
+  assert.notEqual(purchasedProductId, "product_domik");
+  assert.equal(products.length, 2);
+  assert.equal(products[0].name, "Молоко Домик в деревне");
+  assert.equal(products[0].barcode, "4600000000001");
+  assert.equal(products.find((item) => item.id === purchasedProductId)?.name, "Молоко Простоквашино 2,5%");
+});
+
+test("Open Food Facts suggestion carries generic key and sku kind", () => {
+  const suggestion = model.openFoodFactsSuggestion({
+    code: "4607053473544",
+    product_name_ru: "Кукуруза молодая Global Village",
+    generic_name_ru: "Кукуруза",
+    brands: "Global Village",
+    categories_tags: ["en:canned-vegetables"],
+    nutriments: { "energy-kcal_100g": 58, proteins_100g: 2, fat_100g: 0.5, carbohydrates_100g: 11 },
+  });
+
+  assert.equal(suggestion.kind, "sku");
+  assert.equal(suggestion.brand, "Global Village");
+  assert.ok(suggestion.genericKey);
+  assert.equal(suggestion.confirmed, false);
 });
 
 test("deleted request and its transactions stay deleted after an older remote merge", () => {
