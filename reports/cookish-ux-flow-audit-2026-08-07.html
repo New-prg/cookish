@@ -1,0 +1,1415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cookish UI/UX Flow Audit | 2026-08-07</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* 
+     * TERMINAL DASHBOARD THEME
+     * Monochromatic, high-density, dual-mode (dark/light)
+     * 
+     * Theme priority:
+     * 1. Manual override via data-theme attribute
+     * 2. System preference via prefers-color-scheme
+     * 3. Default: dark mode
+     */
+    
+    /* Default tokens (dark mode) */
+    :root {
+      --bg-base: #0a0f14;
+      --bg-panel: #0f1519;
+      --bg-hover: #151c22;
+      --border-dim: #1e293b;
+      --border-focus: #05AD98;
+      --text-primary: #e2e8f0;
+      --text-muted: #475569;
+      --accent-bg: #05AD98;
+      --accent-text: #0a0f14;
+      --positive: #05AD98;
+      --negative: #E85D6C;
+      --warning: #F5A623;
+      --fault: #E85D6C;
+      --neutral: #94a3b8;
+      --extreme: #8B5CF6;
+      --dislocation: #D946A8;
+      --signal-deep: #048A7A;
+      --signal-strong: #0FCFB5;
+      --signal-core: #05AD98;
+      --text-secondary: #94a3b8;
+    }
+    
+    /* System preference: light mode */
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme="dark"]) {
+        --bg-base: #FFFFFF;
+        --bg-panel: #FFFFFF;
+        --bg-hover: #f1f5f9;
+        --border-dim: #BBBFBF;
+        --border-focus: #05AD98;
+        --text-primary: #000000;
+        --text-muted: #878787;
+        --accent-bg: #05AD98;
+        --accent-text: #FFFFFF;
+        --positive: #048A7A;
+        --negative: #D4183D;
+        --warning: #D4910A;
+        --fault: #D4183D;
+        --neutral: #878787;
+        --extreme: #7C3AED;
+        --dislocation: #C026A0;
+        --signal-deep: #037066;
+        --signal-strong: #048A7A;
+        --signal-core: #05AD98;
+        --text-secondary: #636363;
+      }
+    }
+
+    /* Manual override: light mode */
+    [data-theme="light"] {
+      --bg-base: #FFFFFF;
+      --bg-panel: #FFFFFF;
+      --bg-hover: #f1f5f9;
+      --border-dim: #BBBFBF;
+      --border-focus: #05AD98;
+      --text-primary: #000000;
+      --text-muted: #878787;
+      --accent-bg: #05AD98;
+      --accent-text: #FFFFFF;
+      --positive: #048A7A;
+      --negative: #D4183D;
+      --warning: #D4910A;
+      --fault: #D4183D;
+      --neutral: #878787;
+      --extreme: #7C3AED;
+      --dislocation: #C026A0;
+      --signal-deep: #037066;
+      --signal-strong: #048A7A;
+      --signal-core: #05AD98;
+      --text-secondary: #636363;
+    }
+    
+    /* Manual override: dark mode */
+    [data-theme="dark"] {
+      --bg-base: #0a0f14;
+      --bg-panel: #0f1519;
+      --bg-hover: #151c22;
+      --border-dim: #1e293b;
+      --border-focus: #05AD98;
+      --text-primary: #e2e8f0;
+      --text-muted: #475569;
+      --accent-bg: #05AD98;
+      --accent-text: #0a0f14;
+      --positive: #05AD98;
+      --negative: #E85D6C;
+      --warning: #F5A623;
+      --fault: #E85D6C;
+      --neutral: #94a3b8;
+      --extreme: #8B5CF6;
+      --dislocation: #D946A8;
+      --signal-deep: #048A7A;
+      --signal-strong: #0FCFB5;
+      --signal-core: #05AD98;
+      --text-secondary: #94a3b8;
+    }
+
+    /* ========== BASE STYLES ========== */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+      background: var(--bg-base);
+      color: var(--text-primary);
+    }
+
+    /* ========== LAYOUT ========== */
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .header {
+      border-bottom: 1px solid var(--border-dim);
+      padding-bottom: 16px;
+      margin-bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .title {
+      font-size: 14px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .timestamp {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+    @media (max-width: 768px) {
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+    }
+
+    /* ========== PANELS ========== */
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dim);
+      margin-bottom: 16px;
+      border-radius: 4px;
+    }
+
+    .panel-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-dim);
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .panel-body {
+      padding: 16px;
+    }
+
+    .panel-accent {
+      border: 2px solid var(--accent-bg);
+    }
+
+    /* ========== METRICS GRID ========== */
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1px;
+      background: var(--border-dim);
+      border: 1px solid var(--border-dim);
+      margin-bottom: 24px;
+      border-radius: 4px;
+    }
+
+    .metric {
+      background: var(--bg-panel);
+      padding: 16px;
+    }
+
+    .metric-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .metric-value {
+      font-size: 24px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+    }
+
+    .metric-value.large { font-size: 32px; }
+    .metric-value.small { font-size: 18px; }
+
+    .metric-change {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border-dim);
+    }
+
+    /* ========== TABLES ========== */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th {
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      text-align: left;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-dim);
+      position: sticky;
+      top: 0;
+      background: var(--bg-panel);
+    }
+
+    td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-dim);
+    }
+
+    tr:hover {
+      background: var(--bg-hover);
+    }
+
+    tr.highlight {
+      background: var(--bg-hover);
+    }
+
+    /* ========== TEXT UTILITIES ========== */
+    .text-right { text-align: right; }
+    .text-center { text-align: center; }
+    .text-muted { color: var(--text-muted); }
+    .text-positive { color: var(--positive); }
+    .text-negative { color: var(--negative); }
+    .text-warning { color: var(--warning); }
+    .text-mono { font-family: 'IBM Plex Mono', monospace; }
+    .text-sans { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    .text-small { font-size: 11px; }
+    .text-uppercase { text-transform: uppercase; letter-spacing: 0.1em; }
+
+    /* ========== PILLS / BADGES ========== */
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border: 1px solid var(--border-dim);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      border-radius: 999px;
+      }
+
+    .pill-accent {
+      background: var(--accent-bg);
+      color: var(--accent-text);
+      border-color: var(--accent-bg);
+    }
+
+    .pill-positive {
+      background: var(--positive);
+      color: #000;
+      border-color: var(--positive);
+    }
+
+    .pill-negative {
+      background: var(--negative);
+      color: #FFF;
+      border-color: var(--negative);
+    }
+
+    .pill-warning {
+      background: var(--warning);
+      color: #000;
+      border-color: var(--warning);
+    }
+
+    /* ========== STATUS INDICATORS ========== */
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--accent-bg);
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.positive { background: var(--positive); }
+    .status-dot.negative { background: var(--negative); }
+    .status-dot.warning { background: var(--warning); }
+    .status-dot.static { animation: none; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ========== BUTTONS ========== */
+    .btn {
+      background: transparent;
+      border: 1px solid var(--border-dim);
+      color: var(--text-primary);
+      padding: 6px 12px;
+      font-family: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 150ms ease-in-out;
+    }
+
+    .btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-focus);
+    }
+
+    .btn-accent {
+      background: var(--accent-bg);
+      color: var(--accent-text);
+      border-color: var(--accent-bg);
+    }
+
+    .btn-accent:hover {
+      opacity: 0.9;
+    }
+
+    .theme-toggle {
+      background: transparent;
+      border: 1px solid var(--border-dim);
+      color: var(--text-primary);
+      padding: 4px 12px;
+      font-family: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 150ms ease-in-out;
+    }
+
+    .theme-toggle:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-focus);
+    }
+
+    /* ========== SPECIAL COMPONENTS ========== */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border-dim);
+      margin: 32px 0;
+    }
+
+    .section-header {
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border-dim);
+    }
+
+    .callout {
+      background: var(--bg-hover);
+      border-left: 3px solid var(--accent-bg);
+      padding: 16px;
+      margin: 16px 0;
+      border-radius: 4px;
+    }
+
+    .callout-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .callout.positive { border-left-color: var(--positive); }
+    .callout.negative { border-left-color: var(--negative); }
+    .callout.warning { border-left-color: var(--warning); }
+
+    .card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dim);
+      padding: 20px;
+    }
+
+    .card-accent {
+      border: 2px solid var(--accent-bg);
+    }
+
+    .footer {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-dim);
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+
+    /* ========== PROGRESS BARS ========== */
+    .bar-container {
+      width: 100px;
+      height: 8px;
+      background: var(--border-dim);
+      display: inline-block;
+      vertical-align: middle;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background: var(--accent-bg);
+    }
+
+    .bar-fill.positive { background: var(--positive); }
+    .bar-fill.negative { background: var(--negative); }
+
+    /* ========== SCROLLBAR ========== */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg-base); }
+    ::-webkit-scrollbar-thumb { background: var(--border-focus); }
+
+    /* ========== PRINT STYLES ========== */
+    @media print {
+      body { background: white; color: black; }
+      .theme-toggle, .btn { display: none; }
+      .panel { border-color: #ccc;
+      border-radius: 4px;
+    }
+      .header { border-bottom-color: #ccc; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+  <div>
+    <h1 class="title">Cookish — UI/UX Flow Audit</h1>
+    <p class="subtitle">Разбор продукта · карта экранов · сценарии · приоритеты улучшений · git snapshot</p>
+  </div>
+  <div class="header-actions">
+    <span class="status"><span class="status-dot positive"></span> AUDIT COMPLETE</span>
+    <span class="timestamp">Generated: 2026-08-07 · commit f4114e7</span>
+    <button class="theme-toggle" onclick="toggleTheme()">◐ THEME</button>
+  </div>
+</header>
+
+<div class="metrics">
+  <div class="metric">
+    <div class="metric-label">Product</div>
+    <div class="metric-value small">Cookish</div>
+    <div class="metric-change">Offline-first household food ops</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Platform</div>
+    <div class="metric-value small">Android</div>
+    <div class="metric-change">Capacitor + WebView + native Java</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Bottom tabs</div>
+    <div class="metric-value">4</div>
+    <div class="metric-change">Сводка · Запросы · Рацион · Профиль</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Sync fabric</div>
+    <div class="metric-value small">Sheets</div>
+    <div class="metric-change">WorkManager 15m · FG ~30s</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">UI shell</div>
+    <div class="metric-value small">~4k LOC</div>
+    <div class="metric-change">mobile-shell/app.js god-file</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Git</div>
+    <div class="metric-value small text-mono">f4114e7</div>
+    <div class="metric-change">Working tree clean</div>
+  </div>
+</div>
+
+<div class="callout positive">
+  <div class="callout-title">Job to be done</div>
+  <p><strong>Cookish</strong> помогает небольшой семье (1–2 человека) планировать еду, превращать план в общий список покупок, фиксировать траты и вести персональный рацион — <strong>без своего backend</strong>: телефон = source of record, Google Sheets = shared sync fabric.</p>
+</div>
+
+<!-- 1. PRODUCT SNAPSHOT -->
+<div class="section-header">01 · Product snapshot</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="panel-header">Value propositions</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Value</th>
+          <th>User-facing outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Shared shopping</strong></td>
+          <td>Партнёр видит запросы и отмечает купленное</td>
+        </tr>
+        <tr>
+          <td><strong>Offline-first</strong></td>
+          <td>Работа без сети; sync догоняет позже</td>
+        </tr>
+        <tr>
+          <td><strong>Keep-like lists</strong></td>
+          <td>Создание запроса = заметка, не multi-step wizard</td>
+        </tr>
+        <tr>
+          <td><strong>Ration → basket</strong></td>
+          <td>Порции рациона → количества в запросе</td>
+        </tr>
+        <tr>
+          <td><strong>Light nutrition</strong></td>
+          <td>КБЖУ на продуктах для итогов рациона</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <div class="panel-header">Architecture (audit)</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Layer</th>
+          <th>Reality</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>UI shell</td>
+          <td class="text-mono text-small">mobile-shell/app.js + styles.css</td>
+        </tr>
+        <tr>
+          <td>Local data</td>
+          <td class="text-mono text-small">localStorage cookish.android.data.v1</td>
+        </tr>
+        <tr>
+          <td>Shared data</td>
+          <td>Листы: Продукты, Запросы, Покупки, Рацион</td>
+        </tr>
+        <tr>
+          <td>Auth</td>
+          <td>Android Google Identity + OAuth XML</td>
+        </tr>
+        <tr>
+          <td>Background</td>
+          <td>WorkManager ~15 min; FG poll ~30 s</td>
+        </tr>
+        <tr>
+          <td>Tests</td>
+          <td>Merge/sync domain helpers only</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">Core domain map</div>
+  <div class="panel-body">
+    <div class="grid-4" style="gap:12px;">
+      <div class="card">
+        <div class="text-small text-muted text-uppercase">Request</div>
+        <p style="margin-top:8px;"><strong>Запрос</strong> — shared shopping note (Keep-like checklist)</p>
+      </div>
+      <div class="card">
+        <div class="text-small text-muted text-uppercase">Purchase</div>
+        <p style="margin-top:8px;"><strong>Покупка</strong> — response: qty + optional price per line</p>
+      </div>
+      <div class="card">
+        <div class="text-small text-muted text-uppercase">Product</div>
+        <p style="margin-top:8px;"><strong>Продукт</strong> — catalog: unit, barcode, nutrition</p>
+      </div>
+      <div class="card">
+        <div class="text-small text-muted text-uppercase">Ration</div>
+        <p style="margin-top:8px;"><strong>Рацион</strong> — personal meal plan by day/owner</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 2. IA -->
+<div class="section-header">02 · Information architecture</div>
+
+<div class="panel panel-accent">
+  <div class="panel-header">
+    <span>Screen map</span>
+    <span class="pill pill-accent">IA</span>
+  </div>
+  <div class="panel-body">
+    <div class="mermaid">
+flowchart TB
+  subgraph tabs [Нижняя навигация]
+    S[Сводка]
+    R[Запросы]
+    Rat[Рацион]
+    P[Профиль]
+  end
+
+  ONB[Онбординг<br/>фон → Google → таблица]
+  ONB -->|готово| S
+
+  S -->|Создать запрос| RE[Запрос-заметка]
+  S -->|Продукты| PL[Список продуктов]
+  R -->|Создать / открыть| RE
+  RE -->|··· / детали| PD[Диалог покупки]
+  RE -.->|advanced| RA[Ответ / покупка]
+  Rat -->|Запросить выбранное| RE
+  P --> PL
+  PL -->|Добавить / редактировать| PF[Карточка продукта]
+  P --> Sync[Sheets / Google / батарея]
+    </div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="panel-header">Bottom navigation (required)</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Tab</th>
+          <th>Purpose</th>
+          <th>Primary actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Сводка</strong></td>
+          <td>Home health: open lists, spend, shortcuts</td>
+          <td>Create request; open products</td>
+        </tr>
+        <tr>
+          <td><strong>Запросы</strong></td>
+          <td>All shopping notes</td>
+          <td>Create; open note</td>
+        </tr>
+        <tr>
+          <td><strong>Рацион</strong></td>
+          <td>Personal meal calendar</td>
+          <td>Period nav; select; request; delete</td>
+        </tr>
+        <tr>
+          <td><strong>Профиль</strong></td>
+          <td>Account, sheet, permissions</td>
+          <td>Google/sheet; products; clear data</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <div class="panel-header">IA rules</div>
+    <div class="panel-body">
+      <ul style="padding-left:18px; color:var(--text-secondary);">
+        <li style="margin-bottom:8px;"><strong style="color:var(--text-primary);">One primary surface per job.</strong> Buying on the request note, not a parallel wizard.</li>
+        <li style="margin-bottom:8px;"><strong style="color:var(--text-primary);">Create = open empty artifact.</strong> No “confirm create” form for requests.</li>
+        <li style="margin-bottom:8px;"><strong style="color:var(--text-primary);">Destructive / system settings</strong> live in Profile, not on home.</li>
+        <li style="margin-bottom:8px;"><strong style="color:var(--text-primary);">Fixed chrome:</strong> top bar + bottom nav outside scrollport; only <span class="text-mono">main</span> scrolls.</li>
+        <li><strong style="color:var(--text-primary);">Commit on leave:</strong> blur / Enter / Готово — not every keystroke.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- 3. PERSONAS -->
+<div class="section-header">03 · Personas & primary scenarios</div>
+
+<div class="grid-3">
+  <div class="panel">
+    <div class="panel-header">A · Planner</div>
+    <div class="panel-body">
+      <p class="text-muted text-small" style="margin-bottom:8px;">Often at home</p>
+      <p>Plans meals for the week, builds shopping lists, cares about portions/calories roughly.</p>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">B · Buyer</div>
+    <div class="panel-body">
+      <p class="text-muted text-small" style="margin-bottom:8px;">Often in store</p>
+      <p>Opens shared request, checks off bought items, sometimes replaces via barcode, enters price occasionally.</p>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">C · Shared household</div>
+    <div class="panel-body">
+      <p class="text-muted text-small" style="margin-bottom:8px;">Same spreadsheet</p>
+      <p>Both may edit offline; notifications when the other creates a request.</p>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">Primary scenarios (product contract)</div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Scenario</th>
+        <th>Happy path</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">1</td>
+        <td><strong>First run</strong></td>
+        <td>Notifications/battery (skippable) → Google → create/attach sheet → Summary</td>
+      </tr>
+      <tr>
+        <td class="text-mono">2</td>
+        <td><strong>Quick list</strong></td>
+        <td>Requests → Создать → empty note → type products → leave → partner sees list</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3</td>
+        <td><strong>Shop</strong></td>
+        <td>Open request → check items → optional price via ··· → totals update</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4</td>
+        <td><strong>Plan meals</strong></td>
+        <td>Ration week → add meals → select → Запросить → package rounding</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5</td>
+        <td><strong>Catalog</strong></td>
+        <td>Scan barcode / search OFF → save nutrition → reuse in ration & lists</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- 4. FLOWS -->
+<div class="section-header">04 · Interaction diagrams</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>4.1 First run / onboarding</span>
+    <span class="pill">SEQUENCE</span>
+  </div>
+  <div class="panel-body">
+    <div class="mermaid">
+sequenceDiagram
+  actor U as Пользователь
+  participant App as Cookish
+  participant OS as Android
+  participant G as Google
+  participant Sh as Sheets
+
+  U->>App: Установка / первый запуск
+  App->>U: Шаг 1: уведомления + батарея
+  alt Пропустить
+    U->>App: Пропустить (можно в Профиле)
+  else Разрешить
+    U->>OS: Grant notifications / battery
+  end
+  App->>U: Шаг 2: Войти в Google
+  U->>G: OAuth
+  G-->>App: user + token
+  App->>U: Шаг 3: создать / подключить таблицу
+  U->>Sh: Новая или вставить ссылку
+  App->>Sh: Разметка листов
+  App->>U: Сводка (основной экран)
+    </div>
+    <div class="callout warning" style="margin-top:16px;margin-bottom:0;">
+      <div class="callout-title">UX risk</div>
+      <p>До Google + таблицы основной UI <strong>заблокирован</strong>. Для соло-режима «просто список на телефоне» — трение; для shared household — оправдано.</p>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>4.2 Quick shopping list (Planner)</span>
+    <span class="pill">FLOW</span>
+  </div>
+  <div class="panel-body">
+    <div class="mermaid">
+flowchart LR
+  A[Запросы / Сводка] --> B[Создать]
+  B --> C[Пустая заметка]
+  C --> D[Печатает продукт]
+  D --> E{Подсказка?}
+  E -->|да| F[Выбор из каталога/OFF]
+  E -->|нет| G[Новый продукт при blur/Enter]
+  F --> H[qty · unit · следующая строка]
+  G --> H
+  H --> I[Готово / Back]
+  I --> J[Список запросов]
+  J --> K[Sheets sync в фоне]
+    </div>
+    <p class="text-muted text-small" style="margin-top:12px;">Сильная сторона: <strong style="color:var(--text-primary);">create = empty artifact</strong>, без wizard «Submit в конце». Правильный mental model (Keep-like).</p>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>4.3 In-store shopping (Buyer)</span>
+    <span class="pill">SEQUENCE</span>
+  </div>
+  <div class="panel-body">
+    <div class="mermaid">
+sequenceDiagram
+  actor B as Покупатель
+  participant App as Запрос-заметка
+  participant Local as localStorage
+  participant Sh as Sheets
+
+  Note over B,Sh: Партнёр уже создал список
+  B->>App: Открывает активный запрос
+  loop По позициям
+    B->>App: ✓ Куплено
+    App->>Local: Optimistic update
+    opt Нужна цена / замена
+      B->>App: ···
+      B->>App: qty, цена, barcode
+    end
+  end
+  App->>App: Если всё закрыто → status done
+  App->>Sh: Queue sync
+  Note over B: Минимум экранов в магазине = цель UX
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>4.4 Ration → basket</span>
+    <span class="pill">FLOW</span>
+  </div>
+  <div class="panel-body">
+    <div class="mermaid">
+flowchart TB
+  A[Рацион: неделя] --> B[Добавить приёмы / продукты]
+  B --> C[Режим выбора]
+  C --> D[Выделить дни / приёмы / позиции]
+  D --> E{Действие}
+  E -->|Запросить| F[Запрос с округлением до упаковок]
+  E -->|Удалить| G[Confirm + undo toast]
+  F --> H[Keep-note editor]
+  H --> I[Доработать список → магазин]
+    </div>
+    <p class="text-muted text-small" style="margin-top:12px;">Главный <strong style="color:var(--text-primary);">differentiator</strong> продукта. Flow сильный; discovery «как собрать список из рациона» может быть неочевиден новичку.</p>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>4.5 Multi-device collaboration</span>
+    <span class="pill">SEQUENCE</span>
+  </div>
+  <div class="panel-body">
+    <div class="mermaid">
+sequenceDiagram
+  participant A as Устройство A
+  participant Sh as Google Sheets
+  participant B as Устройство B
+
+  A->>A: Создаёт запрос offline
+  A->>Sh: Sync push
+  Note over B: WorkManager ~15 мин / foreground ~30 с
+  B->>Sh: Pull
+  B->>B: Notification: новый запрос
+  B->>B: ✓ Покупки в магазине
+  B->>Sh: Responses merge by response_id
+  A->>Sh: Pull → видит прогресс
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>4.6 Target state machine (proposed)</span>
+    <span class="pill pill-warning">TARGET</span>
+  </div>
+  <div class="panel-body">
+    <div class="mermaid">
+stateDiagram-v2
+  [*] --> Onboarding
+  Onboarding --> Home: Google + Sheet
+  Home --> QuickList: FAB Создать
+  Home --> ActiveNote: Тап по open request
+  Home --> Ration: Таб
+  Home --> Catalog: Продукты
+  Ration --> ActiveNote: Запросить
+  QuickList --> ActiveNote
+  ActiveNote --> ShoppingMode: В магазине
+  ShoppingMode --> ActiveNote: Готово
+  ActiveNote --> Home: Back / Готово
+  Catalog --> Home
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>4.7 Store friction: now vs better</span>
+    <span class="pill pill-warning">IMPROVE</span>
+  </div>
+  <div class="panel-body">
+    <div class="mermaid">
+flowchart LR
+  subgraph now [Сейчас]
+    N1[Открыть app] --> N2[Таб Запросы] --> N3[Найти open] --> N4[Отметить]
+  end
+  subgraph better [Лучше для магазина]
+    B1[Notification / shortcut] --> B2[Сразу в активный запрос]
+    B2 --> B3[Крупный check + qty stepper]
+    B3 --> B4[Режим В магазине full-screen]
+  end
+    </div>
+  </div>
+</div>
+
+<!-- 5. STRENGTHS -->
+<div class="section-header">05 · What already works well</div>
+
+<div class="panel">
+  <div class="panel-header">Strengths</div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Strength</th>
+        <th>Why it matters</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">1</td>
+        <td><strong>Keep-like requests</strong></td>
+        <td>Empty note, trailing blank line, Enter → next, checkbox = bought</td>
+      </tr>
+      <tr>
+        <td class="text-mono">2</td>
+        <td><strong>One job per surface</strong></td>
+        <td>Purchase on the note, not a separate wizard</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3</td>
+        <td><strong>Offline-first + sync chip</strong></td>
+        <td>Does not lock UI on every save</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4</td>
+        <td><strong>Input protection</strong></td>
+        <td>Commit on blur/Enter; sync does not steal focus while editing</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5</td>
+        <td><strong>Ration → Request</strong></td>
+        <td>Meaningful end-to-end differentiator path</td>
+      </tr>
+      <tr>
+        <td class="text-mono">6</td>
+        <td><strong>Product PRD</strong></td>
+        <td><span class="text-mono">docs/PRODUCT_REQUIREMENTS.md</span> — rare maturity for this size</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout positive">
+  <div class="callout-title">Must-not-regress behaviors</div>
+  <p>Request opens as Keep-style list · product name not on every keystroke · line unit is request-local · checkbox buy (one request = one receipt) · Готово commits without “unsaved” confirm · bottom nav pinned · ration selection toolbar stable · ration Удалить works on selection.</p>
+</div>
+
+<!-- 6. IMPROVEMENTS -->
+<div class="section-header">06 · UX improvement backlog</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>P0 — Correctness & “alive” feel</span>
+    <span class="pill pill-negative">HIGH</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Issue</th>
+        <th>Why it hurts</th>
+        <th>Proposal</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="highlight">
+        <td>Full <span class="text-mono">innerHTML</span> re-render after check / ration edit</td>
+        <td>Keyboard, focus, jank — breaks note-feel</td>
+        <td>Partial DOM update of one row; virtual list later</td>
+      </tr>
+      <tr class="highlight">
+        <td>Dual write path JS + Java worker</td>
+        <td>Ghost overwrite under concurrent multi-user edits</td>
+        <td>One canonical merge; non-wipe Sheets write</td>
+      </tr>
+      <tr>
+        <td>History / rollback local-only</td>
+        <td>Partner does not understand “I rolled back”</td>
+        <td>Badge «только на этом устройстве» + roadmap sync history</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>P1 — IA clarity & discovery</span>
+    <span class="pill pill-warning">MEDIUM</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Issue</th>
+        <th>Proposal</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Products</strong> buried under Summary / Profile</td>
+        <td>5th tab <em>or</em> sticky entry + contextual FAB</td>
+      </tr>
+      <tr>
+        <td>Summary ≈ Profile metrics duplicate</td>
+        <td>Summary = <strong>action queue</strong>: buy today, sync error, ration without products</td>
+      </tr>
+      <tr>
+        <td>Ration → request not obvious</td>
+        <td>Onboarding tip / empty-state: «Выделите дни → Запросить»</td>
+      </tr>
+      <tr>
+        <td>Unicode tab icons (⌂ ≡ ▦ ○)</td>
+        <td>SVG icon set + active color; Cookish brand on splash</td>
+      </tr>
+      <tr>
+        <td><span class="text-mono">request-answer</span> vs checkbox flow</td>
+        <td>Hide advanced path; primary = ✓ on line</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>P2 — In-store friction</span>
+    <span class="pill pill-warning">MEDIUM</span>
+  </div>
+  <div class="panel-body">
+    <div class="grid-2" style="grid-template-columns:1fr 1fr;">
+      <div>
+        <div class="text-small text-muted text-uppercase" style="margin-bottom:8px;">Concrete moves</div>
+        <ul style="padding-left:18px; color:var(--text-secondary);">
+          <li style="margin-bottom:6px;"><strong style="color:var(--text-primary);">«Режим магазина»</strong> — larger targets, hide history/delete, keep screen on</li>
+          <li style="margin-bottom:6px;"><strong style="color:var(--text-primary);">Deep link</strong> from notification → request-edit</li>
+          <li style="margin-bottom:6px;"><strong style="color:var(--text-primary);">Pull-to-refresh</strong> language on lists</li>
+          <li style="margin-bottom:6px;">Price: quick preset / optional end-of-receipt total</li>
+          <li>Filter «осталось купить»; haptic on check</li>
+        </ul>
+      </div>
+      <div class="callout" style="margin:0;">
+        <div class="callout-title">Buyer success metric</div>
+        <p>Time from notification tap → first checkbox under 3 seconds. Zero navigation hops when there is a single active open request.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>P3 — Craft & polish</span>
+    <span class="pill">LOW</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Empty-state illustrations</td>
+        <td>Currently text-only</td>
+      </tr>
+      <tr>
+        <td>Dark mode</td>
+        <td>Evening shopping / OLED</td>
+      </tr>
+      <tr>
+        <td>Radius / type scale</td>
+        <td>PRD already specifies 8–12px interactive</td>
+      </tr>
+      <tr>
+        <td>Brand asset in shell</td>
+        <td><span class="text-mono">assets/branding/cook-logo.png</span> exists; barely used in UI</td>
+      </tr>
+      <tr>
+        <td>Toast undo everywhere</td>
+        <td>Complete for all soft destructive ops</td>
+      </tr>
+      <tr>
+        <td>Skeleton on merge</td>
+        <td>Avoid empty flash during sync merge</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- 7. PERSONA FLOWS IMPROVED -->
+<div class="section-header">07 · Persona-oriented ideal flows</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="panel-header">Planner weekly ritual</div>
+    <div class="panel-body">
+      <div class="mermaid">
+flowchart TB
+  subgraph ideal [Идеальный weekly ritual]
+    W1[Вс: рацион на неделю] --> W2[Выделить → Запросить]
+    W2 --> W3[Дополнить мелочёвку в заметке]
+    W3 --> W4[Убедиться что Sheets ok]
+  end
+      </div>
+      <p class="text-muted text-small" style="margin-top:12px;">На Сводке: CTA <strong style="color:var(--text-primary);">«Собрать список из рациона»</strong>, если есть приёмы без запроса. Шаблоны дня — ближе к primary actions.</p>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">Shared household clarity</div>
+    <div class="panel-body">
+      <ul style="padding-left:18px; color:var(--text-secondary);">
+        <li style="margin-bottom:10px;"><strong style="color:var(--text-primary);">Who marked what</strong> — show <span class="text-mono">updatedBy</span> on line</li>
+        <li style="margin-bottom:10px;"><strong style="color:var(--text-primary);">Conflict UX</strong> — «партнёр изменил X — версия от HH:MM»</li>
+        <li style="margin-bottom:10px;"><strong style="color:var(--text-primary);">Local history badge</strong> — disclose rollback is device-only</li>
+        <li><strong style="color:var(--text-primary);">Notification deep link</strong> — open the exact request note</li>
+      </ul>
+      <div class="callout warning" style="margin-bottom:0;margin-top:16px;">
+        <div class="callout-title">Trust risk</div>
+        <p>Local-only version history is the main multi-device confusion vector after merge races.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 8. PRIORITY ROADMAP -->
+<div class="section-header">08 · Implementation priority</div>
+
+<div class="panel panel-accent">
+  <div class="panel-header">Recommended order of attack</div>
+  <table>
+    <thead>
+      <tr>
+        <th class="text-right">#</th>
+        <th>Work item</th>
+        <th>Priority</th>
+        <th>Impact</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="highlight">
+        <td class="text-right text-mono">1</td>
+        <td>Partial re-render on purchase check</td>
+        <td><span class="pill pill-negative">P0</span></td>
+        <td>Feel / focus / note mental model</td>
+      </tr>
+      <tr class="highlight">
+        <td class="text-right text-mono">2</td>
+        <td>Notification deep link → request-edit</td>
+        <td><span class="pill pill-negative">P0</span></td>
+        <td>Buyer time-to-check</td>
+      </tr>
+      <tr>
+        <td class="text-right text-mono">3</td>
+        <td>Summary as action hub + CTA «из рациона»</td>
+        <td><span class="pill pill-warning">P1</span></td>
+        <td>Discovery / weekly ritual</td>
+      </tr>
+      <tr>
+        <td class="text-right text-mono">4</td>
+        <td>Store mode (full-screen shopping)</td>
+        <td><span class="pill pill-warning">P1</span></td>
+        <td>In-store friction</td>
+      </tr>
+      <tr>
+        <td class="text-right text-mono">5</td>
+        <td>Products discoverability + SVG icons / brand</td>
+        <td><span class="pill pill-warning">P1</span></td>
+        <td>IA + perceived quality</td>
+      </tr>
+      <tr>
+        <td class="text-right text-mono">6</td>
+        <td>Unify sync writers / non-wipe Sheets</td>
+        <td><span class="pill pill-negative">P0 eng</span></td>
+        <td>Data integrity under concurrency</td>
+      </tr>
+      <tr>
+        <td class="text-right text-mono">7</td>
+        <td>Dark mode / empty art / polish</td>
+        <td><span class="pill">P3</span></td>
+        <td>Craft</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="grid-3">
+  <div class="metric">
+    <div class="metric-label">Success metric 1</div>
+    <div class="metric-value small">Install → 1st shared request</div>
+    <div class="metric-change">Time-to-value at onboarding</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Success metric 2</div>
+    <div class="metric-value small">% closed with ≥1 mark</div>
+    <div class="metric-change">Requests that actually get shopped</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Success metric 3</div>
+    <div class="metric-value small">Ration → request weekly</div>
+    <div class="metric-change">Differentiator adoption</div>
+  </div>
+</div>
+
+<!-- 9. GIT -->
+<div class="section-header">09 · Git snapshot (this session)</div>
+
+<div class="panel">
+  <div class="panel-header">Committed work</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Field</th>
+        <th>Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Commit</td>
+        <td class="text-mono">f4114e7</td>
+      </tr>
+      <tr>
+        <td>Message</td>
+        <td>Rebrand to Cookish and make the Android shell the sole product.</td>
+      </tr>
+      <tr>
+        <td>Scope</td>
+        <td>86 files · drop Next/Docker web stack · Android shell · ration / Keep notes · branding · docs · Cookish APK name</td>
+      </tr>
+      <tr>
+        <td>Status</td>
+        <td><span class="status"><span class="status-dot positive static"></span> working tree clean</span></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout">
+  <div class="callout-title">Sources of truth</div>
+  <p><span class="text-mono">docs/PRODUCT_REQUIREMENTS.md</span> · <span class="text-mono">docs/PRODUCT_CATALOG_RESEARCH.md</span> · <span class="text-mono">mobile-shell/app.js</span> · <span class="text-mono">README.md</span></p>
+</div>
+
+<div class="footer">
+  <p>Cookish UI/UX Flow Audit · 2026-08-07 · Terminal Dashboard theme · Diagrams: Mermaid · Commit <span class="text-mono">f4114e7</span></p>
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+  function isDark() {
+    const forced = document.documentElement.getAttribute('data-theme');
+    if (forced === 'dark') return true;
+    if (forced === 'light') return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+
+  function mermaidTheme() {
+    return isDark() ? 'dark' : 'neutral';
+  }
+
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: mermaidTheme(),
+    securityLevel: 'loose',
+    fontFamily: 'Inter, system-ui, sans-serif',
+    flowchart: { curve: 'basis', htmlLabels: true },
+    sequence: { actorMargin: 24, messageMargin: 32 },
+  });
+
+  async function renderMermaid() {
+    const nodes = document.querySelectorAll('.mermaid');
+    for (const [i, el] of nodes.entries()) {
+      if (!el.dataset.source) el.dataset.source = el.textContent;
+      el.removeAttribute('data-processed');
+      el.textContent = el.dataset.source;
+      el.id = `mermaid-diagram-${i}`;
+    }
+    await mermaid.run({ querySelector: '.mermaid' });
+  }
+
+  await renderMermaid();
+
+  const originalToggle = window.toggleTheme;
+  window.toggleTheme = function () {
+    originalToggle();
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: mermaidTheme(),
+      securityLevel: 'loose',
+      fontFamily: 'Inter, system-ui, sans-serif',
+      flowchart: { curve: 'basis', htmlLabels: true },
+      sequence: { actorMargin: 24, messageMargin: 32 },
+    });
+    renderMermaid();
+  };
+</script>
+
+<style>
+  .mermaid {
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+    padding: 8px 0;
+  }
+  .mermaid svg {
+    max-width: 100%;
+    height: auto;
+  }
+  .panel-body ul { margin: 0; }
+  .panel-body p { color: var(--text-secondary); }
+  .card p { color: var(--text-secondary); font-size: 12px; }
+</style>
+
+  </div>
+
+  <script>
+    // Theme toggle - respects system preference, allows manual override
+    function toggleTheme() {
+      const html = document.documentElement;
+      const currentTheme = html.getAttribute('data-theme');
+      
+      if (currentTheme) {
+        html.setAttribute('data-theme', currentTheme === 'dark' ? 'light' : 'dark');
+      } else {
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        html.setAttribute('data-theme', prefersDark ? 'light' : 'dark');
+      }
+      updateToggleIcon();
+    }
+    
+    // Update toggle button icon based on current effective theme
+    function updateToggleIcon() {
+      const btn = document.querySelector('.theme-toggle');
+      if (!btn) return;
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
+        (!document.documentElement.getAttribute('data-theme') && 
+         window.matchMedia('(prefers-color-scheme: dark)').matches);
+      btn.textContent = isDark ? '☀ LIGHT' : '◐ DARK';
+    }
+    
+    // Initialize on load
+    document.addEventListener('DOMContentLoaded', updateToggleIcon);
+  </script>
+</body>
+</html>

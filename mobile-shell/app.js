@@ -36,7 +36,7 @@
       nutrition: { calories, protein, fat, carbs, fiber, vitamins, minerals, basis: "100 г/мл", source: "Встроенный справочник" } };
   }
   const defaultState = {
-    schemaVersion: 10,
+    schemaVersion: 11,
     products: [],
     requests: [],
     rationDays: {},
@@ -84,10 +84,15 @@
   let confirmResolve = null;
   let productEditReturn = null;
   let requestGestureToken = 0;
+  let purchaseDialogViewportFrame = 0;
+  let purchaseDialogBaselineHeight = 0;
 
   const app = document.getElementById("app");
   const title = document.getElementById("page-title");
   const headerAction = document.getElementById("header-action");
+  const requestHeaderMenuWrap = document.getElementById("request-header-menu-wrap");
+  const headerMore = document.getElementById("header-more");
+  const requestHeaderMenu = document.getElementById("request-header-menu");
   const rationHeaderPicker = document.getElementById("ration-header-picker");
   const syncChip = document.getElementById("sync-chip");
   const nav = document.querySelector(".bottom-nav");
@@ -112,6 +117,32 @@
     } else if (route === "request-edit") {
       finishRequestEdit();
     } else attemptBackNavigation();
+  });
+
+  headerMore.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const opening = requestHeaderMenu.hidden;
+    requestHeaderMenu.hidden = !opening;
+    headerMore.setAttribute("aria-expanded", String(opening));
+  });
+
+  document.getElementById("request-info-action").addEventListener("click", () => {
+    closeRequestHeaderMenu();
+    if (route === "request-edit") persistRequestDraft({ silent: true });
+    const dialog = document.getElementById("request-info-dialog");
+    if (!dialog) return;
+    refreshRequestInfoDialog(dialog, getRequest(routeId));
+    dialog.showModal();
+  });
+
+  document.getElementById("request-delete-action").addEventListener("click", () => {
+    closeRequestHeaderMenu();
+    const request = route === "request-edit" ? getRequest(routeId) : null;
+    if (request) deleteRequestWithTransactions(request);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!requestHeaderMenuWrap.contains(event.target)) closeRequestHeaderMenu();
   });
 
   window.__handleNativeBack = () => attemptBackNavigation();
@@ -378,16 +409,24 @@
       "product-new": ["Новый продукт", "Отмена", true],
       "product-edit": ["Редактирование", productEditReturn ? "Назад" : "Отмена", true],
       requests: ["Запросы", "Создать", false],
-      "request-edit": ["Запрос", "Готово", true],
+      "request-edit": ["", "Готово", true],
       "request-detail": ["Запрос", "Назад", false],
       "request-answer": ["Отметить покупки", "Готово", true],
       ration: ["Рацион", "", false],
       profile: ["Профиль", "", false],
     }[route];
-    title.textContent = config[0];
+    const editedRequest = route === "request-edit" ? getRequest(routeId) : null;
+    title.textContent = editedRequest ? date(editedRequest.createdAt) : config[0];
     headerAction.textContent = config[1];
     headerAction.hidden = !config[1];
+    requestHeaderMenuWrap.hidden = route !== "request-edit";
+    closeRequestHeaderMenu();
     rationHeaderPicker.hidden = route !== "ration";
+  }
+
+  function closeRequestHeaderMenu() {
+    requestHeaderMenu.hidden = true;
+    headerMore.setAttribute("aria-expanded", "false");
   }
 
   function renderOnboarding() {
@@ -516,27 +555,29 @@
     const last30 = completed
       .filter((item) => new Date(item.completedAt || item.createdAt).getTime() >= cutoff)
       .reduce((sum, item) => sum + requestTotal(item), 0);
-    const active = activeRequests().filter((item) => item.status === "open");
+    const active = activeRequests().filter((item) => !isRequestFulfilled(item));
 
     const productCount = state.products.filter((product) => !product.deletedAt).length;
     app.innerHTML = `
+      <div class="summary-screen">
       <div class="metrics">
         ${metric("Активные запросы", active.length)}
         ${metric("Средний чек", money(completed.length ? total / completed.length : 0))}
         ${metric("Траты за 30 дней", money(last30))}
         <button id="summary-products" class="metric metric-button" type="button"><span>Продукты</span><strong>${productCount}</strong></button>
       </div>
-      <section class="section">
+      <section class="section summary-requests">
         <h2 class="section-title">Активные запросы</h2>
         ${active.length
-          ? active.map(requestRow).join("")
+          ? active.map((request) => requestRow(request, "summary")).join("")
           : `<div class="empty-state">
               <p class="empty">Пока нет активных запросов</p>
               <p class="muted">Создайте список покупок или соберите его из рациона.</p>
               <button id="summary-empty-request" class="button full" type="button">Создать запрос</button>
             </div>`}
+        ${active.length ? `<button id="summary-new-request" class="button full summary-create-request" type="button">Создать запрос</button>` : ""}
       </section>
-      ${active.length ? `<section class="section"><button id="summary-new-request" class="button full" type="button">Создать запрос</button></section>` : ""}
+      </div>
     `;
     bindRequestRows();
     document.getElementById("summary-new-request")?.addEventListener("click", () => createEmptyRequestAndOpen());
@@ -568,9 +609,10 @@
   }
 
   function resolveDraftProductId(query, previousId = "") {
-    if (isRealProductId(previousId)) return previousId;
     const key = normalizeProductName(query);
     if (!key) return "";
+    const previous = isRealProductId(previousId) ? getProduct(previousId) : null;
+    if (previous && normalizeProductName(previous.name) === key) return previousId;
     const existing = state.products.find((product) => !product.deletedAt && normalizeProductName(product.name) === key);
     if (existing) return existing.id;
     // Catalog/OFF ids are not real products until resolveOrCreateProduct runs.
@@ -747,7 +789,6 @@
     const normalized = normalizeProductName(query);
     if (normalized.length < 3) return;
     const sequence = ++productNameSearchSequence;
-    setDraftProductMeta(rowKey, "Ищем в Open Food Facts…");
     try {
       let suggestions = productNameSearchCache.get(normalized);
       if (!suggestions) {
@@ -769,19 +810,12 @@
       if (sequence !== productNameSearchSequence) return;
       remoteProductSuggestions = suggestions;
       updateProductDatalists();
-      const selected = suggestionByName(query);
-      setDraftProductMeta(rowKey, selected
-        ? suggestionLabel(selected)
-        : suggestions.length
-          ? `Найдено в Open Food Facts: ${suggestions.length}. Выберите вариант из подсказок.`
-          : "В Open Food Facts совпадений нет — товар будет добавлен вручную.");
     } catch (error) {
       if (sequence !== productNameSearchSequence) return;
-      setDraftProductMeta(rowKey, "Онлайн-поиск недоступен — товар всё равно можно добавить вручную.");
     }
   }
 
-  function productSuggestionOptions(query = "") {
+  function matchingProductSuggestions(query = "") {
     const normalized = normalizeProductName(query);
     const purchasedIds = new Set(activeRequests().flatMap((request) =>
       activeResponses(request).flatMap((response) =>
@@ -794,27 +828,30 @@
           Number(purchasedIds.has(b.id)) - Number(purchasedIds.has(a.id))
           || timestamp(b.updatedAt) - timestamp(a.updatedAt)
         );
-    return candidates
-      .slice(0, 3)
+    return candidates.slice(0, 5);
+  }
+
+  function productSuggestionOptions(query = "") {
+    return matchingProductSuggestions(query)
       .map((product) =>
       `<option value="${escapeAttr(product.name)}" label="${escapeAttr(suggestionLabel(product))}"></option>`
     ).join("");
   }
 
-  function updateProductDatalists() {
-    document.querySelectorAll(".request-item").forEach((row) => {
-      const input = row.querySelector(".draft-product");
-      const list = row.querySelector("datalist");
-      if (input && list) list.innerHTML = productSuggestionOptions(input.value);
-    });
+  function productSuggestionMenuOptions(query = "") {
+    return matchingProductSuggestions(query).map((product) => `
+      <button class="product-suggestion" type="button" role="option" data-name="${escapeAttr(product.name)}">
+        <strong>${escapeHtml(product.name)}</strong>
+        <small>${escapeHtml(suggestionLabel(product))}</small>
+      </button>
+    `).join("");
   }
 
-  function setDraftProductMeta(rowKey, message) {
-    const row = [...document.querySelectorAll(".request-item")].find((item) => item.dataset.key === rowKey);
-    const meta = row?.querySelector(".draft-product-meta");
-    if (!meta) return;
-    meta.textContent = message || "";
-    meta.hidden = !message;
+  function updateProductDatalists() {
+    document.querySelectorAll(".request-item").forEach((row) => {
+      const editor = row.querySelector(".request-line-editor");
+      if (editor) updateProductSuggestionMenu(row, editor);
+    });
   }
 
   async function lookupProductBarcode() {
@@ -1045,7 +1082,7 @@
   function renderRequests() {
     const sorted = [...activeRequests()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     app.innerHTML = sorted.length
-      ? sorted.map(requestRow).join("")
+      ? sorted.map((request) => requestRow(request, "requests")).join("")
       : `<section class="section"><div class="empty-state">
           <p class="empty">Запросов пока нет</p>
           <p class="muted">Список покупок создаётся сразу, как заметка: добавляйте позиции по одной.</p>
@@ -1086,6 +1123,8 @@
           query: product?.name || "",
           quantity: item.quantity,
           unit: item.unit || product?.unit || requestItemUnit(item),
+          note: String(item.note || ""),
+          confirmed: true,
           editingName: false,
         };
       });
@@ -1103,7 +1142,7 @@
       });
     }
     if (!draftItems.some((item) => !String(item.query || "").trim())) {
-      draftItems.push({ key: id("item"), productId: "", query: "", quantity: 1, unit: "", editingName: true });
+      draftItems.push({ key: id("item"), productId: "", query: "", quantity: 1, unit: "", note: "", confirmed: false, editingName: true });
     }
   }
 
@@ -1111,79 +1150,45 @@
     const editedRequest = getRequest(routeId);
     if (!editedRequest) return navigate("requests");
     ensureRequestDraftRows(editedRequest);
-    const history = [...(editedRequest.history || [])]
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const spent = requestTotal(editedRequest);
     app.innerHTML = `
       <div class="keep-note">
-        <div class="keep-note-actions keep-note-meta" style="border-top:0;padding-bottom:4px">
-          <span class="status ${editedRequest.status}">${requestStatusLabel(editedRequest)}</span>
-          <span class="muted">${date(editedRequest.createdAt)}${editedRequest.createdBy && editedRequest.createdBy !== "local" ? ` · ${escapeHtml(editedRequest.createdBy)}` : ""}</span>
+        <div class="keep-note-actions keep-note-meta" style="border-top:0;padding-bottom:4px" ${spent > 0 ? "" : "hidden"}>
           ${spent > 0 ? `<strong>${money(spent)}</strong>` : ""}
         </div>
-        <div id="request-items" class="keep-list">${draftItems.map((item) => draftItemRow(item, editedRequest)).join("")}</div>
+        <div id="request-items" class="keep-list">${draftItems.map((item, index) => draftItemRow(item, editedRequest, index)).join("")}</div>
         <button id="add-request-item" class="keep-add-line" type="button">＋ Позиция</button>
         ${answerActionDialog()}
-        <div class="keep-note-actions">
-          <p class="muted">Галочка — куплено. Сдвиньте строку влево — «Заполнить» (цена и штрихкод). Тап по названию — карточка, × — удалить.</p>
-          ${history.length > 1 ? `
-            <details class="section" style="padding:0;border:0">
-              <summary class="section-title" style="cursor:pointer;list-style:none">История изменений</summary>
-              ${history.map((transaction, index) => `
-                <div class="compact-line transaction-line">
-                  <span><strong>${escapeHtml(transaction.action)}</strong><br>${dateTime(transaction.createdAt)}</span>
-                  ${index === 0
-                    ? `<span class="muted">Текущая</span>`
-                    : `<button class="text-button restore-version" data-id="${escapeAttr(transaction.id)}" type="button">Откатить</button>`}
-                </div>
-              `).join("")}
-            </details>
-          ` : ""}
-          <button id="delete-request" class="button danger full" type="button">Удалить запрос</button>
-        </div>
+        ${requestInfoDialog(editedRequest)}
       </div>
     `;
     bindDraftItems();
-    bindRequestPurchaseChecks(editedRequest);
+    bindRequestRowGestures(editedRequest);
     bindAnswerDialog(editedRequest, null);
     document.getElementById("add-request-item").onclick = () => {
       commitRequestFieldChange();
       addEmptyRequestLine();
     };
-    document.querySelectorAll(".restore-version").forEach((button) => {
-      button.onclick = async () => {
-        const transaction = (editedRequest.history || []).find((item) => item.id === button.dataset.id);
-        if (!transaction) return;
-        if (!await askConfirm(`Откатить запрос к версии «${transaction.action}» от ${dateTime(transaction.createdAt)}?`)) return;
-        const changedAt = new Date().toISOString();
-        const nextState = structuredClone(state);
-        const nextRequest = nextState.requests.find((item) => item.id === editedRequest.id);
-        if (!nextRequest) return;
-        restoreRequestVersion(nextRequest, transaction, changedAt, state.user?.email || "local");
-        commitState(nextState);
-        draftItems = [];
-        renderRequestForm();
-        showToast("Запрос откатан к выбранной версии.");
-      };
+    document.getElementById("close-request-info")?.addEventListener("click", () => {
+      document.getElementById("request-info-dialog")?.close();
     });
-    document.getElementById("delete-request").onclick = () => deleteRequestWithTransactions(editedRequest);
 
     if (focusKey) {
-      document.querySelector(`.request-item[data-key="${focusKey}"] .draft-product`)?.focus();
+      focusRequestLine(document.querySelector(`.request-item[data-key="${focusKey}"]`));
     } else if (!(editedRequest.items || []).length) {
-      document.querySelector(".request-item:last-child .draft-product")?.focus();
+      focusRequestLine(document.querySelector(".request-item:last-child"));
     }
   }
 
-  function draftItemRow(item, request = null) {
-    const listId = `products-${item.key}`;
+  function draftItemRow(item, request = null, rowIndex = 0) {
     const productName = item.query?.trim() || "позиции";
-    const isBlank = !String(item.query || "").trim();
+    const isBlank = !String(item.query || "").trim() && !String(item.note || "").trim();
+    const removableEmpty = isBlank && rowIndex > 0;
     const currentRequest = request || getRequest(routeId);
     // Only real product ids (never catalog_*) so purchase price keys match request items.
     const productId = resolveDraftProductId(item.query, item.productId || "");
     const product = productId ? getProduct(productId) : null;
-    const resolved = Boolean(product && !isBlank);
+    const resolved = Boolean(product && item.confirmed !== false && !isBlank);
     const purchased = currentRequest && productId
       ? responseItemTotal(currentRequest, productId)
       : { quantity: 0, price: 0 };
@@ -1193,31 +1198,33 @@
       : 0;
     const fullyBought = Boolean(productId && !isBlank && remaining <= 0 && purchased.quantity > 0);
     const filled = Boolean(receipt && isPurchaseDetailsFilled(receipt, productId));
-    const progress = currentRequest && productId && !isBlank
-      ? requestProgressLabel(currentRequest, { productId, quantity: item.quantity, unit: item.unit || product?.unit }, purchased)
-      : "";
-    const editingName = Boolean(item.editingName) || !resolved;
+    const note = String(item.note || "");
+    const lineContent = resolved
+      ? `<span class="product-chip${isProductConfirmed(product) ? "" : " is-unconfirmed"}" contenteditable="false" role="button" data-product-id="${escapeAttr(productId)}" aria-label="Открыть карточку ${escapeAttr(product?.name || productName)}">${escapeHtml(product?.name || item.query || "")}</span><span class="request-line-tail">${note ? ` ${escapeHtml(note)}` : ""}</span>`
+      : `<span class="product-candidate">${escapeHtml(item.query || "")}</span><span class="request-line-tail">${note ? ` ${escapeHtml(note)}` : ""}</span>`;
     return `
-      <div class="request-item${isBlank ? " is-blank" : ""}${fullyBought ? " is-bought" : ""}${filled ? " is-purchase-filled" : ""}${resolved ? " is-resolved" : ""}" data-key="${item.key}" data-product-id="${escapeAttr(productId)}">
-        <div class="request-swipe-bg" aria-hidden="true"><span class="request-swipe-label">Заполнить</span></div>
+      <div class="request-item${isBlank ? " is-blank" : ""}${removableEmpty ? " is-removable-empty" : ""}${fullyBought ? " is-bought" : ""}${filled ? " is-purchase-filled" : ""}${resolved ? " is-resolved" : ""}" data-key="${item.key}" data-product-id="${escapeAttr(productId)}">
+        <div class="request-swipe-bg request-swipe-delete-bg" aria-hidden="true">
+          <span class="request-swipe-delete-label">Удалить</span>
+        </div>
+        <div class="request-swipe-bg request-swipe-fill-bg" aria-hidden="true"><span class="request-swipe-label">${fullyBought ? "Снять" : "Заполнить"}</span></div>
         <div class="request-item-surface">
-          <label class="request-check-wrap">
-            <input class="request-purchase-check" type="checkbox" ${fullyBought ? "checked" : ""} ${isBlank ? "disabled" : ""} aria-label="Куплено: ${escapeAttr(productName)}">
-          </label>
+          <span class="keep-remove-item" aria-hidden="true">
+            <span class="request-swipe-dots" aria-hidden="true"></span><span class="keep-remove-cross" aria-hidden="true">×</span>
+          </span>
           <div class="request-item-main">
             <div class="request-item-fields">
               <div class="request-product-field">
                 <label class="visually-hidden" for="product-${item.key}">Название продукта</label>
-                <input id="product-${item.key}" class="draft-product keep-item-input" list="${listId}" autocomplete="off" placeholder="Продукт" value="${escapeAttr(item.query || "")}" ${editingName ? "" : "hidden"}>
-                <button class="product-chip" type="button" data-product-id="${escapeAttr(productId)}" ${resolved && !editingName ? "" : "hidden"} aria-label="Открыть карточку ${escapeAttr(product?.name || productName)}">${escapeHtml(product?.name || item.query || "")}</button>
+                <div id="product-${item.key}" class="request-line-editor" contenteditable="true" role="textbox" aria-label="Строка покупки" data-placeholder="Товар" spellcheck="true">${lineContent}</div>
+                <div class="product-token-toolbar" role="group" aria-label="Подтвердить товар" hidden>
+                  <button class="confirm-product-token" type="button" aria-label="Сохранить товар">✓</button>
+                </div>
+                <div class="product-suggestion-menu" role="listbox" aria-label="Выберите товар" hidden></div>
               </div>
             </div>
-            <datalist id="${listId}">${productSuggestionOptions(item.query)}</datalist>
-            <div class="draft-product-meta" hidden></div>
-            ${progress ? `<p class="request-progress-meta">${progress}</p>` : ""}
-            ${filled ? `<p class="request-filled-badge">${escapeHtml(purchaseFilledLabel(currentRequest, productId, receipt))}</p>` : ""}
           </div>
-          <button class="keep-remove-item remove-item" type="button" aria-label="Удалить ${escapeAttr(productName)}" ${isBlank ? "tabindex=\"-1\"" : ""}>×</button>
+          <span class="request-swipe-handle" aria-hidden="true"><span class="request-swipe-arrow">&lt;</span><span class="request-swipe-dots"></span></span>
         </div>
       </div>`;
   }
@@ -1230,21 +1237,6 @@
     return false;
   }
 
-  function purchaseFilledLabel(request, productId, line) {
-    const parts = [];
-    const purchasedId = line?.purchasedProductId || productId;
-    if (purchasedId && purchasedId !== productId) {
-      const purchased = getProduct(purchasedId);
-      if (purchased?.name) parts.push(purchased.name);
-    }
-    if (Number(line?.price) > 0) parts.push(money(line.price));
-    if (!parts.length && Number(line?.quantity) > 0) {
-      const unit = requestItemUnit(request?.items?.find((item) => item.productId === productId));
-      parts.push(`${number(line.quantity)} ${unit}`);
-    }
-    return parts.join(" · ") || "Детали заполнены";
-  }
-
   function commitRequestFieldChange() {
     clearTimeout(requestAutosaveTimer);
     syncDraftFromForm();
@@ -1252,181 +1244,406 @@
   }
 
   function bindDraftItems() {
-    document.querySelectorAll(".draft-product").forEach((input) => {
-      input.oninput = () => {
-        productNameSearchSequence += 1;
-        const row = input.closest(".request-item");
-        const item = draftItems.find((value) => value.key === row.dataset.key);
-        if (item) {
-          item.query = input.value;
-          item.editingName = true;
-        }
-        const hasText = Boolean(input.value.trim());
-        row.classList.toggle("is-blank", !hasText);
-        const removeButton = row.querySelector(".remove-item");
-        if (removeButton) {
-          removeButton.tabIndex = hasText ? 0 : -1;
-          removeButton.setAttribute("aria-hidden", hasText ? "false" : "true");
-          removeButton.disabled = !hasText;
-        }
-        const purchaseCheck = row.querySelector(".request-purchase-check");
-        const list = row.querySelector("datalist");
-        if (list) list.innerHTML = productSuggestionOptions(input.value);
-        const selected = suggestionByName(input.value);
-        if (item) {
-          if (selected) {
-            item.productId = resolveDraftProductId(input.value, item.productId);
-            row.dataset.productId = item.productId || "";
-            if (!item.unit || item.unit === getProduct(item.productId)?.unit) {
-              item.unit = selected.unit || item.unit || "шт.";
-            }
-            if (purchaseCheck) purchaseCheck.disabled = !hasText;
-          } else if (!hasText) {
-            item.productId = "";
-            item.unit = "";
-            row.dataset.productId = "";
-            if (purchaseCheck) {
-              purchaseCheck.checked = false;
-              purchaseCheck.disabled = true;
-            }
-            setRowProductPresentation(row, item, null);
-          } else {
-            item.productId = resolveDraftProductId(input.value, item.productId);
-            row.dataset.productId = item.productId || "";
-            if (purchaseCheck) purchaseCheck.disabled = false;
-          }
-        }
-        setDraftProductMeta(row.dataset.key, selected
-          ? suggestionLabel(selected)
-          : input.value.trim().length < 3
-            ? ""
-            : "Подождите, ищем варианты в Open Food Facts…");
-        clearTimeout(productNameSearchTimer);
-        if (input.value.trim().length >= 3) {
-          const query = input.value;
-          productNameSearchTimer = setTimeout(() => searchOpenFoodFactsByName(query, row.dataset.key), 450);
-        }
+    document.querySelectorAll(".request-line-editor").forEach((editor) => {
+      editor.onfocus = () => {
+        const row = editor.closest(".request-item");
+        row?.classList.add("is-product-picking");
+        updateProductSuggestionMenu(row, editor);
+        positionProductTokenToolbar(row, editor);
       };
-      input.onblur = () => {
-        const row = input.closest(".request-item");
+      editor.oninput = () => handleRequestLineInput(editor);
+      editor.onbeforeinput = (event) => {
+        if (event.inputType !== "deleteContentBackward") return;
+        const row = editor.closest(".request-item");
         const item = draftItems.find((value) => value.key === row?.dataset.key);
-        if (item) item.editingName = false;
-        commitRequestFieldChange();
-        if (item && row) {
-          const resolved = item.productId ? getProduct(item.productId) : null;
-          if (resolved) setRowProductPresentation(row, item, resolved);
+        if (!item?.confirmed && isRemovableEmptyRow(row)) {
+          event.preventDefault();
+          cancelDraftProduct(row);
+          return;
         }
-      };
-      input.onkeydown = (event) => {
-        if (event.key !== "Enter") return;
+        if (!item?.confirmed || !isCaretAtStartOfLineTail(editor)) return;
         event.preventDefault();
-        if (!input.value.trim()) return;
-        const row = input.closest(".request-item");
+        unwrapProductChip(row);
+      };
+      editor.onkeydown = (event) => {
+        const row = editor.closest(".request-item");
         const item = draftItems.find((value) => value.key === row?.dataset.key);
-        if (item) item.editingName = false;
-        commitRequestFieldChange();
-        addEmptyRequestLine();
+        if (event.key === "Backspace" && !item?.confirmed && isRemovableEmptyRow(row)) {
+          event.preventDefault();
+          cancelDraftProduct(row);
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          if (item?.confirmed) {
+            commitRequestFieldChange();
+            addEmptyRequestLine();
+          } else {
+            confirmDraftProduct(row);
+          }
+        } else if (event.key === "Escape" && !item?.confirmed) {
+          event.preventDefault();
+          cancelDraftProduct(row);
+        } else if (event.key === "Backspace" && item?.confirmed && isCaretAtStartOfLineTail(editor)) {
+          event.preventDefault();
+          unwrapProductChip(row);
+        }
+      };
+      editor.onkeyup = () => positionProductTokenToolbar(editor.closest(".request-item"), editor);
+      editor.onclick = (event) => {
+        const chip = event.target.closest(".product-chip");
+        if (chip) {
+          event.preventDefault();
+          const row = editor.closest(".request-item");
+          if (chip.dataset.suppressClick === "1" || row?.dataset.swiped === "1") {
+            chip.dataset.suppressClick = "";
+            row.dataset.swiped = "";
+            return;
+          }
+          const productId = chip.dataset.productId || row?.dataset.productId;
+          if (isRealProductId(productId)) openProductCardFromRequest(productId);
+          return;
+        }
+        positionProductTokenToolbar(editor.closest(".request-item"), editor);
+      };
+      editor.onblur = () => {
+        const row = editor.closest(".request-item");
+        setTimeout(() => {
+          if (row?.contains(document.activeElement)) return;
+          row?.classList.remove("is-product-picking", "has-product-toolbar", "has-suggestion-menu");
+          const toolbar = row?.querySelector(".product-token-toolbar");
+          const menu = row?.querySelector(".product-suggestion-menu");
+          if (toolbar) toolbar.hidden = true;
+          if (menu) menu.hidden = true;
+          const item = draftItems.find((value) => value.key === row?.dataset.key);
+          if (item?.confirmed) commitRequestFieldChange();
+        }, 120);
       };
     });
-    document.querySelectorAll(".product-chip").forEach((chip) => {
-      chip.onclick = (event) => {
+    document.querySelectorAll(".product-suggestion-menu").forEach((menu) => {
+      menu.addEventListener("pointerdown", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (chip.dataset.suppressClick === "1") {
-          chip.dataset.suppressClick = "";
-          return;
-        }
-        const row = chip.closest(".request-item");
-        if (row?.dataset.swiped === "1") {
-          row.dataset.swiped = "";
-          return;
-        }
-        const productId = chip.dataset.productId || row?.dataset.productId;
-        if (!isRealProductId(productId)) return showToast("Сначала сохраните продукт.");
-        openProductCardFromRequest(productId);
-      };
-      chip.ondblclick = (event) => {
-        event.preventDefault();
-        enterRowNameEdit(chip.closest(".request-item"));
-      };
-      chip.addEventListener("contextmenu", (event) => {
+      });
+      menu.addEventListener("touchstart", (event) => event.stopPropagation(), { passive: true });
+      menu.onclick = (event) => {
         event.preventDefault();
         event.stopPropagation();
-        enterRowNameEdit(chip.closest(".request-item"));
+        const option = event.target.closest(".product-suggestion");
+        if (!option) return;
+        const row = menu.closest(".request-item");
+        confirmDraftProduct(row, option.dataset.name || "");
+      };
+    });
+    document.querySelectorAll(".product-token-toolbar").forEach((toolbar) => {
+      toolbar.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
       });
     });
-    document.querySelectorAll(".remove-item").forEach((button) => {
-      const stopGesture = (event) => {
-        event.stopPropagation();
-      };
-      button.addEventListener("pointerdown", stopGesture);
-      button.addEventListener("touchstart", stopGesture, { passive: true });
-      button.onclick = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const row = button.closest(".request-item");
-        const key = row?.dataset.key;
-        if (!key) return;
-        syncDraftFromForm();
-        const draft = draftItems.find((item) => item.key === key);
-        const hasText = Boolean(String(draft?.query || row?.querySelector(".draft-product")?.value || "").trim());
-        if (!hasText) return;
-        const hasOtherFilled = draftItems.some((item) =>
-          item.key !== key && String(item.query || "").trim()
-        );
-        if (!hasOtherFilled && !hasText) return;
-        draftItems = draftItems.filter((value) => value.key !== key);
-        if (!draftItems.length) {
-          draftItems = [{ key: id("item"), productId: "", query: "", quantity: 1, unit: "", editingName: true }];
+    document.querySelectorAll(".confirm-product-token").forEach((button) => {
+      button.onclick = () => confirmDraftProduct(button.closest(".request-item"));
+    });
+  }
+
+  function requestInfoDialog(request) {
+    const items = request.items || [];
+    return `
+      <dialog id="request-info-dialog" class="answer-dialog request-info-dialog" aria-labelledby="request-info-title">
+        <header>
+          <div><span>Товары в списке</span><h2 id="request-info-title">Информация</h2></div>
+          <button id="close-request-info" type="button" aria-label="Закрыть">×</button>
+        </header>
+        <div class="request-info-list">
+          ${items.length ? items.map((item) => requestProductInfo(item)).join("") : `<p class="muted request-info-empty">В списке пока нет товаров.</p>`}
+        </div>
+      </dialog>`;
+  }
+
+  function requestProductInfo(item) {
+    const product = getProduct(item.productId);
+    const nutrition = product?.nutrition;
+    const latestPrice = latestProductPrice(item.productId);
+    const purchased = productPurchasedTotal(item.productId);
+    const unit = product?.unit || item.unit || "";
+    const nutrient = (value) => value == null || value === "" ? "—" : number(value);
+    return `
+      <article class="request-info-product">
+        <h3>${escapeHtml(product?.name || "Продукт")}</h3>
+        <p class="request-info-nutrition">Б ${nutrient(nutrition?.protein)} · Ж ${nutrient(nutrition?.fat)} · У ${nutrient(nutrition?.carbs)}</p>
+        <div class="request-info-stats">
+          <span><small>Последняя цена</small><strong>${latestPrice > 0 ? money(latestPrice) : "—"}</strong></span>
+          <span><small>Куплено за всё время</small><strong>${number(purchased)}${unit ? ` ${escapeHtml(unit)}` : ""}</strong></span>
+        </div>
+      </article>`;
+  }
+
+  function refreshRequestInfoDialog(dialog, request) {
+    const list = dialog?.querySelector(".request-info-list");
+    if (!list) return;
+    const items = request?.items || [];
+    list.innerHTML = items.length
+      ? items.map((item) => requestProductInfo(item)).join("")
+      : `<p class="muted request-info-empty">В списке пока нет товаров.</p>`;
+  }
+
+  function handleRequestLineInput(editor) {
+    productNameSearchSequence += 1;
+    const row = editor.closest(".request-item");
+    const item = draftItems.find((value) => value.key === row?.dataset.key);
+    if (!row || !item) return;
+    let candidate = editor.querySelector(".product-candidate");
+    let tail = editor.querySelector(".request-line-tail");
+    if (item.confirmed) {
+      if (!tail) {
+        tail = document.createElement("span");
+        tail.className = "request-line-tail";
+        editor.append(tail);
+      }
+      const chip = editor.querySelector(".product-chip");
+      [...editor.childNodes].forEach((node) => {
+        if (node === chip || node === tail) return;
+        if (node.nodeType === Node.TEXT_NODE) tail.append(node);
+        else {
+          while (node.firstChild) tail.append(node.firstChild);
+          node.remove();
         }
-        commitRequestFieldChange();
-        renderRequestForm();
-      };
+      });
+      item.note = String(tail?.textContent || "").trimStart();
+      clearTimeout(requestAutosaveTimer);
+      requestAutosaveTimer = setTimeout(() => commitRequestFieldChange(), 400);
+      return;
+    }
+    const normalizedCandidate = normalizePendingCandidate(editor, item);
+    ({ candidate, tail } = normalizedCandidate);
+    if (normalizedCandidate.repaired) focusRequestLine(row);
+    const query = String(candidate ? candidate.textContent : editor.textContent || "").trim();
+    const selected = suggestionByName(query);
+    item.query = query;
+    item.productId = resolveDraftProductId(query);
+    item.unit = selected?.unit || (item.productId ? getProduct(item.productId)?.unit : "") || "";
+    item.editingName = true;
+    row.dataset.productId = item.productId || "";
+    refreshEmptyRowControls();
+    if (query && route === "request-edit") bindRequestRowGestures(getRequest(routeId), { reuseToken: true });
+    updateProductSuggestionMenu(row, editor);
+    positionProductTokenToolbar(row, editor);
+    clearTimeout(productNameSearchTimer);
+    if (query.length >= 3) {
+      productNameSearchTimer = setTimeout(() => searchOpenFoodFactsByName(query, row.dataset.key), 450);
+    }
+  }
+
+  function updateProductSuggestionMenu(row, editor) {
+    const menu = row?.querySelector(".product-suggestion-menu");
+    const item = draftItems.find((value) => value.key === row?.dataset.key);
+    if (!menu || !editor || !item) return;
+    menu.innerHTML = item.confirmed ? "" : productSuggestionMenuOptions(item.query || "");
+    const active = document.activeElement === editor;
+    menu.hidden = item.confirmed || !active || !menu.childElementCount;
+    row.classList.toggle("has-suggestion-menu", !menu.hidden);
+  }
+
+  function normalizePendingCandidate(editor, item) {
+    let candidate = editor?.querySelector(".product-candidate");
+    let tail = editor?.querySelector(".request-line-tail");
+    let repaired = false;
+    if (!editor) return { candidate: null, tail: null, repaired };
+    if (!candidate) {
+      repaired = true;
+      candidate = document.createElement("span");
+      candidate.className = "product-candidate";
+      if (tail) editor.insertBefore(candidate, tail);
+      else editor.prepend(candidate);
+    }
+    if (!tail) {
+      repaired = true;
+      tail = document.createElement("span");
+      tail.className = "request-line-tail";
+      editor.append(tail);
+    }
+    [...editor.childNodes].forEach((node) => {
+      if (node === candidate || node === tail) return;
+      repaired = true;
+      if (node.nodeType === Node.TEXT_NODE) {
+        candidate.append(node);
+        return;
+      }
+      while (node.firstChild) candidate.append(node.firstChild);
+      node.remove();
     });
-    document.querySelectorAll(".request-check-wrap").forEach((wrap) => {
-      const stopGesture = (event) => event.stopPropagation();
-      wrap.addEventListener("pointerdown", stopGesture);
-      wrap.addEventListener("touchstart", stopGesture, { passive: true });
+    if (!candidate.textContent && !String(item?.note || "").trim() && tail.textContent) {
+      repaired = true;
+      candidate.textContent = tail.textContent;
+      tail.textContent = "";
+    }
+    return { candidate, tail, repaired };
+  }
+
+  function positionProductTokenToolbar(row, editor) {
+    const toolbar = row?.querySelector(".product-token-toolbar");
+    const field = row?.querySelector(".request-product-field");
+    const item = draftItems.find((value) => value.key === row?.dataset.key);
+    if (!toolbar || !field || !editor || !item) return;
+    const visible = !item.confirmed && document.activeElement === editor && Boolean(item.query?.trim());
+    toolbar.hidden = !visible;
+    row.classList.toggle("has-product-toolbar", visible);
+    if (!visible) return;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+    range?.collapse(true);
+    const caretRect = range?.getBoundingClientRect();
+    const fieldRect = field.getBoundingClientRect();
+    const left = caretRect?.left ? caretRect.left - fieldRect.left : 28;
+    toolbar.style.left = `${Math.max(28, Math.min(field.clientWidth - 28, left))}px`;
+  }
+
+  function cancelDraftProduct(row) {
+    if (!row) return;
+    const key = row.dataset.key;
+    if (!key) return;
+    const focusTarget = row.previousElementSibling || row.nextElementSibling;
+    draftItems = draftItems.filter((item) => item.key !== key);
+    row.remove();
+    refreshEmptyRowControls();
+    if (!persistRequestDraft({ silent: true })) {
+      draftItems = [];
+      renderRequestForm();
+      return;
+    }
+    if (focusTarget?.isConnected) focusRequestLine(focusTarget, Boolean(focusTarget.querySelector(".product-chip")));
+  }
+
+  function isRemovableEmptyRow(row) {
+    if (!row || row.querySelector(".product-chip")) return false;
+    const rows = [...document.querySelectorAll(".request-item")];
+    const empty = !String(row.querySelector(".product-candidate")?.textContent || "").trim()
+      && !String(row.querySelector(".request-line-tail")?.textContent || "").trim();
+    return empty && rows.indexOf(row) > 0;
+  }
+
+  function refreshEmptyRowControls() {
+    [...document.querySelectorAll(".request-item")].forEach((row, index) => {
+      const chip = row.querySelector(".product-chip");
+      const query = String(row.querySelector(".product-candidate")?.textContent || "").trim();
+      const tail = String(row.querySelector(".request-line-tail")?.textContent || "").trim();
+      const empty = !chip && !query && !tail;
+      const removableEmpty = empty && index > 0;
+      row.classList.toggle("is-blank", empty);
+      row.classList.toggle("is-removable-empty", removableEmpty);
     });
+  }
+
+  function confirmDraftProduct(row, selectedName = "") {
+    if (!row) return;
+    const item = draftItems.find((value) => value.key === row.dataset.key);
+    const candidate = row.querySelector(".product-candidate");
+    const query = String(selectedName || (candidate ? candidate.textContent : item?.query || "")).trim();
+    if (!item || !query) return;
+    const duplicate = draftItems.some((value) =>
+      value.key !== item.key && value.confirmed && normalizeProductName(value.query) === normalizeProductName(query)
+    );
+    if (duplicate) return showToast("Этот товар уже есть в списке.");
+    if (selectedName) setCandidateText(row, query);
+    item.query = query;
+    item.productId = resolveDraftProductId(query, item.productId);
+    item.confirmed = true;
+    item.editingName = false;
+    if (!commitRequestFieldChange()) {
+      item.confirmed = false;
+      item.editingName = true;
+      return;
+    }
+    const saved = draftItems.find((value) => value.key === row.dataset.key);
+    const product = saved?.productId ? getProduct(saved.productId) : null;
+    setRowProductPresentation(row, saved, product);
+    focusRequestLine(row, true);
   }
 
   function setRowProductPresentation(row, item, product) {
     if (!row) return;
-    const input = row.querySelector(".draft-product");
-    const chip = row.querySelector(".product-chip");
-    const resolved = Boolean(product && String(item?.query || "").trim());
-    const editing = Boolean(item?.editingName) || !resolved;
-    if (input) input.hidden = resolved && !editing;
-    if (chip) {
-      chip.hidden = !resolved || editing;
-      if (product) {
-        chip.textContent = product.name;
-        chip.dataset.productId = product.id;
-        chip.setAttribute("aria-label", `Открыть карточку ${product.name}`);
-      }
+    const editor = row.querySelector(".request-line-editor");
+    const toolbar = row.querySelector(".product-token-toolbar");
+    const menu = row.querySelector(".product-suggestion-menu");
+    const resolved = Boolean(product && item?.confirmed && String(item.query || "").trim());
+    if (editor) {
+      editor.innerHTML = resolved
+        ? `<span class="product-chip${isProductConfirmed(product) ? "" : " is-unconfirmed"}" contenteditable="false" role="button" data-product-id="${escapeAttr(product.id)}" aria-label="Открыть карточку ${escapeAttr(product.name)}">${escapeHtml(product.name)}</span><span class="request-line-tail">${item.note ? ` ${escapeHtml(item.note)}` : ""}</span>`
+        : `<span class="product-candidate">${escapeHtml(item?.query || "")}</span><span class="request-line-tail">${item?.note ? ` ${escapeHtml(item.note)}` : ""}</span>`;
     }
-    row.classList.toggle("is-resolved", resolved && !editing);
-    const removeButton = row.querySelector(".remove-item");
-    const hasText = Boolean(String(item?.query || "").trim());
-    if (removeButton) {
-      removeButton.tabIndex = hasText ? 0 : -1;
-      removeButton.disabled = !hasText;
-      removeButton.setAttribute("aria-hidden", hasText ? "false" : "true");
+    if (toolbar && resolved) toolbar.hidden = true;
+    if (menu && resolved) menu.hidden = true;
+    if (resolved) {
+      row.classList.remove("has-product-toolbar", "has-suggestion-menu", "is-product-picking");
+    }
+    row.dataset.productId = resolved ? product.id : "";
+    row.classList.toggle("is-blank", !String(item?.query || "").trim());
+    row.classList.toggle("is-resolved", resolved);
+    if (resolved && route === "request-edit") {
+      bindRequestRowGestures(getRequest(routeId), { reuseToken: true });
     }
   }
 
-  function enterRowNameEdit(row) {
-    if (!row) return;
-    const item = draftItems.find((value) => value.key === row.dataset.key);
-    if (item) item.editingName = true;
+  function setCandidateText(row, value) {
+    const item = draftItems.find((draft) => draft.key === row?.dataset.key);
+    const candidate = row?.querySelector(".product-candidate");
+    if (!item || !candidate) return;
+    candidate.textContent = value;
+    item.query = value.trim();
+    item.productId = resolveDraftProductId(item.query);
+    row.classList.toggle("is-blank", !item.query);
+    const selected = suggestionByName(item.query);
+    if (selected) item.unit = selected.unit || item.unit || "шт.";
+  }
+
+  function unwrapProductChip(row) {
+    const item = draftItems.find((value) => value.key === row?.dataset.key);
     const product = item?.productId ? getProduct(item.productId) : null;
-    setRowProductPresentation(row, item, product);
-    const input = row.querySelector(".draft-product");
-    if (input) {
-      input.hidden = false;
-      input.focus();
-      input.select?.();
+    if (!row || !item || !product) return;
+    item.query = product.name;
+    item.productId = "";
+    item.confirmed = false;
+    item.editingName = true;
+    setRowProductPresentation(row, item, null);
+    focusRequestLine(row);
+    updateProductSuggestionMenu(row, row.querySelector(".request-line-editor"));
+    positionProductTokenToolbar(row, row.querySelector(".request-line-editor"));
+  }
+
+  function isCaretAtStartOfLineTail(editor) {
+    const tail = editor?.querySelector(".request-line-tail");
+    const selection = window.getSelection();
+    if (!tail || !selection?.rangeCount || !selection.isCollapsed) return false;
+    const range = selection.getRangeAt(0);
+    if (range.startContainer === tail) return range.startOffset === 0;
+    if (tail.contains(range.startContainer)) {
+      const before = range.cloneRange();
+      before.selectNodeContents(tail);
+      before.setEnd(range.startContainer, range.startOffset);
+      return before.toString().length === 0;
     }
+    return range.startContainer === editor
+      && (range.startOffset === 1 || (range.startOffset === 2 && !tail.textContent));
+  }
+
+  function focusRequestLine(row, afterChip = false) {
+    const editor = row?.querySelector(".request-line-editor");
+    if (!editor) return;
+    editor.focus();
+    const target = afterChip
+      ? editor.querySelector(".request-line-tail")
+      : editor.querySelector(".product-candidate") || editor.querySelector(".request-line-tail");
+    if (!target) return;
+    const range = document.createRange();
+    if (!target.textContent && !target.querySelector("br")) target.append(document.createElement("br"));
+    if (!target.textContent) {
+      range.setStart(target, 0);
+      range.collapse(true);
+    } else {
+      range.selectNodeContents(target);
+      range.collapse(false);
+    }
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
   }
 
   function openProductCardFromRequest(productId) {
@@ -1437,36 +1654,16 @@
     navigate("product-edit", productId, null, { skipRequestPersist: true });
   }
 
-  function bindRequestPurchaseChecks(request) {
-    document.querySelectorAll(".request-purchase-check").forEach((checkbox) => {
-      checkbox.onchange = () => {
-        const row = checkbox.closest(".request-item");
-        if (!row || checkbox.disabled) return;
-        clearTimeout(requestAutosaveTimer);
-        syncDraftFromForm();
-        if (!persistRequestDraft({ silent: false })) {
-          checkbox.checked = !checkbox.checked;
-          return;
-        }
-        const productId = ensureRowProductId(row);
-        if (!productId) {
-          checkbox.checked = !checkbox.checked;
-          showToast("Сначала укажите продукт.");
-          return;
-        }
-        toggleRequestItemPurchase(request.id, productId, checkbox.checked);
-      };
-    });
-    bindRequestRowGestures(request);
-  }
-
-  function bindRequestRowGestures(request) {
-    const token = ++requestGestureToken;
+  function bindRequestRowGestures(request, { reuseToken = false } = {}) {
+    const token = reuseToken ? requestGestureToken : ++requestGestureToken;
     document.querySelectorAll(".request-item").forEach((row) => {
-      if (row.classList.contains("is-blank")) return;
+      const removalOnly = row.classList.contains("is-removable-empty");
+      if ((row.classList.contains("is-blank") && !removalOnly) || row.dataset.swipeBound === "1") return;
       const surface = row.querySelector(".request-item-surface");
-      const swipeLabel = row.querySelector(".request-swipe-label");
+      const fillLabel = row.querySelector(".request-swipe-label");
+      const deleteLabel = row.querySelector(".request-swipe-delete-label");
       if (!surface) return;
+      row.dataset.swipeBound = "1";
 
       let startX = 0;
       let startY = 0;
@@ -1474,6 +1671,15 @@
       let tracking = false;
       let horizontal = false;
       let pointerId = null;
+      let tapPreviewTimer = 0;
+
+      const clearTapPreview = () => {
+        window.clearTimeout(tapPreviewTimer);
+        tapPreviewTimer = 0;
+        row.classList.remove("is-delete-tap-preview", "is-fill-tap-preview");
+        surface.classList.remove("is-delete-tap-preview", "is-fill-tap-preview");
+        row.querySelectorAll(".is-tap-bouncing").forEach((icon) => icon.classList.remove("is-tap-bouncing"));
+      };
 
       const threshold = () => Math.max(96, Math.round(window.innerWidth / 3));
       const maxPull = () => Math.min(window.innerWidth * 0.55, threshold() * 1.35);
@@ -1484,15 +1690,22 @@
         else surface.classList.add("is-dragging");
         surface.style.transform = `translate3d(${x}px,0,0)`;
         const progress = Math.min(1, Math.abs(x) / threshold());
-        row.classList.toggle("is-swiping", x < -4);
-        row.classList.toggle("is-swipe-armed", progress >= 1);
-        // Tint the sliding tile as the user pulls (WebView-friendly rgba, no color-mix).
-        surface.style.backgroundColor = progress > 0
-          ? `rgba(31, 93, 59, ${Math.min(0.22, 0.05 + progress * 0.18).toFixed(3)})`
-          : "";
-        if (swipeLabel) {
-          swipeLabel.style.opacity = String(Math.min(1, 0.35 + progress * 0.65));
-          swipeLabel.style.transform = progress >= 1 ? "scale(1.04)" : "translateX(0)";
+        const swipingLeft = x < -4;
+        const swipingRight = x > 4;
+        row.classList.toggle("is-swiping", swipingLeft || swipingRight);
+        row.classList.toggle("is-swiping-left", swipingLeft);
+        row.classList.toggle("is-swiping-right", swipingRight);
+        row.classList.toggle("is-swipe-armed-left", swipingLeft && progress >= 1);
+        row.classList.toggle("is-swipe-armed-right", swipingRight && progress >= 1);
+        const activeLabel = swipingRight ? deleteLabel : fillLabel;
+        const inactiveLabel = swipingRight ? fillLabel : deleteLabel;
+        if (activeLabel) {
+          activeLabel.style.opacity = String(Math.min(1, 0.35 + progress * 0.65));
+          activeLabel.style.transform = progress >= 1 ? "scale(1.04)" : "translateX(0)";
+        }
+        if (inactiveLabel) {
+          inactiveLabel.style.opacity = "";
+          inactiveLabel.style.transform = "";
         }
       };
 
@@ -1501,29 +1714,60 @@
         window.setTimeout(() => {
           if (currentX === 0) {
             surface.classList.remove("is-dragging");
-            surface.style.backgroundColor = "";
-            row.classList.remove("is-swiping", "is-swipe-armed");
-            if (swipeLabel) swipeLabel.style.opacity = "";
+            row.classList.remove("is-swiping", "is-swiping-left", "is-swiping-right", "is-swipe-armed-left", "is-swipe-armed-right");
+            if (fillLabel) {
+              fillLabel.style.opacity = "";
+              fillLabel.style.transform = "";
+            }
+            if (deleteLabel) {
+              deleteLabel.style.opacity = "";
+              deleteLabel.style.transform = "";
+            }
           }
         }, animate ? 220 : 0);
       };
 
-      const openFill = () => {
+      const runLeftAction = () => {
         if (token !== requestGestureToken) return;
+        if (row.classList.contains("is-removable-empty")) {
+          resetSurface({ animate: true });
+          return;
+        }
+        const removeReadyState = row.classList.contains("is-bought");
         row.dataset.swiped = "1";
         setOffset(-threshold(), { animate: true });
         try {
           navigator.vibrate?.(12);
         } catch {}
         window.setTimeout(() => {
-          openPurchaseDetailsForRow(request, row);
+          if (token !== requestGestureToken || !row.isConnected) return;
+          if (removeReadyState) {
+            clearTimeout(requestAutosaveTimer);
+            // Unchecking is a receipt-only action. Re-saving the whole request
+            // here can falsely detect the scanned/refined product as a duplicate.
+            const productId = ensureRowProductId(row);
+            if (productId) undoLatestPurchaseForProduct(request.id, productId);
+          } else {
+            openPurchaseDetailsForRow(request, row);
+          }
           resetSurface({ animate: true });
+        }, 160);
+      };
+
+      const deleteRow = () => {
+        if (token !== requestGestureToken) return;
+        row.dataset.swiped = "1";
+        setOffset(threshold(), { animate: true });
+        try {
+          navigator.vibrate?.(12);
+        } catch {}
+        window.setTimeout(() => {
+          if (token === requestGestureToken && row.isConnected) cancelDraftProduct(row);
         }, 160);
       };
 
       const onPointerDown = (event) => {
         if (event.pointerType === "mouse" && event.button !== 0) return;
-        if (event.target.closest(".request-check-wrap, .remove-item")) return;
         // Allow swipe from chip, input, main — any point on the tile.
         tracking = true;
         horizontal = false;
@@ -1542,6 +1786,7 @@
         if (!tracking || (pointerId != null && event.pointerId !== pointerId)) return;
         const dx = event.clientX - startX;
         const dy = event.clientY - startY;
+        if (Math.abs(dx) >= 8 || Math.abs(dy) >= 8) clearTapPreview();
         if (!horizontal) {
           if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
           if (Math.abs(dy) > Math.abs(dx)) {
@@ -1554,8 +1799,9 @@
           const chip = row.querySelector(".product-chip");
           if (chip) chip.dataset.suppressClick = "1";
         }
-        // Only pull left to reveal «Заполнить».
-        const pull = Math.max(-maxPull(), Math.min(0, dx));
+        const pull = row.classList.contains("is-removable-empty")
+          ? Math.max(0, Math.min(maxPull(), dx))
+          : Math.max(-maxPull(), Math.min(maxPull(), dx));
         setOffset(pull, { animate: false });
         if (event.cancelable && horizontal) event.preventDefault();
       };
@@ -1565,9 +1811,12 @@
         tracking = false;
         pointerId = null;
         const dx = currentX;
-        const armed = -dx >= threshold();
-        if (horizontal && armed) {
-          openFill();
+        if (horizontal && -dx >= threshold()) {
+          runLeftAction();
+          return;
+        }
+        if (horizontal && dx >= threshold()) {
+          deleteRow();
           return;
         }
         if (!horizontal) {
@@ -1582,15 +1831,41 @@
         }, 0);
       };
 
+      const onPointerCancel = (event) => {
+        if (!tracking || (pointerId != null && event.pointerId !== pointerId)) return;
+        tracking = false;
+        pointerId = null;
+        resetSurface({ animate: true });
+        window.setTimeout(() => {
+          const chip = row.querySelector(".product-chip");
+          if (chip) chip.dataset.suppressClick = "";
+          row.dataset.swiped = "";
+        }, 220);
+      };
+
       surface.addEventListener("pointerdown", onPointerDown);
       surface.addEventListener("pointermove", onPointerMove, { passive: false });
       surface.addEventListener("pointerup", onPointerUp);
-      surface.addEventListener("pointercancel", onPointerUp);
+      surface.addEventListener("pointercancel", onPointerCancel);
       surface.addEventListener("lostpointercapture", () => {
         if (tracking) {
           tracking = false;
           resetSurface({ animate: true });
         }
+      });
+      [
+        [row.querySelector(".keep-remove-item"), row.querySelector(".keep-remove-cross"), "is-delete-tap-preview"],
+        [row.querySelector(".request-swipe-handle"), row.querySelector(".request-swipe-arrow"), "is-fill-tap-preview"],
+      ].forEach(([hitArea, icon, previewClass]) => {
+        hitArea?.addEventListener("pointerdown", (event) => {
+          if (!icon || row.dataset.swiped === "1" || (event.pointerType === "mouse" && event.button !== 0)) return;
+          clearTapPreview();
+          void surface.offsetWidth;
+          icon.classList.add("is-tap-bouncing");
+          row.classList.add(previewClass);
+          surface.classList.add(previewClass);
+          tapPreviewTimer = window.setTimeout(clearTapPreview, 1050);
+        });
       });
     });
   }
@@ -1611,12 +1886,14 @@
     const draft = draftItems.find((item) => item.key === row.dataset.key);
     let productId = draft?.productId || row.dataset.productId || "";
     if (!isRealProductId(productId)) {
-      const query = row.querySelector(".draft-product")?.value || draft?.query || "";
+      const candidate = row.querySelector(".product-candidate");
+      const query = candidate ? candidate.textContent : draft?.query || "";
       productId = resolveDraftProductId(query, draft?.productId || "");
     }
     if (!isRealProductId(productId)) {
       const request = getRequest(routeId);
-      const query = normalizeProductName(row.querySelector(".draft-product")?.value || draft?.query || "");
+      const candidate = row.querySelector(".product-candidate");
+      const query = normalizeProductName(candidate ? candidate.textContent : draft?.query || "");
       const matched = request?.items.find((item) =>
         normalizeProductName(getProduct(item.productId)?.name || "") === query
       );
@@ -1646,8 +1923,18 @@
       .slice()
       .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
     if (!active.length) {
+      const reusable = (nextRequest.responses || [])
+        .slice()
+        .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))[0];
+      if (reusable) {
+        reusable.items = [];
+        reusable.deletedAt = "";
+        reusable.updatedAt = changedAt;
+        reusable.updatedBy = state.user?.email || "local";
+        return reusable;
+      }
       const receipt = {
-        id: id("response"),
+        id: `response_${nextRequest.id}`,
         requestId: nextRequest.id,
         items: [],
         createdAt: changedAt,
@@ -1727,29 +2014,6 @@
     }
   }
 
-  function toggleRequestItemPurchase(requestId, productId, checked) {
-    const request = getRequest(requestId);
-    if (!request) return;
-    if (checked) {
-      const remaining = remainingRequestQuantity(request, productId);
-      const line = receiptLine(request, productId);
-      if (remaining <= 0 && line) {
-        patchRequestItemRow(requestId, productId);
-        return;
-      }
-      const requested = Number(request.items.find((item) => item.productId === productId)?.quantity || 0);
-      applyInlinePurchase(requestId, productId, {
-        productId,
-        purchasedProductId: productId,
-        quantity: requested || remaining || 1,
-        price: Number(line?.price) || 0,
-        completionMode: line && isPurchaseDetailsFilled(line, productId) ? (line.completionMode || "filled") : "closed",
-      });
-      return;
-    }
-    undoLatestPurchaseForProduct(requestId, productId);
-  }
-
   function applyInlinePurchase(requestId, productId, draftItem) {
     const request = getRequest(requestId);
     if (!request || !productId) return;
@@ -1771,6 +2035,23 @@
     quantity = Math.min(quantity, requested || quantity);
     const price = Number(draftItem.price);
     const safePrice = Number.isFinite(price) && price >= 0 ? price : 0;
+    const currentLine = receiptLine(request, resolvedProductId);
+    const expectedPurchasedProductId = draftItem.purchasedProductId || resolvedProductId;
+    const expectedFilled = safePrice > 0
+      || Boolean(draftItem.purchasedProduct)
+      || expectedPurchasedProductId !== resolvedProductId
+      || draftItem.completionMode === "filled";
+    const expectedCompletionMode = expectedFilled ? "filled" : (draftItem.completionMode || "closed");
+    if (!draftItem.purchasedProduct && purchaseLineMatches(currentLine, {
+      productId: resolvedProductId,
+      purchasedProductId: expectedPurchasedProductId,
+      quantity,
+      price: safePrice,
+      completionMode: expectedCompletionMode,
+    })) {
+      patchRequestItemRow(requestId, resolvedProductId);
+      return;
+    }
     const purchasedProductId = materializePurchasedProduct(nextState, { ...draftItem, productId: resolvedProductId }, changedAt) || resolvedProductId;
     const receipt = ensureSingleReceipt(nextRequest, changedAt);
     let line = receipt.items.find((item) => item.productId === resolvedProductId);
@@ -1809,13 +2090,24 @@
     commitState(nextState);
     formDirty = false;
     patchRequestItemRow(requestId, resolvedProductId);
-    // If scan created/updated products, chip labels may need refresh for this row only.
-    showToast(isNewLine ? "Позиция отмечена как купленная." : "Цена и детали сохранены.");
+  }
+
+  function purchaseLineMatches(line, expected) {
+    if (!line || !expected) return false;
+    return line.productId === expected.productId
+      && String(line.purchasedProductId || line.productId) === String(expected.purchasedProductId || expected.productId)
+      && Number(line.quantity) === Number(expected.quantity)
+      && Number(line.price || 0) === Number(expected.price || 0)
+      && String(line.completionMode || "closed") === String(expected.completionMode || "closed");
   }
 
   function undoLatestPurchaseForProduct(requestId, productId) {
     const request = getRequest(requestId);
     if (!request) return;
+    if (!receiptLine(request, productId)) {
+      patchRequestItemRow(requestId, productId);
+      return;
+    }
     const nextState = structuredClone(state);
     const nextRequest = nextState.requests.find((item) => item.id === requestId);
     if (!nextRequest) return;
@@ -1837,7 +2129,6 @@
     commitState(nextState);
     formDirty = false;
     patchRequestItemRow(requestId, productId);
-    showToast("Отметка покупки снята.");
   }
 
   function patchRequestItemRow(requestId, productId) {
@@ -1859,7 +2150,6 @@
       return;
     }
     const draft = draftItems.find((item) => item.key === row.dataset.key);
-    const requestItem = request.items.find((item) => item.productId === productId);
     const purchased = responseItemTotal(request, productId);
     const remaining = remainingRequestQuantity(request, productId);
     const line = receiptLine(request, productId);
@@ -1868,68 +2158,50 @@
     row.classList.toggle("is-bought", fullyBought);
     row.classList.toggle("is-purchase-filled", filled);
     row.dataset.productId = productId;
-    const checkbox = row.querySelector(".request-purchase-check");
-    if (checkbox) checkbox.checked = fullyBought;
-    const progress = row.querySelector(".request-progress-meta");
-    const progressText = requestItem
-      ? requestProgressLabel(request, requestItem, purchased)
-      : "";
-    if (progress) {
-      progress.textContent = progressText;
-      progress.hidden = !progressText;
-    } else if (progressText) {
-      const main = row.querySelector(".request-item-main");
-      const meta = document.createElement("p");
-      meta.className = "request-progress-meta";
-      meta.textContent = progressText;
-      main?.appendChild(meta);
-    }
-    let badge = row.querySelector(".request-filled-badge");
-    if (filled) {
-      const label = purchaseFilledLabel(request, productId, line);
-      if (!badge) {
-        badge = document.createElement("p");
-        badge.className = "request-filled-badge";
-        row.querySelector(".request-item-main")?.appendChild(badge);
-      }
-      badge.textContent = label;
-      badge.hidden = false;
-    } else if (badge) {
-      badge.hidden = true;
-      badge.textContent = "";
-    }
+    const swipeLabel = row.querySelector(".request-swipe-label");
+    if (swipeLabel) swipeLabel.textContent = fullyBought ? "Снять" : "Заполнить";
     // Refresh spent total in meta header without full re-render when possible.
-    const spentNode = document.querySelector(".keep-note-meta strong");
+    const meta = document.querySelector(".keep-note-meta");
+    const spentNode = meta?.querySelector("strong");
     const spent = requestTotal(request);
     if (spentNode) {
-      if (spent > 0) spentNode.textContent = money(spent);
-      else spentNode.remove();
+      if (spent > 0) {
+        spentNode.textContent = money(spent);
+        meta.hidden = false;
+      } else {
+        spentNode.remove();
+        meta.hidden = true;
+      }
     } else if (spent > 0) {
-      const meta = document.querySelector(".keep-note-meta");
       if (meta) {
         const strong = document.createElement("strong");
         strong.textContent = money(spent);
         meta.appendChild(strong);
+        meta.hidden = false;
       }
-    }
-    const status = document.querySelector(".keep-note-meta .status");
-    if (status) {
-      status.className = `status ${request.status}`;
-      status.textContent = requestStatusLabel(request);
     }
     if (draft) {
       const product = getProduct(productId);
-      if (product) setRowProductPresentation(row, draft, product);
+      if (product) {
+        // A barcode scan can refine an unconfirmed product in place. Keep the
+        // row draft on that same product so the next swipe only unchecks it.
+        draft.productId = product.id;
+        draft.query = product.name;
+        draft.unit = product.unit || draft.unit || "";
+        draft.confirmed = true;
+        draft.editingName = false;
+        setRowProductPresentation(row, draft, product);
+      }
     }
   }
 
   function addEmptyRequestLine() {
     syncDraftFromForm();
     const emptyInDom = [...document.querySelectorAll(".request-item")].find((row) =>
-      !row.querySelector(".draft-product")?.value.trim()
+      !row.querySelector(".product-chip") && !row.querySelector(".product-candidate")?.textContent.trim()
     );
     if (emptyInDom) {
-      emptyInDom.querySelector(".draft-product")?.focus();
+      focusRequestLine(emptyInDom);
       return;
     }
     // Drop phantom empty drafts that are not in the DOM (left by autosave remaps).
@@ -1937,7 +2209,7 @@
       if (item.query?.trim()) return true;
       return Boolean(document.querySelector(`.request-item[data-key="${item.key}"]`));
     });
-    const item = { key: id("item"), productId: "", query: "", quantity: 1, unit: "" };
+    const item = { key: id("item"), productId: "", query: "", quantity: 1, unit: "", note: "", confirmed: false, editingName: true };
     draftItems.push(item);
     renderRequestForm(item.key);
   }
@@ -1947,8 +2219,13 @@
     const nextDraft = [];
     document.querySelectorAll(".request-item").forEach((row) => {
       const previous = draftItems.find((value) => value.key === row.dataset.key);
-      const query = row.querySelector(".draft-product")?.value || previous?.query || "";
-      const productId = resolveDraftProductId(query, previous?.productId || row.dataset.productId || "");
+      const chip = row.querySelector(".product-chip");
+      const candidate = row.querySelector(".product-candidate");
+      const query = candidate ? candidate.textContent : chip?.textContent || previous?.query || "";
+      const confirmed = Boolean(previous?.confirmed && (chip || query.trim()));
+      const productId = confirmed
+        ? (previous?.productId || row.dataset.productId || chip?.dataset.productId || resolveDraftProductId(query))
+        : resolveDraftProductId(query);
       const product = productId ? getProduct(productId) : null;
       row.dataset.productId = productId;
       nextDraft.push({
@@ -1957,10 +2234,12 @@
         query,
         quantity: Math.max(0.01, Number(previous?.quantity) || 1),
         unit: (previous?.unit || product?.unit || "").trim(),
-        editingName: Boolean(previous?.editingName) && !row.querySelector(".draft-product")?.hidden,
+        note: String(row.querySelector(".request-line-tail")?.textContent ?? previous?.note ?? "").trimStart(),
+        confirmed,
+        editingName: !confirmed,
       });
     });
-    if (nextDraft.length) draftItems = nextDraft;
+    if (document.getElementById("request-items")) draftItems = nextDraft;
   }
 
   function persistRequestDraft({ silent = false } = {}) {
@@ -1968,7 +2247,7 @@
     const editedRequest = getRequest(routeId);
     if (!editedRequest) return false;
     syncDraftFromForm();
-    const filledDraftItems = draftItems.filter((item) => item.query.trim());
+    const filledDraftItems = draftItems.filter((item) => item.confirmed && item.query.trim());
     const nextState = structuredClone(state);
     const nextRequest = nextState.requests.find((request) => request.id === editedRequest.id);
     if (!nextRequest) return false;
@@ -1984,6 +2263,7 @@
         productId: product.id,
         quantity: Number(draft.quantity) || 1,
         unit,
+        note: String(draft.note || "").trim(),
       });
     }
 
@@ -2010,8 +2290,9 @@
         const previous = editedRequest.items[index];
         return previous
           && previous.productId === item.productId
-          && Number(previous.quantity) === Number(item.quantity)
-          && String(previous.unit || "") === String(item.unit || "");
+           && Number(previous.quantity) === Number(item.quantity)
+           && String(previous.unit || "") === String(item.unit || "")
+           && String(previous.note || "") === String(item.note || "");
       });
     if (sameItems) return true;
 
@@ -2038,6 +2319,8 @@
           query: product?.name || item.query,
           quantity: saved.quantity,
           unit: saved.unit || product?.unit || item.unit || "",
+          note: String(saved.note || item.note || ""),
+          confirmed: true,
           editingName: false,
         };
       });
@@ -2046,19 +2329,14 @@
       const item = draftItems.find((value) => value.key === row.dataset.key);
       if (!item) return;
       row.dataset.productId = item.productId || "";
-      const hasText = Boolean(String(item.query || "").trim());
-      const purchaseCheck = row.querySelector(".request-purchase-check");
-      if (purchaseCheck) purchaseCheck.disabled = !hasText;
+      const hasText = Boolean(item.confirmed && item.productId && String(item.query || "").trim());
       const product = item.productId ? getProduct(item.productId) : null;
       if (product && hasText) {
-        const input = row.querySelector(".draft-product");
-        if (input && input.value.trim() !== product.name && !item.editingName) {
-          input.value = product.name;
-          item.query = product.name;
-        }
-        setRowProductPresentation(row, item, product);
+        const chip = row.querySelector(".product-chip");
+        if (!chip || chip.dataset.productId !== product.id) setRowProductPresentation(row, item, product);
+        else row.classList.add("is-resolved");
       } else {
-        setRowProductPresentation(row, item, null);
+        row.classList.remove("is-resolved");
       }
     });
     return true;
@@ -2070,7 +2348,7 @@
   }
 
   async function deleteRequestWithTransactions(request) {
-    if (!await askConfirm("Удалить запрос и все связанные с ним транзакции?")) return;
+    if (!await askConfirm("Удалить запрос и все данные о покупках?")) return;
     const changedAt = new Date().toISOString();
     const actor = state.user?.email || "local";
     const nextState = structuredClone(state);
@@ -2086,7 +2364,7 @@
     });
     commitState(nextState);
     navigate("requests");
-    showToast("Запрос и его транзакции удалены.");
+    showToast("Запрос удалён.");
   }
 
   function renderRequestAnswer() {
@@ -2116,6 +2394,7 @@
                 </span>
                 <span class="answer-check-copy">
                   <strong>${escapeHtml(product?.name || "Продукт")}</strong>
+                  ${item.note ? `<small class="request-item-note-copy">${escapeHtml(item.note)}</small>` : ""}
                   <small>${requestAmountLabel(item)}</small>
                   <small class="answer-item-summary" ${existing || remaining <= 0 ? "" : "hidden"}>${existing ? answerItemSummary(existing, item) : remaining <= 0 ? "Уже закрыто" : ""}</small>
                 </span>
@@ -2170,19 +2449,20 @@
 
   function answerActionDialog() {
     return `
-      <dialog id="answer-action-dialog" class="answer-dialog">
+      <dialog id="answer-action-dialog" class="answer-dialog purchase-dialog" aria-labelledby="answer-dialog-title">
         <div id="answer-fill-view">
-          <h2 id="answer-dialog-title">Детали покупки</h2>
-          <p id="purchase-requested-name" class="muted purchase-requested-name"></p>
-          <p id="purchase-product-name" class="purchase-product-name"></p>
-          <label class="field purchase-quantity-field"><span>Куплено</span><div class="input-with-unit"><input id="purchase-quantity" type="number" min="0.01" step="0.01" inputmode="decimal" required><strong id="purchase-quantity-unit"></strong></div></label>
-          <label class="field purchase-price-field"><span>Сумма за позицию, ₽</span><input id="purchase-price" type="number" min="0" step="0.01" placeholder="Необязательно"></label>
-          <div class="purchase-product-section">
-            <span class="eyebrow">Товар</span>
-            <button id="scan-purchase-barcode" class="button secondary full" type="button">Сканировать штрихкод</button>
-            <p id="purchase-status" class="muted barcode-status">Скан обновит неподтверждённый товар или привяжет другой SKU к этой покупке.</p>
+          <div class="purchase-dialog-heading">
+            <h2 id="answer-dialog-title">Детали покупки</h2>
           </div>
-          <button id="save-purchase-item" class="button full" type="button">Готово</button>
+          <div class="purchase-value-grid">
+            <label class="field purchase-price-field"><span>Сумма, ₽</span><input id="purchase-price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Необязательно"></label>
+            <label class="field purchase-quantity-field"><span>Количество</span><input id="purchase-quantity" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+          </div>
+          <p id="purchase-status" class="muted barcode-status purchase-status" aria-live="polite" hidden></p>
+          <div class="purchase-dialog-actions">
+            <button id="scan-purchase-barcode" class="button secondary" type="button">Сканировать</button>
+            <button id="save-purchase-item" class="button" type="button">Готово</button>
+          </div>
         </div>
       </dialog>`;
   }
@@ -2219,6 +2499,8 @@
 
   function bindAnswerDialog(request, editedResponse) {
     const dialog = document.getElementById("answer-action-dialog");
+    dialog.addEventListener("focusin", queuePurchaseDialogViewportSync);
+    dialog.addEventListener("close", () => resetPurchaseDialogViewport(dialog));
     dialog.oncancel = (event) => {
       event.preventDefault();
       // Keep the checked item with current/default values when dismissing.
@@ -2238,9 +2520,75 @@
     const dialog = document.getElementById("answer-action-dialog");
     dialog.dataset.productId = productId;
     dialog.dataset.dirty = "false";
-    document.getElementById("answer-dialog-title").textContent = getProduct(productId)?.name || "Детали покупки";
     showAnswerFillView(request, editedResponse);
+    preparePurchaseDialogViewport(dialog);
     dialog.showModal();
+    queuePurchaseDialogViewportSync();
+    requestAnimationFrame(() => {
+      const priceInput = document.getElementById("purchase-price");
+      if (!dialog.open || !priceInput) return;
+      priceInput.focus({ preventScroll: true });
+      queuePurchaseDialogViewportSync();
+    });
+  }
+
+  function purchaseDialogViewportMetrics() {
+    const layoutHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const viewport = window.visualViewport;
+    if (!viewport) return { height: layoutHeight, top: 0, bottom: layoutHeight, layoutHeight };
+
+    const height = Math.min(layoutHeight || viewport.height, viewport.height);
+    const top = viewport.height <= layoutHeight ? Math.max(0, viewport.offsetTop) : 0;
+    return { height, top, bottom: top + height, layoutHeight };
+  }
+
+  function preparePurchaseDialogViewport(dialog) {
+    const metrics = purchaseDialogViewportMetrics();
+    purchaseDialogBaselineHeight = metrics.height;
+    dialog.style.setProperty("--purchase-dialog-visible-height", `${Math.round(metrics.height)}px`);
+    dialog.style.setProperty("--purchase-dialog-lift", "0px");
+  }
+
+  function queuePurchaseDialogViewportSync() {
+    cancelAnimationFrame(purchaseDialogViewportFrame);
+    purchaseDialogViewportFrame = requestAnimationFrame(syncPurchaseDialogViewport);
+  }
+
+  function syncPurchaseDialogViewport() {
+    purchaseDialogViewportFrame = 0;
+    const dialog = document.getElementById("answer-action-dialog");
+    if (!dialog?.open) return;
+
+    const metrics = purchaseDialogViewportMetrics();
+    if (!purchaseDialogBaselineHeight || metrics.height > purchaseDialogBaselineHeight) {
+      purchaseDialogBaselineHeight = metrics.height;
+    }
+    dialog.style.setProperty("--purchase-dialog-visible-height", `${Math.round(metrics.height)}px`);
+
+    const heightReduction = Math.max(0, purchaseDialogBaselineHeight - metrics.height);
+    const coveredFromBottom = Math.max(0, metrics.layoutHeight - metrics.bottom);
+    const keyboardVisible = heightReduction > 64 || coveredFromBottom > 64;
+    if (!keyboardVisible) {
+      dialog.style.setProperty("--purchase-dialog-lift", "0px");
+      return;
+    }
+
+    // Keep the whole dialog inside the animated visual viewport and leave a
+    // little more air above the keyboard than the browser's native centering.
+    const safeGap = 22;
+    const dialogBottom = dialog.offsetTop + dialog.offsetHeight;
+    const requestedLift = Math.max(16, dialogBottom - metrics.bottom + safeGap);
+    const availableLift = Math.max(0, dialog.offsetTop - metrics.top - 10);
+    const lift = Math.min(requestedLift, availableLift);
+    dialog.style.setProperty("--purchase-dialog-lift", `${Math.round(lift)}px`);
+  }
+
+  function resetPurchaseDialogViewport(dialog) {
+    cancelAnimationFrame(purchaseDialogViewportFrame);
+    purchaseDialogViewportFrame = 0;
+    purchaseDialogBaselineHeight = 0;
+    dialog.style.removeProperty("--purchase-dialog-visible-height");
+    dialog.style.removeProperty("--purchase-dialog-lift");
   }
 
   function showAnswerFillView(request, editedResponse) {
@@ -2257,32 +2605,33 @@
       : Math.max(0.01, remaining || requested || 1);
     quantityInput.value = String(qty);
     quantityInput.max = String(Math.max(qty, remaining || 0, requested || 0, qty));
-    document.getElementById("purchase-quantity-unit").textContent = requestItemUnit(requestItem);
     const price = Number(existing?.price);
     priceInput.value = Number.isFinite(price) && price > 0 ? String(price) : "";
     purchaseFillProduct = existing?.purchasedProduct || null;
     const requestedProduct = getProduct(productId);
     const purchased = getProduct(existing?.purchasedProductId || productId);
-    const requestedLabel = document.getElementById("purchase-requested-name");
-    if (requestedLabel) {
-      requestedLabel.textContent = requestedProduct
-        ? `Запрошено: ${requestedProduct.name}${isProductConfirmed(requestedProduct) ? "" : " · неподтверждённый"}`
-        : "";
-    }
-    document.getElementById("purchase-product-name").textContent = purchaseFillProduct
-      ? `Куплен: ${purchaseFillProduct.name}`
-      : purchased && purchased.id !== productId
-        ? `Куплен: ${purchased.name}`
-        : purchased?.name || requestedProduct?.name || "";
-    setPurchaseStatus(
-      isProductConfirmed(requestedProduct)
-        ? "Скан привяжет другой товар к покупке, не изменяя запрошенный."
-        : "Скан может обновить неподтверждённый товар или указать замену."
-    );
+    const replacement = purchaseFillProduct || (purchased && purchased.id !== productId ? purchased : null);
+    setPurchaseDialogProductNames(requestedProduct?.name || "Детали покупки", replacement?.name || "");
+    setPurchaseStatus(replacement?.barcode ? `Штрихкод: ${replacement.barcode}` : "");
+  }
+
+  function setPurchaseDialogProductNames(requestedName, replacementName = "") {
+    const title = document.getElementById("answer-dialog-title");
+    if (!title) return;
+    title.replaceChildren(document.createTextNode(requestedName || "Детали покупки"));
+    if (!replacementName || normalizeProductName(replacementName) === normalizeProductName(requestedName)) return;
+
+    const arrow = document.createElement("span");
+    arrow.className = "purchase-dialog-name-arrow";
+    arrow.textContent = " → ";
+    const replacement = document.createElement("span");
+    replacement.className = "purchase-dialog-new-name";
+    replacement.textContent = replacementName;
+    title.append(arrow, replacement);
   }
 
   async function lookupPurchaseBarcode(barcode) {
-    setPurchaseStatus(`Ищем ${barcode} в Open Food Facts…`);
+    setPurchaseStatus(`Штрихкод: ${barcode}`);
     try {
       const fields = [
         "code", "product_name", "product_name_ru", "generic_name_ru", "brands", "quantity",
@@ -2294,20 +2643,73 @@
       if (!response.ok) throw new Error(`Open Food Facts: ${response.status}`);
       const body = await response.json();
       if (body.status !== 1 || !body.product) throw new Error("Товар с таким штрихкодом не найден.");
-      purchaseFillProduct = openFoodFactsSuggestion(body.product);
-      document.getElementById("purchase-product-name").textContent = `Куплен: ${purchaseFillProduct.name}`;
-      setPurchaseStatus(`Штрихкод ${barcode} распознан. Товар будет сохранён вместе с транзакцией.`);
+      const scannedProduct = openFoodFactsSuggestion(body.product);
+      const dialog = document.getElementById("answer-action-dialog");
+      const requestedProductId = dialog?.dataset.productId || "";
+      const request = getRequest(routeId);
+      const existingRequestItem = request?.items.find((item) => {
+        if (item.productId === requestedProductId) return false;
+        const product = getProduct(item.productId);
+        if (!product) return false;
+        if (scannedProduct.barcode && product.barcode) return product.barcode === scannedProduct.barcode;
+        return normalizeProductName(product.name) === normalizeProductName(scannedProduct.name);
+      });
+      if (request && existingRequestItem) {
+        closeExistingScannedProduct(request, existingRequestItem.productId);
+        return;
+      }
+
+      purchaseFillProduct = scannedProduct;
+      const requestedProduct = getProduct(requestedProductId);
+      setPurchaseDialogProductNames(requestedProduct?.name || "Детали покупки", purchaseFillProduct.name);
+      setPurchaseStatus(`Штрихкод: ${barcode}`);
     } catch (error) {
       purchaseFillProduct = null;
+      const requestedProduct = getProduct(document.getElementById("answer-action-dialog")?.dataset.productId);
+      setPurchaseDialogProductNames(requestedProduct?.name || "Детали покупки");
       setPurchaseStatus(error.message || "Не удалось загрузить товар.", true);
     }
+  }
+
+  function closeExistingScannedProduct(request, productId) {
+    const requestItem = request.items.find((item) => item.productId === productId);
+    if (!requestItem) return;
+    purchaseFillProduct = null;
+    const dialog = document.getElementById("answer-action-dialog");
+    if (dialog?.open) {
+      dialog.dataset.dirty = "false";
+      dialog.close();
+    }
+
+    applyInlinePurchase(request.id, productId, {
+      productId,
+      purchasedProductId: productId,
+      purchasedProduct: null,
+      quantity: Math.max(0.01, Number(requestItem.quantity) || 1),
+      price: 0,
+      completionMode: "closed",
+    });
+
+    requestAnimationFrame(() => {
+      const row = [...document.querySelectorAll(".request-item")].find((element) =>
+        (element.dataset.productId || "") === productId
+      );
+      if (!row) return;
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      row.classList.remove("is-scan-redirected");
+      void row.offsetWidth;
+      row.classList.add("is-scan-redirected");
+      window.setTimeout(() => row.classList.remove("is-scan-redirected"), 1200);
+    });
+    showToast("Товар уже есть в списке — он отмечен купленным.");
   }
 
   function setPurchaseStatus(message, error = false) {
     const status = document.getElementById("purchase-status");
     if (!status) return;
     status.textContent = message;
-    status.className = error ? "error barcode-status" : "muted barcode-status";
+    status.className = error ? "error barcode-status purchase-status" : "muted barcode-status purchase-status";
+    status.hidden = !message;
   }
 
   function savePurchaseDraftItem(soft = false) {
@@ -2398,7 +2800,7 @@
         genericKey: suggestion.genericKey
           || requestedProduct.genericKey
           || genericKeyFromParts(category, suggestion.name || requestedProduct.name),
-        confirmed: false,
+        confirmed: Boolean(suggestion.barcode),
         updatedAt: changedAt,
         updatedBy: state.user?.email || "local",
       });
@@ -2471,7 +2873,7 @@
     commitState(nextState);
     draftItems = [];
     navigate("request-edit", request.id);
-    showToast(nextEditedResponse ? "Транзакция изменена." : "Транзакция добавлена.");
+    showToast("Покупки сохранены.");
   }
 
   function renderRation(focusItemId = "") {
@@ -2711,6 +3113,15 @@
       });
     }));
     return latest?.price || 0;
+  }
+
+  function productPurchasedTotal(productId, source = state) {
+    return (source.requests || []).filter((request) => !request.deletedAt).reduce((total, request) => total + activeResponses(request).reduce(
+      (requestTotal, response) => requestTotal + response.items.reduce((responseTotal, item) => {
+        return responseTotal + ((item.purchasedProductId || item.productId) === productId ? Number(item.quantity) || 0 : 0);
+      }, 0),
+      0
+    ), 0);
   }
 
   function rationSelectionToolbar() {
@@ -3973,6 +4384,7 @@
         measureUnit: plannedAmount ? measureOrUnit : "",
         // Shopping unit is request-local; defaults from product only when missing.
         unit: plannedAmount ? "уп." : measureOrUnit,
+        note: legacyStockSchema ? "" : String(row[13] || ""),
       };
       const existingIndex = request.items.findIndex((value) => value.productId === item.productId);
       if (existingIndex === -1) request.items.push(item);
@@ -4075,6 +4487,7 @@
         item.plannedAmount || "",
         item.packageSize || "",
         item.plannedAmount ? (item.measureUnit || "") : (item.unit || item.measureUnit || ""),
+        item.note || "",
       ])
     );
     const responseRows = syncPackage.requests.flatMap((request) =>
@@ -4141,8 +4554,8 @@
             )],
           },
           {
-            range: "Запросы!A1:M",
-            values: [["request_id", "product_id", "Запрошено", "Статус", "Создан", "Закрыт", "Автор", "Обновлён", "Кем обновлён", "Удалён", "Объём рациона", "Размер упаковки", "Единица объёма"], ...requestRows],
+            range: "Запросы!A1:N",
+            values: [["request_id", "product_id", "Запрошено", "Статус", "Создан", "Закрыт", "Автор", "Обновлён", "Кем обновлён", "Удалён", "Объём рациона", "Размер упаковки", "Единица объёма", "Текст строки"], ...requestRows],
           },
           {
             range: "Покупки!A1:L",
@@ -4185,15 +4598,18 @@
     });
   }
 
-  function requestRow(request) {
+  function requestRow(request, context) {
     const summary = requestSummary(request);
+    const price = context === "requests" && isRequestFulfilled(request)
+      ? `<span class="status done">${money(requestTotal(request))}</span>`
+      : "";
     return `
       <button class="row link-row request-link" data-id="${request.id}" type="button">
         <div class="row-main">
           <strong>${escapeHtml(summary)}</strong>
           <span>${date(request.createdAt)}${isRemoteRequest(request) ? ` · от ${escapeHtml(request.createdBy)}` : ""}</span>
         </div>
-        <span class="status ${request.status}">${request.status === "open" ? requestStatusLabel(request) : money(requestTotal(request))}</span>
+        ${price}
       </button>`;
   }
 
@@ -4220,14 +4636,6 @@
 
   function activeRequests() {
     return (state.requests || []).filter((request) => !request.deletedAt);
-  }
-
-  function requestStatusLabel(request) {
-    if (request.status === "done") return "Выполнен";
-    const hasProgress = activeResponses(request).some((response) =>
-      response.items.some((item) => Number(item.quantity) > 0 || Number(item.price) > 0)
-    );
-    return hasProgress ? "Частично выполнен" : "Активен";
   }
 
   function updateRequestStatus(request, changedAt = request.updatedAt) {
@@ -4313,7 +4721,8 @@
     if (!request.items?.length) return "Пустой запрос";
     return request.items.map((item) => {
       const product = getProduct(item.productId);
-      return `${product?.name || "Продукт"} — ${requestAmountLabel(item)}`;
+      const note = String(item.note || "").trim();
+      return `${product?.name || "Продукт"}${note ? ` ${note}` : ""} — ${requestAmountLabel(item)}`;
     }).join("; ");
   }
 
@@ -4329,24 +4738,6 @@
     const packages = Math.max(1, Math.ceil(Number(item.plannedAmount) / Number(item.packageSize)));
     const rounded = packages * Number(item.packageSize);
     return `${number(rounded)} ${escapeHtml(item.measureUnit || "г")} (${packages} уп. по ${number(item.packageSize)})`;
-  }
-
-  function requestProgressLabel(request, item, purchased) {
-    const bought = Number(purchased.quantity) || 0;
-    const requested = Number(item.quantity) || 0;
-    const price = Number(purchased.price) || 0;
-    const line = receiptLine(request, item.productId);
-    const purchasedId = line?.purchasedProductId || item.productId;
-    const purchasedProduct = purchasedId && purchasedId !== item.productId ? getProduct(purchasedId) : null;
-    const swapPart = purchasedProduct ? ` → ${escapeHtml(purchasedProduct.name)}` : "";
-    const pricePart = price > 0 ? ` · ${money(price)}` : "";
-    if (!bought) return "Не куплено";
-    if (remainingRequestQuantity(request, item.productId) <= 0) {
-      return isPurchaseDetailsFilled(line, item.productId)
-        ? `✓ Закрыто${swapPart}${pricePart}`
-        : `✓ Куплено${swapPart}${pricePart}`;
-    }
-    return `Куплено ${number(bought)} из ${number(requested)} ${escapeHtml(requestItemUnit(item))}${swapPart}${pricePart}`;
   }
 
   function isRemoteRequest(request) {
@@ -4482,7 +4873,7 @@
   }
 
   function withoutLegacyStock(item) {
-    const normalized = { ...item };
+    const normalized = { ...item, note: String(item?.note || "") };
     delete normalized.stockAtRequest;
     return normalized;
   }
@@ -4512,7 +4903,7 @@
 
   function buildSyncPackage(source) {
     const result = structuredClone(source);
-    result.schemaVersion = 10;
+    result.schemaVersion = 11;
     const legacyRationDays = result.rationDays && typeof result.rationDays === "object" ? result.rationDays : {};
     result.rationDays = {};
     Object.values(legacyRationDays).forEach((day) => {
@@ -4588,7 +4979,7 @@
 
   function isLegacyRequestRow(row) {
     const statuses = new Set(["Активен", "Выполнен"]);
-    return row.length >= 14 || (!statuses.has(String(row[3] || "")) && statuses.has(String(row[4] || "")));
+    return !statuses.has(String(row[3] || "")) && statuses.has(String(row[4] || ""));
   }
 
   function parseResponseRow(row, requestsById) {
@@ -4716,6 +5107,14 @@
 
   function escapeAttr(value) {
     return escapeHtml(value);
+  }
+
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("resize", queuePurchaseDialogViewportSync, { passive: true });
+  }
+  if (typeof window.visualViewport?.addEventListener === "function") {
+    window.visualViewport.addEventListener("resize", queuePurchaseDialogViewportSync, { passive: true });
+    window.visualViewport.addEventListener("scroll", queuePurchaseDialogViewportSync, { passive: true });
   }
 
   render();

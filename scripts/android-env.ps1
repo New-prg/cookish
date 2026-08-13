@@ -1067,7 +1067,20 @@ function Resolve-CookishTargetDevice {
   # Refresh adb once so a just-plugged phone is visible.
   if ($EnvInfo.AdbPath -and ($autoUsbThenEmu -or $PhysicalOnly)) {
     Write-Host "  Refreshing adb device list..."
-    & $EnvInfo.AdbPath start-server 2>$null | Out-Null
+    # On Windows PowerShell 5, adb writes its normal daemon startup notice to
+    # stderr. With the runner's ErrorActionPreference=Stop that notice becomes
+    # a terminating NativeCommandError even though adb starts successfully.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+      $ErrorActionPreference = "Continue"
+      & $EnvInfo.AdbPath start-server 2>$null | Out-Null
+      $adbStartExitCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($adbStartExitCode -ne 0) {
+      throw "adb start-server failed (exit $adbStartExitCode)."
+    }
     Start-Sleep -Milliseconds 400
   }
 

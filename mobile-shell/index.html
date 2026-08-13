@@ -2,7 +2,7 @@
 <html lang="ru">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#ffffff" />
     <title>Cookish</title>
     <link rel="stylesheet" href="./styles.css" />
@@ -12,6 +12,13 @@
       <h1 id="page-title">Сводка</h1>
       <span id="sync-chip" class="sync-chip" hidden aria-live="polite"></span>
       <div id="ration-header-picker" class="ration-header-picker" hidden></div>
+      <div id="request-header-menu-wrap" class="header-menu-wrap" hidden>
+        <button id="header-more" class="header-more-button" type="button" aria-label="Меню запроса" aria-haspopup="menu" aria-expanded="false">⋮</button>
+        <div id="request-header-menu" class="header-overflow-menu" role="menu" hidden>
+          <button id="request-info-action" type="button" role="menuitem">Информация о товарах</button>
+          <button id="request-delete-action" class="error" type="button" role="menuitem">Удалить запрос</button>
+        </div>
+      </div>
       <button id="header-action" class="text-button" type="button" hidden></button>
     </header>
 

@@ -13,6 +13,7 @@ function loadModel() {
     activeResponses,
     appendRequestVersion,
     buildSyncPackage,
+    ensureSingleReceipt,
     isProductConfirmed,
     isRequestFulfilled,
     materializePurchasedProduct,
@@ -25,6 +26,8 @@ function loadModel() {
     parseProductRow,
     parseResponseRow,
     plannedRationRequestItems,
+    productPurchasedTotal,
+    purchaseLineMatches,
     restoreRequestVersion,
   };
   return;
@@ -45,6 +48,7 @@ ${markerMatch[0]}`);
     clearInterval,
     clearTimeout,
     document: {
+      addEventListener() {},
       getElementById: () => element,
       querySelector: () => element,
       querySelectorAll: () => [],
@@ -82,8 +86,24 @@ test("sync package preserves completed first-run setup", () => {
     user: { email: "a@example.com" },
   });
 
-  assert.equal(result.schemaVersion, 10);
+  assert.equal(result.schemaVersion, 11);
   assert.equal(result.onboardingCompleted, true);
+});
+
+test("request line text stays separate from the product identity", () => {
+  const result = model.normalizeRequest({
+    id: "request_note",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    updatedBy: "a@example.com",
+    status: "open",
+    items: [{ productId: baseProduct.id, quantity: 1, unit: "л", note: "без лактозы, если будет" }],
+    responses: [],
+    history: [],
+  });
+
+  assert.equal(result.items[0].productId, baseProduct.id);
+  assert.equal(result.items[0].note, "без лактозы, если будет");
 });
 
 test("product nutrition survives Google Sheets round-trip", () => {
@@ -178,7 +198,7 @@ test("replacement purchase keeps product records independent from purchase quant
   assert.equal("quantity" in result.products.find((item) => item.id === "product_replacement"), false);
 });
 
-test("scanned replacement fully corrects an unconfirmed request item instead of adding a product", () => {
+test("scanned replacement confirms and fully corrects a request item instead of adding a product", () => {
   const products = [{
     ...baseProduct,
     id: "product_manual",
@@ -206,7 +226,7 @@ test("scanned replacement fully corrects an unconfirmed request item instead of 
   assert.equal(products.length, 1);
   assert.equal(products[0].name, "Молоко Простоквашино 2,5%");
   assert.equal(products[0].barcode, "4607053473544");
-  assert.equal(products[0].confirmed, false);
+  assert.equal(products[0].confirmed, true);
 });
 
 test("confirmed product is not rewritten when a different SKU is scanned", () => {
@@ -368,6 +388,52 @@ test("legacy purchase becomes one stable response without double counting", () =
   assert.equal("quantity" in result.products[0], false);
 });
 
+test("checkbox reuses one receipt after repeated uncheck and recheck", () => {
+  const request = requestWithResponses([], "2026-01-01T00:01:00.000Z");
+  const first = model.ensureSingleReceipt(request, "2026-01-01T00:02:00.000Z");
+  first.items.push({ productId: "product_water", purchasedProductId: "product_water", quantity: 2, price: 0, completionMode: "closed" });
+  first.deletedAt = "2026-01-01T00:03:00.000Z";
+
+  const reused = model.ensureSingleReceipt(request, "2026-01-01T00:04:00.000Z");
+
+  assert.equal(request.responses.length, 1);
+  assert.equal(reused.id, "response_request_1");
+  assert.equal(reused.deletedAt, "");
+  assert.equal(reused.items.length, 0);
+});
+
+test("saving unchanged purchase details is detected as a no-op", () => {
+  const line = {
+    productId: "product_water",
+    purchasedProductId: "product_water",
+    quantity: 2,
+    price: 179.9,
+    completionMode: "filled",
+  };
+
+  assert.equal(model.purchaseLineMatches(line, structuredClone(line)), true);
+  assert.equal(model.purchaseLineMatches(line, { ...line, price: 180 }), false);
+});
+
+test("all-time purchased total uses the purchased product identity", () => {
+  const state = {
+    requests: [{
+      responses: [{
+        items: [
+          { productId: "product_requested", purchasedProductId: "product_water", quantity: 2 },
+          { productId: "product_water", quantity: 3 },
+        ],
+      }, {
+        deletedAt: "2026-01-02T00:00:00.000Z",
+        items: [{ productId: "product_water", quantity: 10 }],
+      }],
+    }],
+  };
+
+  assert.equal(model.productPurchasedTotal("product_water", state), 5);
+  assert.equal(model.productPurchasedTotal("product_requested", state), 0);
+});
+
 test("partial response keeps a multi-product request active", () => {
   const request = model.normalizeRequest({
     id: "request_multi",
@@ -483,7 +549,7 @@ test("ration sync preserves an arbitrary number of meals and their products", ()
     rationAnchor: date,
   });
 
-  assert.equal(result.schemaVersion, 10);
+  assert.equal(result.schemaVersion, 11);
   assert.equal(result.rationView, "month");
   assert.equal(result.rationAnchor, date);
   assert.equal(result.rationDays[`local|${date}`].meals.length, 4);

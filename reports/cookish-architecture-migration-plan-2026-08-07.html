@@ -1,0 +1,1679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cookish Architecture Migration Plan v4 | Local Docker → SSH VPS | B0-B7 | 2026-08-07</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* 
+     * TERMINAL DASHBOARD THEME
+     * Monochromatic, high-density, dual-mode (dark/light)
+     * 
+     * Theme priority:
+     * 1. Manual override via data-theme attribute
+     * 2. System preference via prefers-color-scheme
+     * 3. Default: dark mode
+     */
+    
+    /* Default tokens (dark mode) */
+    :root {
+      --bg-base: #0a0f14;
+      --bg-panel: #0f1519;
+      --bg-hover: #151c22;
+      --border-dim: #1e293b;
+      --border-focus: #05AD98;
+      --text-primary: #e2e8f0;
+      --text-muted: #475569;
+      --accent-bg: #05AD98;
+      --accent-text: #0a0f14;
+      --positive: #05AD98;
+      --negative: #E85D6C;
+      --warning: #F5A623;
+      --fault: #E85D6C;
+      --neutral: #94a3b8;
+      --extreme: #8B5CF6;
+      --dislocation: #D946A8;
+      --signal-deep: #048A7A;
+      --signal-strong: #0FCFB5;
+      --signal-core: #05AD98;
+      --text-secondary: #94a3b8;
+    }
+    
+    /* System preference: light mode */
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme="dark"]) {
+        --bg-base: #FFFFFF;
+        --bg-panel: #FFFFFF;
+        --bg-hover: #f1f5f9;
+        --border-dim: #BBBFBF;
+        --border-focus: #05AD98;
+        --text-primary: #000000;
+        --text-muted: #878787;
+        --accent-bg: #05AD98;
+        --accent-text: #FFFFFF;
+        --positive: #048A7A;
+        --negative: #D4183D;
+        --warning: #D4910A;
+        --fault: #D4183D;
+        --neutral: #878787;
+        --extreme: #7C3AED;
+        --dislocation: #C026A0;
+        --signal-deep: #037066;
+        --signal-strong: #048A7A;
+        --signal-core: #05AD98;
+        --text-secondary: #636363;
+      }
+    }
+
+    /* Manual override: light mode */
+    [data-theme="light"] {
+      --bg-base: #FFFFFF;
+      --bg-panel: #FFFFFF;
+      --bg-hover: #f1f5f9;
+      --border-dim: #BBBFBF;
+      --border-focus: #05AD98;
+      --text-primary: #000000;
+      --text-muted: #878787;
+      --accent-bg: #05AD98;
+      --accent-text: #FFFFFF;
+      --positive: #048A7A;
+      --negative: #D4183D;
+      --warning: #D4910A;
+      --fault: #D4183D;
+      --neutral: #878787;
+      --extreme: #7C3AED;
+      --dislocation: #C026A0;
+      --signal-deep: #037066;
+      --signal-strong: #048A7A;
+      --signal-core: #05AD98;
+      --text-secondary: #636363;
+    }
+    
+    /* Manual override: dark mode */
+    [data-theme="dark"] {
+      --bg-base: #0a0f14;
+      --bg-panel: #0f1519;
+      --bg-hover: #151c22;
+      --border-dim: #1e293b;
+      --border-focus: #05AD98;
+      --text-primary: #e2e8f0;
+      --text-muted: #475569;
+      --accent-bg: #05AD98;
+      --accent-text: #0a0f14;
+      --positive: #05AD98;
+      --negative: #E85D6C;
+      --warning: #F5A623;
+      --fault: #E85D6C;
+      --neutral: #94a3b8;
+      --extreme: #8B5CF6;
+      --dislocation: #D946A8;
+      --signal-deep: #048A7A;
+      --signal-strong: #0FCFB5;
+      --signal-core: #05AD98;
+      --text-secondary: #94a3b8;
+    }
+
+    /* ========== BASE STYLES ========== */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+      background: var(--bg-base);
+      color: var(--text-primary);
+    }
+
+    /* ========== LAYOUT ========== */
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .header {
+      border-bottom: 1px solid var(--border-dim);
+      padding-bottom: 16px;
+      margin-bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .title {
+      font-size: 14px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .timestamp {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+    @media (max-width: 768px) {
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+    }
+
+    /* ========== PANELS ========== */
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dim);
+      margin-bottom: 16px;
+      border-radius: 4px;
+    }
+
+    .panel-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-dim);
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .panel-body {
+      padding: 16px;
+    }
+
+    .panel-accent {
+      border: 2px solid var(--accent-bg);
+    }
+
+    /* ========== METRICS GRID ========== */
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1px;
+      background: var(--border-dim);
+      border: 1px solid var(--border-dim);
+      margin-bottom: 24px;
+      border-radius: 4px;
+    }
+
+    .metric {
+      background: var(--bg-panel);
+      padding: 16px;
+    }
+
+    .metric-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .metric-value {
+      font-size: 24px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+    }
+
+    .metric-value.large { font-size: 32px; }
+    .metric-value.small { font-size: 18px; }
+
+    .metric-change {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border-dim);
+    }
+
+    /* ========== TABLES ========== */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th {
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      text-align: left;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-dim);
+      position: sticky;
+      top: 0;
+      background: var(--bg-panel);
+    }
+
+    td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-dim);
+    }
+
+    tr:hover {
+      background: var(--bg-hover);
+    }
+
+    tr.highlight {
+      background: var(--bg-hover);
+    }
+
+    /* ========== TEXT UTILITIES ========== */
+    .text-right { text-align: right; }
+    .text-center { text-align: center; }
+    .text-muted { color: var(--text-muted); }
+    .text-positive { color: var(--positive); }
+    .text-negative { color: var(--negative); }
+    .text-warning { color: var(--warning); }
+    .text-mono { font-family: 'IBM Plex Mono', monospace; }
+    .text-sans { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    .text-small { font-size: 11px; }
+    .text-uppercase { text-transform: uppercase; letter-spacing: 0.1em; }
+
+    /* ========== PILLS / BADGES ========== */
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border: 1px solid var(--border-dim);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      border-radius: 999px;
+      }
+
+    .pill-accent {
+      background: var(--accent-bg);
+      color: var(--accent-text);
+      border-color: var(--accent-bg);
+    }
+
+    .pill-positive {
+      background: var(--positive);
+      color: #000;
+      border-color: var(--positive);
+    }
+
+    .pill-negative {
+      background: var(--negative);
+      color: #FFF;
+      border-color: var(--negative);
+    }
+
+    .pill-warning {
+      background: var(--warning);
+      color: #000;
+      border-color: var(--warning);
+    }
+
+    /* ========== STATUS INDICATORS ========== */
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--accent-bg);
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.positive { background: var(--positive); }
+    .status-dot.negative { background: var(--negative); }
+    .status-dot.warning { background: var(--warning); }
+    .status-dot.static { animation: none; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ========== BUTTONS ========== */
+    .btn {
+      background: transparent;
+      border: 1px solid var(--border-dim);
+      color: var(--text-primary);
+      padding: 6px 12px;
+      font-family: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 150ms ease-in-out;
+    }
+
+    .btn:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-focus);
+    }
+
+    .btn-accent {
+      background: var(--accent-bg);
+      color: var(--accent-text);
+      border-color: var(--accent-bg);
+    }
+
+    .btn-accent:hover {
+      opacity: 0.9;
+    }
+
+    .theme-toggle {
+      background: transparent;
+      border: 1px solid var(--border-dim);
+      color: var(--text-primary);
+      padding: 4px 12px;
+      font-family: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 150ms ease-in-out;
+    }
+
+    .theme-toggle:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-focus);
+    }
+
+    /* ========== SPECIAL COMPONENTS ========== */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border-dim);
+      margin: 32px 0;
+    }
+
+    .section-header {
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border-dim);
+    }
+
+    .callout {
+      background: var(--bg-hover);
+      border-left: 3px solid var(--accent-bg);
+      padding: 16px;
+      margin: 16px 0;
+      border-radius: 4px;
+    }
+
+    .callout-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .callout.positive { border-left-color: var(--positive); }
+    .callout.negative { border-left-color: var(--negative); }
+    .callout.warning { border-left-color: var(--warning); }
+
+    .card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dim);
+      padding: 20px;
+    }
+
+    .card-accent {
+      border: 2px solid var(--accent-bg);
+    }
+
+    .footer {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-dim);
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+
+    /* ========== PROGRESS BARS ========== */
+    .bar-container {
+      width: 100px;
+      height: 8px;
+      background: var(--border-dim);
+      display: inline-block;
+      vertical-align: middle;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background: var(--accent-bg);
+    }
+
+    .bar-fill.positive { background: var(--positive); }
+    .bar-fill.negative { background: var(--negative); }
+
+    /* ========== SCROLLBAR ========== */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg-base); }
+    ::-webkit-scrollbar-thumb { background: var(--border-focus); }
+
+    /* ========== PRINT STYLES ========== */
+    @media print {
+      body { background: white; color: black; }
+      .theme-toggle, .btn { display: none; }
+      .panel { border-color: #ccc;
+      border-radius: 4px;
+    }
+      .header { border-bottom-color: #ccc; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+  <div>
+    <h1 class="title">Cookish · Architecture Migration Plan v4</h1>
+    <p class="subtitle">Sheets → Backend sync · Local Docker first · Provider-neutral SSH deploy · Offline-first core</p>
+  </div>
+  <div class="header-actions">
+    <span class="status"><span class="status-dot positive"></span> PLAN v4</span>
+    <span class="timestamp">2026-08-07 · local-first deployment baseline</span>
+    <button class="theme-toggle" onclick="toggleTheme()">◐ THEME</button>
+  </div>
+</header>
+
+<div class="metrics">
+  <div class="metric">
+    <div class="metric-label">Blocks</div>
+    <div class="metric-value">8</div>
+    <div class="metric-change">B0 decisions → B7 production readiness</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Critical path</div>
+    <div class="metric-value small" style="font-size:14px;line-height:1.4;overflow-wrap:anywhere;">B0→B1→B2→B3→B4→B5→B7</div>
+    <div class="metric-change">Storage + sync are explicit critical-path work</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">AI</div>
+    <div class="metric-value small">POST-PLAN</div>
+    <div class="metric-change">Architecture seam only · no harness or model integration</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Health scope</div>
+    <div class="metric-value small">B6 · HC</div>
+    <div class="metric-change">Health Connect only · Huawei is post-plan</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Sheets exit</div>
+    <div class="metric-value small">B4</div>
+    <div class="metric-change">Dry-run + reconcile + canary cutover</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Runtime target</div>
+    <div class="metric-value small">Docker → VPS</div>
+    <div class="metric-change">Local Compose first · generic SSH deployment later</div>
+  </div>
+</div>
+
+<div class="callout">
+  <div class="callout-title">Цель плана</div>
+  <p>Перевести Cookish с синхронизации через <strong>Google Sheets</strong> на <strong>backend source of truth</strong>, сначала получить полностью повторяемый запуск и тестирование backend в <strong>локальном Docker Compose</strong>, затем перенести те же immutable images и конфигурацию на любой Linux VPS по SSH. Сохранить offline-first UX, завершить контур «план → покупка → факт» и опционально подключить <strong>Health Connect</strong>. <strong>AI и Huawei Health не реализуются в рамках этого плана.</strong> Архитектура сохраняет для них стабильные extension points, но release Architecture v4 не зависит от моделей, AI-провайдеров, HMS SDK или Huawei approval.</p>
+</div>
+
+<!-- ROADMAP OVERVIEW -->
+<div class="section-header">00 · Overview · dependency chain</div>
+
+<div class="panel panel-accent">
+  <div class="panel-header">
+    <span>Critical path</span>
+    <span class="pill pill-accent">ORDERED</span>
+  </div>
+  <div class="panel-body">
+    <div class="mermaid">
+flowchart LR
+  B0[B0 Decisions &amp; contracts] --> B1[B1 Identity &amp; platform]
+  B1 --> B2[B2 Single local store]
+  B2 --> B3[B3 Convergent domain sync]
+  B3 --> B4[B4 Sheets cutover]
+  B4 --> B5[B5 Ration facts]
+  B5 --> B6[B6 Health Connect optional]
+  B5 --> B7[B7 Production rollout]
+  B6 -. optional capability gate .-> B7
+  B7 -. future seam .-> X1[Post-plan AI]
+  B7 -. future seam .-> X2[Post-plan Huawei Health]
+    </div>
+    <p class="text-muted text-small" style="margin-top:12px;">B6 является опциональным продуктовым контуром, но входит в план и использует общий sync/backend. B7 не откладывает security и observability «на потом»: эти требования вводятся в блоке появления соответствующих данных, а B7 завершает нагрузочные, restore и rollout gates. AI и Huawei показаны пунктиром как будущие потребители контрактов, а не delivery blocks.</p>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">Block index</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Block</th>
+        <th>Name</th>
+        <th>Outcome</th>
+        <th>Depends on</th>
+        <th>Exit criteria</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono"><strong>B0</strong></td>
+        <td>Decisions, contracts &amp; spikes</td>
+        <td>ADR + исполняемые контракты + снятые P0-развилки</td>
+        <td>—</td>
+        <td>No open storage/auth/sync/ops decisions</td>
+      </tr>
+      <tr>
+        <td class="text-mono"><strong>B1</strong></td>
+        <td>Identity &amp; backend platform</td>
+        <td>Local Docker runtime, auth, DB, then provider-neutral deploy/rollback and off-site backup</td>
+        <td>B0</td>
+        <td>Fresh-clone local gate + generic VPS deploy/rollback + replacement-host restore</td>
+      </tr>
+      <tr>
+        <td class="text-mono"><strong>B2</strong></td>
+        <td>Single mobile data store</td>
+        <td>Native-owned SQLite/Room + repository bridge + outbox</td>
+        <td>B1</td>
+        <td>UI and Worker share one DB; process death loses no write</td>
+      </tr>
+      <tr>
+        <td class="text-mono"><strong>B3</strong></td>
+        <td>Domain sync v1</td>
+        <td>Products / requests / purchases on backend</td>
+        <td>B2</td>
+        <td>3-device randomized convergence and retry gates pass</td>
+      </tr>
+      <tr>
+        <td class="text-mono"><strong>B4</strong></td>
+        <td>Sheets migration &amp; cutover</td>
+        <td>Dry-run importer; reconcile; canary; Sheets off</td>
+        <td>B3</td>
+        <td>0 unexplained diffs; rollback rehearsal green</td>
+      </tr>
+      <tr>
+        <td class="text-mono"><strong>B5</strong></td>
+        <td>Ration v2 + adherence</td>
+        <td>Meal log, profile, compliance math</td>
+        <td>B4</td>
+        <td>Golden 7d/30d results match on device+server</td>
+      </tr>
+      <tr>
+        <td class="text-mono"><strong>B6</strong></td>
+        <td>Health Connect</td>
+        <td>Versioned daily summaries → backend</td>
+        <td>B5</td>
+        <td>Grant/revoke/correction/resync matrix passes</td>
+      </tr>
+      <tr>
+        <td class="text-mono"><strong>B7</strong></td>
+        <td>Hardening &amp; rollout</td>
+        <td>Load, backup/restore, canary, nudges, polish</td>
+        <td>B5 (+ B6 when enabled)</td>
+        <td>SLO + restore + rollback + release checklist green</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- PRINCIPLES -->
+<div class="section-header">00b · Non-negotiables across all blocks</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="panel-header">Always</div>
+    <div class="panel-body">
+      <ul style="padding-left:18px;color:var(--text-secondary);">
+        <li style="margin-bottom:8px;">Offline core flows (list, check buy, meal log) work without network</li>
+        <li style="margin-bottom:8px;">Idempotent ops via <span class="text-mono">clientOpId</span></li>
+        <li style="margin-bottom:8px;">One local repository and one server conflict path; no dual JS+Java domain writers</li>
+        <li style="margin-bottom:8px;">Server assigns canonical revisions; device clocks are metadata, not conflict authority</li>
+        <li style="margin-bottom:8px;">Security, deletion, retention and observability ship with each data class</li>
+        <li>Future integrations use versioned commands/read models; core never depends on AI or a health vendor</li>
+      </ul>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">Never in early blocks</div>
+    <div class="panel-body">
+      <ul style="padding-left:18px;color:var(--text-secondary);">
+        <li style="margin-bottom:8px;">Diet-coach gamification / medical claims</li>
+        <li style="margin-bottom:8px;">Retailer scraping</li>
+        <li style="margin-bottom:8px;">AI runtime, model keys, prompts, agent UI or autonomous writes</li>
+        <li style="margin-bottom:8px;">Huawei HMS SDK, Health Kit scopes, provider picker or Huawei QA</li>
+        <li style="margin-bottom:8px;">Blocking main app on Health Connect availability</li>
+        <li>Big-bang rewrite of UI before sync works</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- LOCAL-FIRST RUNTIME -->
+<div class="section-header">00c · Local-first runtime · provider-neutral SSH target</div>
+
+<div class="panel panel-accent">
+  <div class="panel-header">
+    <span>Prove locally, ship the same images remotely</span>
+    <span class="pill pill-accent">DECIDED BASELINE</span>
+  </div>
+  <div class="panel-body">
+    <div class="mermaid">
+flowchart LR
+  D[Developer or CI] -->|docker compose up| L[Local Docker network]
+  L --> A[Cookish API]
+  L --> P[(PostgreSQL)]
+  L --> M[Migration one-shot]
+  T[Contract + integration tests] --> A
+  CI[CI builds image by Git SHA] --> R[OCI registry]
+  R -->|SSH deploy after local gate| V[Generic Linux VPS]
+  V --> C[Caddy: TLS + reverse proxy]
+  C --> A2[Same API image]
+  A2 --> P2[(Private PostgreSQL)]
+  P2 --> O[Encrypted off-site backup]
+    </div>
+    <p class="text-muted text-small" style="margin-top:12px;">Сначала весь backend-контур доказывается локально без аренды сервера: schema migrations, auth stubs, API, Postgres, jobs, contract/integration tests, seed/reset и backup/restore. VPS появляется только после зелёного local/CI gate и получает те же образы и Compose-модель через SSH.</p>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="panel-header">Local Docker first</div>
+    <div class="panel-body">
+      <ul style="padding-left:18px;color:var(--text-secondary);">
+        <li style="margin-bottom:8px;">One command starts API, PostgreSQL and migrations from a fresh clone</li>
+        <li style="margin-bottom:8px;">Separate dev and test databases; deterministic fixtures and reset command</li>
+        <li style="margin-bottom:8px;">No production credentials, domains, TLS or rented infrastructure needed</li>
+        <li>Contract, migration, restart and restore tests run locally and in CI</li>
+      </ul>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">Remote only after the gate</div>
+    <div class="panel-body">
+      <ul style="padding-left:18px;color:var(--text-secondary);">
+        <li style="margin-bottom:8px;">Generic Ubuntu LTS host reached through standard SSH; no provider API dependency</li>
+        <li style="margin-bottom:8px;">Production override adds Caddy, persistent volumes, restart policy and real secrets</li>
+        <li style="margin-bottom:8px;">PostgreSQL remains private; deploy and rollback use immutable Git-SHA images</li>
+        <li>Off-site backups, external monitoring and replacement-host restore remain our responsibility</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="callout warning">
+  <div class="callout-title">Portability rule</div>
+  <p>Core deployment must require only Docker Engine, Compose and POSIX SSH. Provider panels, snapshots, rescue consoles and APIs may be documented later as optional operational accelerators, but they never enter the application, migration or rollback contract.</p>
+</div>
+
+<!-- B0 -->
+<div class="section-header">B0 · Decisions, executable contracts &amp; risk spikes</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>B0 — Close architecture forks before production code</span>
+    <span class="pill pill-warning">DECISIONS</span>
+  </div>
+  <div class="panel-body">
+    <p class="text-muted" style="margin-bottom:12px;"><strong style="color:var(--text-primary);">Goal:</strong> убрать неопределённость до кода. Без B0 каждый следующий блок будет переписывать API.</p>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Work item</th>
+        <th>Deliverable</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">0.1</td>
+        <td>ADR: Sheets → Backend SoR; offline outbox retained</td>
+        <td><span class="text-mono">docs/adr/0001-backend-sor.md</span></td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.2</td>
+        <td>Sync RFC: envelope, server revision, push ack, opaque cursor, bootstrap, cursor expiry, tombstone GC, conflict matrix</td>
+        <td>OpenAPI + executable contract tests for <span class="text-mono">/v1/sync/*</span></td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.3</td>
+        <td>Domain model: household, product, request, response, ration, meal_log</td>
+        <td>ERD + JSON schemas</td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.4</td>
+        <td>ADR: local data owner and JS ↔ native boundary</td>
+        <td>Native-owned Room/SQLite repository + Capacitor bridge + Worker spike</td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.5</td>
+        <td>Health source abstraction + consent/data-lifecycle matrix</td>
+        <td>Health Connect implementation contract; provider id remains extensible</td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.6</td>
+        <td>Sheets import mapping from current v5.3 sheets</td>
+        <td>Field map + test fixtures</td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.7</td>
+        <td>Backend platform ADR: local Docker Compose first, generic Ubuntu LTS VPS over SSH later, Caddy, private Postgres, migrations/jobs, RPO/RTO/SLO</td>
+        <td><span class="text-mono">docs/adr/0004-backend-platform.md</span>; local/CI acceptance must pass before renting or provisioning production</td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.8</td>
+        <td>Auth ADR + spike: Credential Manager Google ID token, nonce, stable <span class="text-mono">sub</span>, server validation</td>
+        <td>Signed staging request; current Sheets OAuth token is not reused as app identity</td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.9</td>
+        <td>Threat model + data inventory + retention/deletion rules</td>
+        <td>PII, refresh tokens, household data and health summaries classified before schema freeze</td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.10</td>
+        <td>Future extension seams only: actor-aware commands/read models and provider-neutral health DTO</td>
+        <td>No <span class="text-mono">/agent</span> API, model SDK, Huawei SDK, keys, scopes or UI in this plan</td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.11</td>
+        <td>Local runtime spike: fresh clone → Compose up → migrate → seed → contract/integration tests → restart → backup/restore → clean down</td>
+        <td>One documented command path on Windows developer host and CI; no VPS, domain or provider account is required</td>
+      </tr>
+      <tr>
+        <td class="text-mono">0.12</td>
+        <td>Operations ADR: local/prod Compose overlays, deploy identity, registry, secret custody, off-site backup target, update window and staging lifecycle</td>
+        <td><span class="text-mono">docs/adr/0005-runtime-operations.md</span> + local test and generic SSH deploy runbook drafts</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="panel-body">
+    <div class="callout positive" style="margin:0;">
+      <div class="callout-title">Exit</div>
+      <p>Все P0 ADR приняты; UI и Worker читают/пишут одну spike-БД; client/server contract suite проходит; conflict policy покрывает retry, clock skew, delete/update race и cursor reset; локальный backend поднимается с нуля одной документированной командой, миграции и restore проверяются в Docker, а будущий remote deploy зависит только от SSH + Docker Compose.</p>
+    </div>
+  </div>
+</div>
+
+<!-- B1 -->
+<div class="section-header">B1 · Identity &amp; backend platform</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>B1 — Deployable and recoverable platform</span>
+    <span class="pill pill-warning">INFRA</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Work item</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">1.1</td>
+        <td>Local Docker development baseline</td>
+        <td><span class="text-mono">compose.yaml</span> starts API + Postgres + migration one-shot; checked-in <span class="text-mono">.env.example</span>, healthchecks, named volumes and pinned image versions</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.2</td>
+        <td>Deterministic local test profile</td>
+        <td>Isolated test DB, fixtures, seed/reset commands, migration up/down compatibility checks and no dependency on developer-machine state</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.3</td>
+        <td>Provider-neutral production overlay</td>
+        <td><span class="text-mono">compose.prod.yaml</span> adds Caddy, persistent volumes, restart policy and production healthchecks; Postgres port is never public</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.4</td>
+        <td>Service scaffold + Postgres schema</td>
+        <td>Users, sessions, households, memberships; pinned runtime/DB versions and expand/contract migrations</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.5</td>
+        <td>Auth: Google ID token → app JWT/refresh</td>
+        <td>Credential Manager ID token + nonce; verify signature/aud/iss/exp; key user by stable Google <span class="text-mono">sub</span></td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.6</td>
+        <td>Household create / join / leave; expiring invite code; membership roles</td>
+        <td>Replaces spreadsheet link mental model; authorization is household-scoped</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.7</td>
+        <td>Device registration + sync cursor table</td>
+        <td><span class="text-mono">deviceId</span>, lastAckRev, lastSeenAt, retiredAt</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.8</td>
+        <td>CI build/push/deploy and rollback by immutable Git SHA</td>
+        <td>Local/CI tests → registry image → SSH deploy → migration gate → readiness smoke; previous image tag retained; no build on production VPS and no AI/Huawei secrets</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.9</td>
+        <td>Generic VPS bootstrap only after local gate</td>
+        <td>Ubuntu LTS, non-root deploy user, SSH keys, password/root SSH disabled after verification, firewall 22/80/443, Docker + Compose, time sync and controlled security updates</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.10</td>
+        <td>Observability baseline from outside the VPS</td>
+        <td>Readiness/liveness, redacted logs, auth errors, uptime, CPU/RAM/disk, DB health, certificate and backup age; actionable alerts and named owner</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.11</td>
+        <td>Refresh-token rotation, revoke/logout, account deletion/export</td>
+        <td>Encrypted-at-rest token storage; replay detection; audit trail</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.12</td>
+        <td>Two-layer backup and recovery</td>
+        <td>Encrypted PostgreSQL base/WAL or logical backup to independent off-site storage; optional host snapshot is convenience only; scheduled retention, integrity check and clean restore</td>
+      </tr>
+      <tr>
+        <td class="text-mono">1.13</td>
+        <td>Provider-neutral VPS incident runbooks</td>
+        <td>Reboot, disk-full, lost SSH, OS reinstall, restore to replacement VPS and DNS switch; provider-specific recovery notes may be appended later</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="panel-body">
+    <div class="grid-2" style="grid-template-columns:1fr 1fr;gap:12px;">
+      <div class="callout" style="margin:0;">
+        <div class="callout-title">In scope</div>
+        <p>Identity + household + empty sync endpoints, plus repository-owned <span class="text-mono">infra/runtime</span> Compose, test, bootstrap, deploy, backup and restore artifacts.</p>
+      </div>
+      <div class="callout warning" style="margin:0;">
+        <div class="callout-title">Out of scope</div>
+        <p>AI, Huawei Health, Health Connect, full domain CRUD UI cutover, Sheets kill switch.</p>
+      </div>
+    </div>
+    <div class="callout positive" style="margin-top:12px;margin-bottom:0;">
+      <div class="callout-title">Exit</div>
+      <p>From a fresh clone, local Compose starts, migrates, seeds, passes auth/tenant/integration tests, survives restart and restores a backup without manual database steps. Only after this gate, a clean generic VPS is bootstrapped from the same repository artifacts; Git-SHA deploy/rollback and replacement-host restore pass inside RPO/RTO; Postgres is private, password/root SSH is disabled and logs contain no credentials.</p>
+    </div>
+  </div>
+</div>
+
+<!-- B2 -->
+<div class="section-header">B2 · Mobile offline core</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>B2 — Replace localStorage monostate foundation</span>
+    <span class="pill pill-warning">CLIENT</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Work item</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">2.1</td>
+        <td>Introduce native-owned Room/SQLite repositories</td>
+        <td>WebView uses a narrow Capacitor repository bridge; WorkManager opens the same DB</td>
+      </tr>
+      <tr>
+        <td class="text-mono">2.2</td>
+        <td>Outbox table for pending ops</td>
+        <td><span class="text-mono">clientOpId</span>, payload, baseVersion, status, attempts, nextAttemptAt, lastError</td>
+      </tr>
+      <tr>
+        <td class="text-mono">2.3</td>
+        <td>API client: auth session, refresh, error taxonomy</td>
+        <td>Offline queue when 0 network</td>
+      </tr>
+      <tr>
+        <td class="text-mono">2.4</td>
+        <td>Feature flag: <span class="text-mono">syncBackend</span> vs <span class="text-mono">syncSheets</span></td>
+        <td>Paths are mutually exclusive per household; never write one mutation to both SoR paths</td>
+      </tr>
+      <tr>
+        <td class="text-mono">2.5</td>
+        <td>Onboarding branch: household instead of sheet (flagged)</td>
+        <td>Old path remains until B4</td>
+      </tr>
+      <tr>
+        <td class="text-mono">2.6</td>
+        <td>BackendSyncWorker skeleton (WorkManager)</td>
+        <td>Transport only: flush outbox + pull delta; no independent Java merge/domain mutations</td>
+      </tr>
+      <tr>
+        <td class="text-mono">2.7</td>
+        <td>DB/schema migration + rollback-safe app upgrade tests</td>
+        <td>Process death, disk-full, corrupt payload and poison-op recovery</td>
+      </tr>
+      <tr>
+        <td class="text-mono">2.8</td>
+        <td>Session secrets in Android Keystore-backed storage</td>
+        <td>No refresh token in localStorage, JS logs or SharedPreferences snapshot</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="panel-body">
+    <div class="callout positive" style="margin:0;">
+      <div class="callout-title">Exit</div>
+      <p>UI and Worker use one DB/repository; an offline write survives process kill, reboot and schema upgrade; 10 repeated flush attempts cause one server effect; poison ops stop retrying and surface recovery state. Sheets remains default only for unmigrated production households.</p>
+    </div>
+  </div>
+</div>
+
+<!-- B3 -->
+<div class="section-header">B3 · Domain sync v1 (shopping core)</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>B3 — Products · Requests · Purchases on backend</span>
+    <span class="pill pill-negative">CORE</span>
+  </div>
+  <div class="panel-body">
+    <p class="text-muted" style="margin-bottom:12px;">Перенос самого зрелого domain-контура (закупки) до Health Connect. Доменные инварианты текущей модели сохраняются, но порядок конфликтов больше не доверяет часам устройства: canonical revision назначает сервер.</p>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Work item</th>
+        <th>Conflict / rule</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">3.1</td>
+        <td>Server entities + events: Product</td>
+        <td>Conditional write by server version; soft-delete; client updatedAt is metadata</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3.2</td>
+        <td>Server entities + events: Request + lines</td>
+        <td>Server version for request metadata; explicit field policy; lines unique by productId</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3.3</td>
+        <td>Purchase responses multi-id merge</td>
+        <td>Independent entities merged by responseId; unique idempotent operations</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3.4</td>
+        <td>Client: write path through outbox for CRUD above</td>
+        <td>Optimistic UI retained</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3.5</td>
+        <td>Server version history for requests (optional local keep)</td>
+        <td>Multi-device rollback foundation</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3.6</td>
+        <td>Foreground pull + WorkManager sync; push notification may trigger pull</td>
+        <td>One canonical pull path; no second WebSocket protocol in v1</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3.7</td>
+        <td>Contract tests: merge fixtures from existing Node tests</td>
+        <td>Reuse fixtures as transport-neutral golden cases; add concurrency/property tests</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3.8</td>
+        <td>Notifications: new remote open request via backend push later; poll OK v1</td>
+        <td>Push carries no domain state; client always pulls canonical delta</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3.9</td>
+        <td>Bootstrap snapshot + cursor, pagination, cursor expiry and <span class="text-mono">RESET_REQUIRED</span></td>
+        <td>Snapshot and cursor represent one consistent server revision</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3.10</td>
+        <td>Tombstone retention + retired-device policy + schema negotiation</td>
+        <td>GC exceeds supported offline window; incompatible clients receive upgrade-required</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="panel-body">
+    <div class="callout positive" style="margin:0;">
+      <div class="callout-title">Exit</div>
+      <p>Randomized 3-device histories with offline edits, reorder, duplicate delivery, clock skew and delete/update races converge to one canonical state. Repeating every operation 10× creates one effect; multi-response purchases never collapse or double count; expired cursors recover through a verified bootstrap.</p>
+    </div>
+  </div>
+</div>
+
+<!-- B4 -->
+<div class="section-header">B4 · Sheets migration &amp; cutover</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>B4 — Leave Sheets without stranding households</span>
+    <span class="pill pill-warning">MIGRATION</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Work item</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">4.1</td>
+        <td>Idempotent dry-run importer: spreadsheet → candidate household snapshot</td>
+        <td>Продукты, Запросы, Покупки, Рацион; stable import namespace</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4.2</td>
+        <td>In-app “Перенести из Google Таблицы”: preview + discrepancy report</td>
+        <td>Existing Sheets authorization is used only for the import session</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4.3</td>
+        <td>Cutoff/freeze → import → counts/hash reconcile → canary</td>
+        <td>No concurrent legacy writer during final snapshot; optional export is read-only</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4.4</td>
+        <td>Default new users: backend only</td>
+        <td>No spreadsheet step in onboarding</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4.5</td>
+        <td>Cutover checklist + enforced minimum app version</td>
+        <td>Old clients become read-only after household cutoff</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4.6</td>
+        <td>Deprecate SheetsSyncWorker write path</td>
+        <td>Remove wipe-rewrite risk from prod path</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4.7</td>
+        <td>Profile UI: household members, invite, disconnect sheet</td>
+        <td>Replace spreadsheet id as primary mental model</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4.8</td>
+        <td>Rollback window + household export/restore rehearsal</td>
+        <td>Timed runbook; migration state machine is resumable and auditable</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4.9</td>
+        <td>Pre-cutover recovery point</td>
+        <td>Fresh verified off-site PostgreSQL backup plus optional host snapshot before freeze; backup job success alone is not evidence until a restore check passes</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="panel-body">
+    <div class="mermaid">
+flowchart LR
+  S[Existing Sheets household] --> I[Import job]
+  I --> H[Backend household]
+  H --> D1[Device A sync]
+  H --> D2[Device B sync]
+  H --> X[Sheets optional export]
+  X -.->|deprecated| Z[Remove writes]
+    </div>
+    <div class="callout positive" style="margin-top:12px;margin-bottom:0;">
+      <div class="callout-title">Exit</div>
+      <p>At least one real household passes dry run, cutoff, import and canary with zero unexplained count/hash/semantic differences. A pre-cutover database recovery point is verified; old clients cannot write after cutoff; export/restore and rollback are rehearsed inside RTO; Sheets is no longer a source of truth.</p>
+    </div>
+  </div>
+</div>
+
+<!-- B5 -->
+<div class="section-header">B5 · Ration v2 — facts, profile, adherence</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>B5 — Close the plan → shop → fact loop (no LLM)</span>
+    <span class="pill pill-negative">RATION</span>
+  </div>
+  <div class="panel-body">
+    <p class="text-muted" style="margin-bottom:12px;">Самостоятельный продуктовый контур «план → покупка → факт». Он не зависит от AI; стабильные domain commands и read models сохраняют возможность добавить внешнего помощника после завершения этого плана.</p>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Work item</th>
+        <th>UX / data</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">5.1</td>
+        <td>Ration sync on backend (days, meals, items, templates)</td>
+        <td>Per-owner; conditional write by server meal version; timezone-aware day key</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5.2</td>
+        <td>Meal log: eaten / partial / skipped / replaced</td>
+        <td>One-tap on meal row; portionFactor</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5.3</td>
+        <td>Ration profile: targets, exclusions, time budget, household size</td>
+        <td>Profile or Ration settings</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5.4</td>
+        <td>Adherence engine (deterministic)</td>
+        <td>Versioned formula for 7d/30d; missing/partial/replaced semantics; kcal only when coverage is sufficient</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5.5</td>
+        <td>Summary CTAs</td>
+        <td>«N приёмов не отмечены», «Собрать список из рациона»</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5.6</td>
+        <td>Request-from-ration remains first-class</td>
+        <td>Must not regress package rounding</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5.7</td>
+        <td>Partial UI updates for meal check (if not done earlier)</td>
+        <td>Keep note-feel / no full re-render jank</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5.8</td>
+        <td>Golden adherence dataset shared by client and server</td>
+        <td>DST, timezone change, partial, skipped, replaced, missing nutrition and package units</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5.9</td>
+        <td>Versioned read models and explicit commands for future external automation</td>
+        <td>Read-only summaries + validated mutations; no agent runtime or AI-specific tables</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="panel-body">
+    <div class="callout positive" style="margin:0;">
+      <div class="callout-title">Exit</div>
+      <p>User can plan a week, mark meals and see deterministic compliance across devices. Client and server produce identical 7d/30d results for the golden dataset, including DST and incomplete data. Zero LLM dependency and no AI UI/API.</p>
+    </div>
+  </div>
+</div>
+
+<!-- B6 -->
+<div class="section-header">B6 · Health Connect (optional first provider)</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>B6 — Versioned, normalized health daily summaries</span>
+    <span class="pill">HEALTH CONNECT</span>
+  </div>
+  <div class="panel-body">
+    <p class="text-muted" style="margin-bottom:12px;">Health Connect — единственная health-интеграция в текущем плане. Она опциональна для пользователя и не блокирует shopping/ration. Backend принимает provider-neutral summary DTO, но клиент реализует только источник <span class="text-mono">health_connect</span>.</p>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Work item</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">6.1</td>
+        <td>Versioned <span class="text-mono">health_summary</span> schema + ingest API</td>
+        <td>Upsert by user/source/localDay/type with sourceRevision and provenance; not immutable</td>
+      </tr>
+      <tr>
+        <td class="text-mono">6.2</td>
+        <td>Android Health Connect availability + permissions UX</td>
+        <td>Steps, active calories, sleep, exercise; background/history are separate optional permissions</td>
+      </tr>
+      <tr>
+        <td class="text-mono">6.3</td>
+        <td>Aggregate reader + change-token sync</td>
+        <td>Avoid double count; pagination, token expiry and bounded resync</td>
+      </tr>
+      <tr>
+        <td class="text-mono">6.4</td>
+        <td>Timezone, local-day and incomplete-day rules</td>
+        <td>Store observed timezone, completeness and source data origins</td>
+      </tr>
+      <tr>
+        <td class="text-mono">6.5</td>
+        <td>Profile: connect / granted scopes / last sync / revoke / delete</td>
+        <td>Health consent is independent from account and from any future AI scope</td>
+      </tr>
+      <tr>
+        <td class="text-mono">6.6</td>
+        <td>Retention enforcement + privacy copy + redacted telemetry</td>
+        <td>No raw high-frequency series on backend; summaries deleted on revoke/account deletion per policy</td>
+      </tr>
+      <tr>
+        <td class="text-mono">6.7</td>
+        <td>Lifecycle tests</td>
+        <td>Grant, partial grant, deny background/history, revoke, regrant, late correction, deletion, token expiry</td>
+      </tr>
+      <tr>
+        <td class="text-mono">6.8</td>
+        <td>Provider extension seam</td>
+        <td>Document DTO and connector interface only; no Huawei dependency, flavor, scope or picker</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="panel-body">
+    <div class="callout warning" style="margin:0;">
+      <div class="callout-title">Isolation</div>
+      <p>Отсутствие Health Connect, отказ в разрешениях или ошибка синхронизации никогда не блокируют вход, shopping, ration или backend sync.</p>
+    </div>
+    <div class="callout positive" style="margin-top:12px;margin-bottom:0;">
+      <div class="callout-title">Exit</div>
+      <p>User can opt in, see normalized yesterday summary and revoke access. Grant/revoke/regrant, provider corrections/deletions, change-token expiry and incomplete days produce correct state without double count. No AI consumer and no Huawei implementation exist.</p>
+    </div>
+  </div>
+</div>
+
+<!-- B7 -->
+<div class="section-header">B7 · Hardening, rollout &amp; product polish</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <span>B7 — Production readiness and controlled rollout</span>
+    <span class="pill">RELEASE</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Work item</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">7.1</td>
+        <td>Adherence nudges via WorkManager / push</td>
+        <td>Deep link to ration day; max 1–2/day</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7.2</td>
+        <td>Canary rollout rings: internal → 1% → 10% → 50% → 100%</td>
+        <td>Promotion and automatic rollback thresholds are documented</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7.3</td>
+        <td>Observability: error rate, sync lag, outbox age, import discrepancies, health errors</td>
+        <td>Dashboards + actionable alerts + named owners</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7.4</td>
+        <td>Final security/privacy verification</td>
+        <td>No critical/high findings; deletion, tenant isolation, log redaction and token rotation retested</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7.5</td>
+        <td>IA polish from UX audit</td>
+        <td>Summary action hub, store mode, icons — as capacity allows</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7.6</td>
+        <td>Load/chaos test + backup/restore + household export</td>
+        <td>Measured SLO/RPO/RTO; trust replacement for “open the sheet”</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7.7</td>
+        <td>Docs + release gate</td>
+        <td>Update README, PRD, architecture</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7.8</td>
+        <td>Compatibility and rollback runbooks</td>
+        <td>Minimum app version, expired cursor, migration resume, degraded health and backend incident paths</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7.9</td>
+        <td>Generic host resilience rehearsal</td>
+        <td>Controlled reboot, Docker/OS update, disk pressure, lost SSH and restore to replacement VPS; measured downtime is within approved SLO</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7.10</td>
+        <td>Capacity and single-node exit thresholds</td>
+        <td>Alert at agreed CPU/RAM/disk/connection headroom; document when to resize Shared, move to Dedicated, or split managed/second-host Postgres</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7.11</td>
+        <td>Operations handoff</td>
+        <td>Monthly patch window, backup-retention review, restore cadence, certificate/domain renewal and temporary-environment cleanup have owner and checklist</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="panel-body">
+    <div class="callout positive" style="margin:0;">
+      <div class="callout-title">Exit</div>
+      <p>Release checklist: offline shop+ration, deterministic multi-device convergence, recoverable Sheets migration, optional Health Connect, external uptime alerts, Git-SHA rollback, reboot/rescue/replacement-host restore gates and no Sheets dependency for new installs. Single-VPS availability limits are accepted explicitly. AI and Huawei Health are absent from the release.</p>
+    </div>
+  </div>
+</div>
+
+<!-- TIMELINE SUGGESTION -->
+<div class="section-header">Suggested sequencing (relative)</div>
+
+<div class="panel">
+  <div class="panel-header">Relative timeline (not calendar commitments)</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Block</th>
+        <th>Relative size</th>
+        <th>Can overlap</th>
+        <th>Risk</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">B0</td>
+        <td><div class="bar-container"><div class="bar-fill warning" style="width:45%"></div></div> M</td>
+        <td>—</td>
+        <td><span class="pill pill-warning">MED</span> architecture forks</td>
+      </tr>
+      <tr>
+        <td class="text-mono">B1</td>
+        <td><div class="bar-container"><div class="bar-fill negative" style="width:70%"></div></div> M–L</td>
+        <td>Only after B0 gates</td>
+        <td><span class="pill pill-negative">HIGH</span> auth/first production platform</td>
+      </tr>
+      <tr>
+        <td class="text-mono">B2</td>
+        <td><div class="bar-container"><div class="bar-fill warning" style="width:55%"></div></div> M</td>
+        <td>Partial with B1 end</td>
+        <td><span class="pill pill-warning">MED</span> storage rewrite</td>
+      </tr>
+      <tr class="highlight">
+        <td class="text-mono">B3</td>
+        <td><div class="bar-container"><div class="bar-fill negative" style="width:80%"></div></div> L</td>
+        <td>—</td>
+        <td><span class="pill pill-negative">HIGH</span> merge correctness</td>
+      </tr>
+      <tr class="highlight">
+        <td class="text-mono">B4</td>
+        <td><div class="bar-container"><div class="bar-fill warning" style="width:50%"></div></div> M</td>
+        <td>—</td>
+        <td><span class="pill pill-warning">MED</span> user trust</td>
+      </tr>
+      <tr>
+        <td class="text-mono">B5</td>
+        <td><div class="bar-container"><div class="bar-fill warning" style="width:60%"></div></div> M–L</td>
+        <td>—</td>
+        <td><span class="pill pill-warning">MED</span></td>
+      </tr>
+      <tr>
+        <td class="text-mono">B6</td>
+        <td><div class="bar-container"><div class="bar-fill warning" style="width:45%"></div></div> M</td>
+        <td>Optional after B5</td>
+        <td><span class="pill pill-warning">MED</span> permissions/data lifecycle</td>
+      </tr>
+      <tr>
+        <td class="text-mono">B7</td>
+        <td><div class="bar-container"><div class="bar-fill" style="width:45%"></div></div> M</td>
+        <td>Hardening activities start in B1</td>
+        <td><span class="pill pill-warning">MED</span> rollout/restore</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- TEAM SLICES -->
+<div class="section-header">Workstream ownership (logical)</div>
+
+<div class="grid-3">
+  <div class="panel">
+    <div class="panel-header">Backend / Platform</div>
+    <div class="panel-body">
+      <p class="text-small text-muted">Primary blocks</p>
+      <p style="margin-top:8px;"><span class="pill pill-accent">B0</span> <span class="pill pill-accent">B1</span> <span class="pill pill-accent">B3</span> <span class="pill pill-accent">B4</span> <span class="pill">B7</span></p>
+      <p class="text-muted text-small" style="margin-top:12px;">Local Compose/test loop, generic SSH deploy, auth, sync engine, import, off-site backup/restore, SLO</p>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">Mobile</div>
+    <div class="panel-body">
+      <p class="text-small text-muted">Primary blocks</p>
+      <p style="margin-top:8px;"><span class="pill pill-accent">B0</span> <span class="pill pill-accent">B2</span> <span class="pill pill-accent">B3</span> <span class="pill pill-accent">B5</span> <span class="pill">B7</span></p>
+      <p class="text-muted text-small" style="margin-top:12px;">Repository bridge, Room/SQLite, outbox, ration UX, rollout</p>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">Native / Health</div>
+    <div class="panel-body">
+      <p class="text-small text-muted">Primary blocks</p>
+      <p style="margin-top:8px;"><span class="pill pill-accent">B0</span> <span class="pill pill-accent">B2</span> <span class="pill pill-accent">B6</span> <span class="pill">B7</span></p>
+      <p class="text-muted text-small" style="margin-top:12px;">Workers, Keystore, Health Connect; no HMS/Huawei module</p>
+    </div>
+  </div>
+</div>
+
+<!-- POST PLAN -->
+<div class="section-header">Post-plan candidates · explicitly not part of Architecture v4 delivery</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="panel-header"><span>X1 · AI / Meal Ops Agent</span><span class="pill pill-warning">POST-PLAN</span></div>
+    <div class="panel-body">
+      <p>В этом плане не создаются agent API, model provider adapter, prompts, tool loop, streaming UI, apply jobs, AI settings, model keys, quotas или autonomous workflows.</p>
+      <p style="margin-top:10px;"><strong>Подготовлено архитектурой:</strong> versioned read models, explicit domain commands, actor-aware audit fields, idempotent mutation semantics и deterministic ration/adherence facts.</p>
+      <p style="margin-top:10px;"><strong>Entry gate отдельного плана:</strong> B7 production SLO стабилен; use cases/evals/privacy/cost budget утверждены; provider и model выбираются заново на дату реализации.</p>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header"><span>X2 · Huawei Health</span><span class="pill pill-warning">POST-PLAN</span></div>
+    <div class="panel-body">
+      <p>В этом плане не создаются Huawei developer project, scope application, HMS dependencies, product flavor, Health Kit connector, provider picker или Huawei device QA.</p>
+      <p style="margin-top:10px;"><strong>Подготовлено архитектурой:</strong> provider-neutral daily summary DTO, source/provenance fields, connector boundary и provider-independent retention/deletion rules.</p>
+      <p style="margin-top:10px;"><strong>Entry gate отдельного плана:</strong> подтверждены business need, supported device/OS/region matrix, approval path и signed-device spike. Отказ от X2 не требует менять backend schema.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ACCEPTANCE -->
+<div class="section-header">Global acceptance (end state after B7)</div>
+
+<div class="panel panel-accent">
+  <div class="panel-header">Definition of done — Architecture v4</div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Criterion</th>
+        <th>Status target</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-mono">1</td>
+        <td>New installs never require Google Sheets</td>
+        <td><span class="status-dot positive static"></span> Required</td>
+      </tr>
+      <tr>
+        <td class="text-mono">2</td>
+        <td>Household multi-device sync for products, requests, purchases, ration, meal logs</td>
+        <td><span class="status-dot positive static"></span> Required</td>
+      </tr>
+      <tr>
+        <td class="text-mono">3</td>
+        <td>Offline create request + check buy + mark meal; sync later</td>
+        <td><span class="status-dot positive static"></span> Required</td>
+      </tr>
+      <tr>
+        <td class="text-mono">4</td>
+        <td>Existing Sheets household can dry-run, reconcile, cut over and roll back safely</td>
+        <td><span class="status-dot positive static"></span> Required</td>
+      </tr>
+      <tr>
+        <td class="text-mono">5</td>
+        <td>Every operation is idempotent; 3-device randomized histories converge</td>
+        <td><span class="status-dot positive static"></span> Required</td>
+      </tr>
+      <tr>
+        <td class="text-mono">6</td>
+        <td>Backup restore and migration rollback meet approved RPO/RTO</td>
+        <td><span class="status-dot positive static"></span> Required</td>
+      </tr>
+      <tr>
+        <td class="text-mono">7</td>
+        <td>Health Connect daily summary path passes permission/correction/deletion lifecycle tests</td>
+        <td><span class="status-dot warning static"></span> Optional capability</td>
+      </tr>
+      <tr>
+        <td class="text-mono">8</td>
+        <td>AI and Huawei Health have documented extension seams but no runtime, SDK, keys, scopes or UI</td>
+        <td><span class="status-dot positive static"></span> Required non-goal</td>
+      </tr>
+      <tr>
+        <td class="text-mono">9</td>
+        <td>No dual domain writers; merge tests on server</td>
+        <td><span class="status-dot positive static"></span> Required</td>
+      </tr>
+      <tr>
+        <td class="text-mono">10</td>
+        <td>Local Compose passes from a fresh clone; later, any clean Ubuntu VPS can receive and roll back the same immutable Git-SHA image over SSH without building on production</td>
+        <td><span class="status-dot positive static"></span> Required</td>
+      </tr>
+      <tr>
+        <td class="text-mono">11</td>
+        <td>PostgreSQL is private; external monitoring is live; an encrypted off-site backup restores to a replacement VPS inside RPO/RTO</td>
+        <td><span class="status-dot positive static"></span> Required</td>
+      </tr>
+      <tr>
+        <td class="text-mono">12</td>
+        <td>PRD/README/architecture updated</td>
+        <td><span class="status-dot positive static"></span> Required</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout">
+  <div class="callout-title">First executable step</div>
+  <p><strong>B0 → B1 local platform slice:</strong> создать <span class="text-mono">infra/runtime</span> с <span class="text-mono">compose.yaml</span>, test profile, <span class="text-mono">.env.example</span> и командами up/migrate/seed/test/reset/backup/restore. На чистом clone доказать локальный запуск, restart и restore; затем подключить CI build по Git SHA. Аренда и SSH-bootstrap VPS начинаются только после зелёного local/CI gate. Параллельно завершить local-DB и sync ADR/spikes. AI/Huawei implementation work не открывать: для них достаточно extension contracts из B0/B5/B6.</p>
+</div>
+
+<div class="footer">
+  <p>Cookish Architecture Migration Plan v4 · Local Docker → provider-neutral SSH VPS · Blocks B0–B7 · 2026-08-07 · AI + Huawei Health are post-plan · Terminal Dashboard theme · Related: architecture review, UX audit, PRODUCT_REQUIREMENTS.md</p>
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+  function isDark() {
+    const forced = document.documentElement.getAttribute('data-theme');
+    if (forced === 'dark') return true;
+    if (forced === 'light') return false;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+
+  function mermaidTheme() {
+    return isDark() ? 'dark' : 'neutral';
+  }
+
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: mermaidTheme(),
+    securityLevel: 'loose',
+    fontFamily: 'Inter, system-ui, sans-serif',
+    flowchart: { curve: 'basis', htmlLabels: true },
+    sequence: { actorMargin: 24, messageMargin: 32 },
+  });
+
+  async function renderMermaid() {
+    const nodes = document.querySelectorAll('.mermaid');
+    for (const [i, el] of nodes.entries()) {
+      if (!el.dataset.source) el.dataset.source = el.textContent;
+      el.removeAttribute('data-processed');
+      el.textContent = el.dataset.source;
+      el.id = `mermaid-diagram-${i}`;
+    }
+    await mermaid.run({ querySelector: '.mermaid' });
+  }
+
+  await renderMermaid();
+
+  const originalToggle = window.toggleTheme;
+  window.toggleTheme = function () {
+    originalToggle();
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: mermaidTheme(),
+      securityLevel: 'loose',
+      fontFamily: 'Inter, system-ui, sans-serif',
+      flowchart: { curve: 'basis', htmlLabels: true },
+      sequence: { actorMargin: 24, messageMargin: 32 },
+    });
+    renderMermaid();
+  };
+</script>
+
+<style>
+  .mermaid {
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+    padding: 8px 0;
+  }
+  .mermaid svg { max-width: 100%; height: auto; }
+  .panel-body ul { margin: 0; }
+  .panel-body p { color: var(--text-secondary); }
+  .bar-fill.warning { background: var(--warning); }
+  .bar-fill.negative { background: var(--negative); }
+  td .bar-container { margin-right: 8px; }
+</style>
+
+  </div>
+
+  <script>
+    // Theme toggle - respects system preference, allows manual override
+    function toggleTheme() {
+      const html = document.documentElement;
+      const currentTheme = html.getAttribute('data-theme');
+      
+      if (currentTheme) {
+        html.setAttribute('data-theme', currentTheme === 'dark' ? 'light' : 'dark');
+      } else {
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        html.setAttribute('data-theme', prefersDark ? 'light' : 'dark');
+      }
+      updateToggleIcon();
+    }
+    
+    // Update toggle button icon based on current effective theme
+    function updateToggleIcon() {
+      const btn = document.querySelector('.theme-toggle');
+      if (!btn) return;
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
+        (!document.documentElement.getAttribute('data-theme') && 
+         window.matchMedia('(prefers-color-scheme: dark)').matches);
+      btn.textContent = isDark ? '☀ LIGHT' : '◐ DARK';
+    }
+    
+    // Initialize on load
+    document.addEventListener('DOMContentLoaded', updateToggleIcon);
+  </script>
+</body>
+</html>

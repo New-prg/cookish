@@ -10,6 +10,9 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 
@@ -122,8 +125,9 @@ public class MainActivity extends BridgeActivity {
             runOnUiThread(() -> new IntentIntegrator(MainActivity.this)
                 .setDesiredBarcodeFormats(IntentIntegrator.PRODUCT_CODE_TYPES)
                 .setPrompt("Наведите камеру на штрихкод товара")
-                .setBeepEnabled(true)
-                .setOrientationLocked(false)
+                .setBeepEnabled(false)
+                .setCaptureActivity(PortraitCaptureActivity.class)
+                .setOrientationLocked(true)
                 .initiateScan());
         }
 
@@ -350,6 +354,7 @@ public class MainActivity extends BridgeActivity {
             if (barcodeResult.getContents() == null) {
                 evaluateBarcodeCallback("{\"ok\":false,\"cancelled\":true}");
             } else {
+                vibrateBarcodeSuccess();
                 evaluateBarcodeCallback(
                     "{\"ok\":true,\"barcode\":" +
                         JSONObject.quote(barcodeResult.getContents()) + "}"
@@ -364,6 +369,24 @@ public class MainActivity extends BridgeActivity {
             sendGoogleResult(result);
         } catch (ApiException error) {
             sendGoogleError(error.getMessage());
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void vibrateBarcodeSuccess() {
+        Vibrator vibrator;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VibratorManager manager = (VibratorManager) getSystemService(VIBRATOR_MANAGER_SERVICE);
+            vibrator = manager == null ? null : manager.getDefaultVibrator();
+        } else {
+            vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        }
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE));
+        } else {
+            vibrator.vibrate(120);
         }
     }
 

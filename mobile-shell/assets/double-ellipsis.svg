@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 15" role="img" aria-label="Двойное троеточие">
+  <g fill="#000">
+    <circle cx="2" cy="2.5" r="1.5"/>
+    <circle cx="2" cy="7.5" r="1.5"/>
+    <circle cx="2" cy="12.5" r="1.5"/>
+    <circle cx="7" cy="2.5" r="1.5"/>
+    <circle cx="7" cy="7.5" r="1.5"/>
+    <circle cx="7" cy="12.5" r="1.5"/>
+  </g>
+</svg>

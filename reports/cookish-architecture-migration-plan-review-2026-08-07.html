@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cookish Architecture Migration Plan · Review | 2026-08-07</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base:#0a0f14; --bg-panel:#0f1519; --bg-hover:#151c22;
+      --border-dim:#1e293b; --border-focus:#05ad98; --text-primary:#e2e8f0;
+      --text-secondary:#94a3b8; --text-muted:#64748b; --accent-bg:#05ad98;
+      --accent-text:#07110f; --positive:#05ad98; --negative:#e85d6c;
+      --warning:#f5a623; --extreme:#8b5cf6;
+    }
+    @media (prefers-color-scheme:light) {
+      :root:not([data-theme="dark"]) {
+        --bg-base:#fff; --bg-panel:#fff; --bg-hover:#f1f5f9; --border-dim:#bbbfbf;
+        --text-primary:#000; --text-secondary:#636363; --text-muted:#737373;
+        --accent-bg:#05ad98; --accent-text:#fff; --positive:#048a7a;
+        --negative:#d4183d; --warning:#b96e00; --extreme:#7c3aed;
+      }
+    }
+    [data-theme="light"] {
+      --bg-base:#fff; --bg-panel:#fff; --bg-hover:#f1f5f9; --border-dim:#bbbfbf;
+      --text-primary:#000; --text-secondary:#636363; --text-muted:#737373;
+      --accent-bg:#05ad98; --accent-text:#fff; --positive:#048a7a;
+      --negative:#d4183d; --warning:#b96e00; --extreme:#7c3aed;
+    }
+    [data-theme="dark"] {
+      --bg-base:#0a0f14; --bg-panel:#0f1519; --bg-hover:#151c22;
+      --border-dim:#1e293b; --text-primary:#e2e8f0; --text-secondary:#94a3b8;
+      --text-muted:#64748b; --accent-bg:#05ad98; --accent-text:#07110f;
+      --positive:#05ad98; --negative:#e85d6c; --warning:#f5a623; --extreme:#8b5cf6;
+    }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { background:var(--bg-base); color:var(--text-primary); font:13px/1.55 Inter,system-ui,sans-serif; }
+    .container { max-width:1400px; margin:0 auto; padding:24px; }
+    .header { border-bottom:1px solid var(--border-dim); padding-bottom:16px; margin-bottom:24px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; }
+    .title { font-size:15px; font-weight:600; text-transform:uppercase; letter-spacing:.1em; }
+    .subtitle,.timestamp,.text-muted { color:var(--text-muted); }
+    .subtitle,.timestamp,.text-small { font-size:11px; }
+    .header-actions { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .theme-toggle { background:transparent; border:1px solid var(--border-dim); color:var(--text-primary); padding:5px 12px; font:11px inherit; cursor:pointer; }
+    .theme-toggle:hover { border-color:var(--border-focus); background:var(--bg-hover); }
+    .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1px; background:var(--border-dim); border:1px solid var(--border-dim); margin-bottom:24px; }
+    .metric { background:var(--bg-panel); padding:16px; min-height:112px; }
+    .metric-label,.panel-header,.callout-title,.section-header,th { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:var(--text-muted); }
+    .metric-value { font:600 26px/1.15 "IBM Plex Mono",monospace; margin:7px 0 8px; }
+    .metric-value.small { font-size:18px; }
+    .metric-change { border-top:1px solid var(--border-dim); padding-top:7px; color:var(--text-muted); font-size:11px; }
+    .section-header { margin:30px 0 14px; border-bottom:1px solid var(--border-dim); padding-bottom:8px; }
+    .panel { background:var(--bg-panel); border:1px solid var(--border-dim); margin-bottom:16px; border-radius:4px; overflow:hidden; }
+    .panel-accent { border:2px solid var(--accent-bg); }
+    .panel-header { padding:12px 16px; border-bottom:1px solid var(--border-dim); display:flex; justify-content:space-between; gap:12px; align-items:center; }
+    .panel-body { padding:16px; }
+    .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+    table { width:100%; border-collapse:collapse; }
+    th { text-align:left; padding:11px 14px; border-bottom:1px solid var(--border-dim); background:var(--bg-panel); vertical-align:bottom; }
+    td { padding:11px 14px; border-bottom:1px solid var(--border-dim); vertical-align:top; }
+    tbody tr:last-child td { border-bottom:0; }
+    tbody tr:hover { background:var(--bg-hover); }
+    .table-wrap { overflow-x:auto; }
+    .callout { background:var(--bg-hover); border-left:3px solid var(--accent-bg); padding:16px; margin:16px 0; border-radius:4px; }
+    .callout.warning { border-left-color:var(--warning); }
+    .callout.negative { border-left-color:var(--negative); }
+    .callout.positive { border-left-color:var(--positive); }
+    .callout-title { margin-bottom:8px; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid var(--border-dim); border-radius:999px; font-size:10px; text-transform:uppercase; letter-spacing:.09em; white-space:nowrap; }
+    .pill-positive { background:var(--positive); color:#001713; border-color:var(--positive); }
+    .pill-negative { background:var(--negative); color:#fff; border-color:var(--negative); }
+    .pill-warning { background:var(--warning); color:#160d00; border-color:var(--warning); }
+    .pill-accent { background:var(--accent-bg); color:var(--accent-text); border-color:var(--accent-bg); }
+    .text-positive { color:var(--positive); } .text-negative { color:var(--negative); } .text-warning { color:var(--warning); }
+    .text-mono { font-family:"IBM Plex Mono",monospace; }
+    .text-right { text-align:right; }
+    ul,ol { padding-left:20px; }
+    li + li { margin-top:7px; }
+    p + p { margin-top:8px; }
+    code { font-family:"IBM Plex Mono",monospace; font-size:.94em; background:var(--bg-hover); padding:1px 4px; }
+    a { color:var(--positive); text-decoration:none; } a:hover { text-decoration:underline; }
+    .flow { display:grid; grid-template-columns:repeat(7,minmax(120px,1fr)); gap:8px; }
+    .flow-step { position:relative; border:1px solid var(--border-dim); background:var(--bg-panel); padding:12px; min-height:78px; }
+    .flow-step strong { display:block; margin-bottom:5px; font-family:"IBM Plex Mono",monospace; color:var(--positive); }
+    .flow-step:not(:last-child)::after { content:"→"; position:absolute; right:-9px; top:27px; color:var(--warning); z-index:2; }
+    .bar { height:7px; background:var(--border-dim); margin-top:7px; }
+    .bar > span { display:block; height:100%; background:var(--accent-bg); }
+    .footer { margin-top:30px; border-top:1px solid var(--border-dim); padding-top:15px; color:var(--text-muted); font-size:11px; }
+    @media(max-width:900px) { .grid-2,.grid-3{grid-template-columns:1fr}.flow{grid-template-columns:1fr 1fr}.flow-step::after{display:none} }
+    @media(max-width:600px) { .container{padding:14px}.flow{grid-template-columns:1fr}.title{font-size:13px}td,th{padding:9px 10px} }
+    @media print { body{background:#fff;color:#000}.theme-toggle{display:none}.panel,.metric{break-inside:avoid}.container{max-width:none;padding:8mm} }
+  </style>
+</head>
+<body>
+<div class="container">
+  <header class="header">
+    <div>
+      <h1 class="title">Cookish · Review архитектурного плана B0–B9</h1>
+      <p class="subtitle">Полнота · реализуемость · риски · исправленный критический путь</p>
+    </div>
+    <div class="header-actions">
+      <span class="pill pill-warning">CONDITIONAL GO</span>
+      <span class="timestamp">Review: 2026-08-07 · Europe/Moscow</span>
+      <button class="theme-toggle" onclick="toggleTheme()">◐ THEME</button>
+    </div>
+  </header>
+
+  <div class="metrics">
+    <div class="metric">
+      <div class="metric-label">Roadmap completeness</div>
+      <div class="metric-value text-positive">8/10</div>
+      <div class="metric-change">Охват продукта и порядок работ убедительны</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Implementation readiness</div>
+      <div class="metric-value text-warning">4/10</div>
+      <div class="metric-change">Не хватает решений, протоколов и проверяемых gates</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Technical feasibility</div>
+      <div class="metric-value text-positive">7/10</div>
+      <div class="metric-change">Реализуемо после закрытия P0-развилок</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">P0 blockers</div>
+      <div class="metric-value text-negative">6</div>
+      <div class="metric-change">Auth · storage owner · sync · cutover · privacy · ops</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Baseline verification</div>
+      <div class="metric-value small text-positive">17/17 + APK</div>
+      <div class="metric-change">Node domain tests и Android debug build проходят</div>
+    </div>
+  </div>
+
+  <div class="callout warning">
+    <div class="callout-title">Итоговый вердикт</div>
+    <p><strong>План хорош как стратегическая карта, но ещё не годится как исполнимый migration plan.</strong> Он правильно ставит backend и offline sync раньше AI/health, сохраняет текущие доменные инварианты и избегает big-bang UI rewrite. Однако B1 нельзя безопасно начинать, пока B0 не превратится из списка документов в набор принятых решений и исполняемых контрактных тестов.</p>
+    <p>Рекомендация: <strong>не менять направление</strong>, а добавить перед B1 короткий architecture spike и переписать exit criteria в измеримые release gates. B6–B8 оставить опциональными capability-треками, не включать их в обязательный cutover Sheets.</p>
+  </div>
+
+  <div class="section-header">1 · Основание ревью</div>
+  <div class="panel">
+    <div class="panel-header"><span>Что было проверено</span><span class="pill">repo evidence</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Объект</th><th>Факт</th><th>Вывод для плана</th></tr></thead>
+        <tbody>
+          <tr><td><code>mobile-shell/app.js</code></td><td>4 243 строки; monostate в <code>localStorage</code>; JS сам пишет Sheets через <code>batchClear</code> + <code>batchUpdate</code>.</td><td>B2 — не «замена хранилища», а смена владельца данных и write path.</td></tr>
+          <tr><td><code>SheetsSyncWorker.java</code></td><td>862 строки; отдельная Java-реализация merge; snapshot передаётся через <code>SharedPreferences</code>.</td><td>Сейчас два доменных writer/merge path. Граница JS ↔ native должна быть решена в B0.</td></tr>
+          <tr><td><code>MainActivity.java</code></td><td>Google Authorization возвращает OAuth access token, не Google ID token для backend sign-in.</td><td>Фраза «reuse existing Google client identity» требует отдельной миграции на Credential Manager / ID token.</td></tr>
+          <tr><td><code>tests/mobile-sync-model.test.mjs</code></td><td>17 тестов проходят: merge, tombstones, multi-response, rollback, ration.</td><td>Это полезные fixtures B3, но не доказательство server convergence под конкуренцией и retry.</td></tr>
+          <tr><td><code>android/app/build.gradle</code></td><td>Нет SQLite/Room, Health Connect, HTTP client и FCM runtime-контура; <code>google-services.json</code> необязателен.</td><td>B2, B7 и push в B9 — новые платформенные подсистемы, а не инкрементальная настройка.</td></tr>
+          <tr><td>Build baseline</td><td><code>npm test</code>: 17/17; <code>npm run android:apk</code>: exit 0.</td><td>Текущую версию можно зафиксировать как миграционный baseline и regression oracle.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-header">2 · Что в исходном плане сделано правильно</div>
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-header">Architecture strengths</div>
+      <div class="panel-body">
+        <ul>
+          <li>Backend source of truth вводится до agent harness и health.</li>
+          <li>Offline-first, outbox и <code>clientOpId</code> названы базовыми инвариантами.</li>
+          <li>Multi-response purchases не упрощаются до перезаписываемого receipt.</li>
+          <li>Meal log и deterministic adherence предшествуют AI-рекомендациям.</li>
+          <li>Agent apply отделён от preview и требует подтверждения пользователя.</li>
+          <li>Health provider abstraction позволяет не размножать backend-контракты.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">Delivery strengths</div>
+      <div class="panel-body">
+        <ul>
+          <li>Cutover вынесен в отдельный блок, а не смешан с CRUD.</li>
+          <li>Реальный household указан как exit B4 — это лучше лабораторной проверки.</li>
+          <li>AI и health не блокируют базовые shopping/ration flows.</li>
+          <li>Оставлены non-goals: scraping, medical coach, silent overwrite.</li>
+          <li>Наличие ADR/OpenAPI/fixtures в B0 — правильная форма артефактов.</li>
+          <li>Huawei approval lead time замечен заранее.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-header">3 · Блокирующие пробелы</div>
+  <div class="panel panel-accent">
+    <div class="panel-header"><span>P0 findings</span><span class="pill pill-negative">fix before B1</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:60px">ID</th><th>Пробел</th><th>Почему блокирует</th><th>Обязательная корректировка</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pill pill-negative">P0-1</span></td><td><strong>Не выбран владелец локальной БД.</strong> «SQLite (or equivalent)» не отвечает, кто пишет: JS, Capacitor plugin или native worker.</td><td>WebView и WorkManager должны атомарно видеть одну outbox/DB. Иначе появится новый dual-writer.</td><td>ADR: native-owned Room/SQLite + узкий Capacitor repository bridge; Worker только transport, все domain mutations идут через один repository.</td></tr>
+          <tr><td><span class="pill pill-negative">P0-2</span></td><td><strong>Sync указан существительными, не протоколом.</strong></td><td><code>rev</code>, <code>cursor</code> и <code>clientOpId</code> недостаточны для clock skew, retry, delete/update race и compaction.</td><td>Зафиксировать server-assigned household sequence, push ack, opaque pull cursor, bootstrap, cursor expiry, tombstone GC, device retirement, batch transaction и schema negotiation.</td></tr>
+          <tr><td><span class="pill pill-negative">P0-3</span></td><td><strong>Auth-предпосылка неверна.</strong> Текущий код получает Sheets access token.</td><td>Backend не должен превращать OAuth access token в долгоживущую app identity; нужны audience/nonce/server validation и refresh rotation.</td><td>Добавить Credential Manager + Google ID token, stable Google <code>sub</code>, backend verification, rotated refresh tokens, revoke/logout и account-link rules.</td></tr>
+          <tr><td><span class="pill pill-negative">P0-4</span></td><td><strong>Cutover без reconciliation и rollback.</strong></td><td>One-shot import может гоняться со старым клиентом, а «backend primary + Sheets export» не определяет, кто побеждает.</td><td>Dry run → freeze/cutoff → import → counts/hash reconcile → canary → rollback window. Старые версии после cutoff переводить read-only или блокировать server-side.</td></tr>
+          <tr><td><span class="pill pill-negative">P0-5</span></td><td><strong>Security/privacy отложены до B9.</strong></td><td>PII, refresh tokens, health и prompt injection возникают в B1/B6/B7; поздний review потребует переделки схемы и логов.</td><td>Threat model и data classification в B0; log redaction, encryption/secrets, deletion/export, consent receipts и retention enforcement — в блоке появления данных.</td></tr>
+          <tr><td><span class="pill pill-negative">P0-6</span></td><td><strong>Нет эксплуатационной модели backend.</strong></td><td>Не выбраны runtime/hosting/region, migrations, queue, backups, PITR, SLO, alerts и release rollback.</td><td>ADR платформы + environments; RPO/RTO; backup restore drill; zero/expand-contract migrations; job queue; owner и runbook до первого household.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-header">4 · Полнота по направлениям</div>
+  <div class="panel">
+    <div class="panel-header">Coverage scorecard</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Направление</th><th class="text-right">Roadmap</th><th class="text-right">Execution detail</th><th>Главный недостающий элемент</th></tr></thead>
+        <tbody>
+          <tr><td>Цели, scope, зависимости</td><td class="text-right text-positive">9/10</td><td class="text-right text-positive">8/10</td><td>Отделить mandatory release от optional capabilities.</td></tr>
+          <tr><td>Backend / data model</td><td class="text-right text-positive">8/10</td><td class="text-right text-warning">4/10</td><td>Roles, membership lifecycle, stable identity, audit/retention.</td></tr>
+          <tr><td>Offline sync / conflicts</td><td class="text-right text-positive">8/10</td><td class="text-right text-negative">3/10</td><td>Формальная state machine и convergence tests.</td></tr>
+          <tr><td>Mobile storage migration</td><td class="text-right text-warning">6/10</td><td class="text-right text-negative">3/10</td><td>DB owner, JS/native bridge, atomicity, upgrade/rollback.</td></tr>
+          <tr><td>Sheets import / cutover</td><td class="text-right text-positive">8/10</td><td class="text-right text-warning">4/10</td><td>Freeze, idempotent re-run, reconciliation, rollback.</td></tr>
+          <tr><td>Ration / adherence</td><td class="text-right text-positive">8/10</td><td class="text-right text-warning">5/10</td><td>Формула, timezone, partial/replaced semantics, units.</td></tr>
+          <tr><td>Agent harness</td><td class="text-right text-positive">8/10</td><td class="text-right text-warning">5/10</td><td>Async job state, reconnect, evals, prompt/tool versioning.</td></tr>
+          <tr><td>Health Connect</td><td class="text-right text-positive">7/10</td><td class="text-right text-warning">4/10</td><td>Corrections/deletes, change tokens, provenance, permission states.</td></tr>
+          <tr><td>Huawei</td><td class="text-right text-warning">6/10</td><td class="text-right text-negative">3/10</td><td>Early device/region/API compatibility spike and go/no-go.</td></tr>
+          <tr><td>Testing / rollout / operations</td><td class="text-right text-warning">5/10</td><td class="text-right text-negative">2/10</td><td>Test pyramid, SLO, canary rings, restore drill, rollback gates.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-header">5 · Исправленный критический путь</div>
+  <div class="panel">
+    <div class="panel-header"><span>Release spine</span><span class="pill pill-accent">Sheets-independent core</span></div>
+    <div class="panel-body">
+      <div class="flow">
+        <div class="flow-step"><strong>B0A</strong>Decisions + risk spikes</div>
+        <div class="flow-step"><strong>B0B</strong>Executable contracts</div>
+        <div class="flow-step"><strong>B1</strong>Identity + platform</div>
+        <div class="flow-step"><strong>B2</strong>Single local store</div>
+        <div class="flow-step"><strong>B3</strong>Convergent sync</div>
+        <div class="flow-step"><strong>B4</strong>Canary cutover</div>
+        <div class="flow-step"><strong>B5</strong>Ration facts</div>
+      </div>
+      <div class="callout positive" style="margin-bottom:0">
+        <div class="callout-title">После B5 — независимые capability tracks</div>
+        <p><strong>B6 Agent</strong> и <strong>B7 Health Connect</strong> могут идти параллельно. <strong>B8 Huawei</strong> зависит от provider contract B7, но не должен зависеть от B6: только использование health в agent context требует обоих. <strong>B9 hardening</strong> не отдельная «уборка в конце»: security, observability, backup и rollout проходят через все блоки, а B9 содержит финальную нагрузку и release polish.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout warning">
+    <div class="callout-title">Исправить противоречие исходного summary</div>
+    <p>В метрике исходного отчёта critical path обозначен как <code>B0→B4→B5</code>, хотя фактическая диаграмма требует <code>B0→B1→B2→B3→B4→B5</code>. Краткая запись скрывает самые рискованные работы — storage и sync — и должна быть заменена полным путём.</p>
+  </div>
+
+  <div class="section-header">6 · Как скорректировать B0–B9</div>
+  <div class="panel">
+    <div class="panel-header">Block-by-block patch</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Блок</th><th>Сохранить</th><th>Добавить / изменить</th><th>Новый exit gate</th></tr></thead>
+        <tbody>
+          <tr><td><strong>B0A</strong></td><td>ADR, ERD, consent matrix.</td><td>Выбрать backend stack/host/region; local DB owner; auth path; queue/stream; провести Huawei и SQLite bridge spikes.</td><td>Все P0 ADR приняты; spike APK читает/пишет одну DB из UI и Worker; Huawei go/no-go записан.</td></tr>
+          <tr><td><strong>B0B</strong></td><td>OpenAPI, JSON schemas, field map.</td><td>Добавить executable contract tests, error catalog, version negotiation, sync state machine, threat model и data inventory.</td><td>Client/server contract test проходит; нет открытых protocol decisions; fixtures покрывают delete/update/retry/clock skew.</td></tr>
+          <tr><td><strong>B1</strong></td><td>Postgres, household, staging.</td><td>Credential Manager ID token; stable <code>sub</code>; roles; invite expiry; refresh rotation; audit; CI/CD; PITR; SLO baseline.</td><td>Два пользователя входят/обновляют токены; revoke работает; restore staging DB проверен; auth logs не содержат токенов.</td></tr>
+          <tr><td><strong>B2</strong></td><td>SQLite, outbox, API client, flags.</td><td>Запретить domain writes вне repository; DB migrations; encrypted token store; poison/retry state; process-death и rollback tests.</td><td>UI + Worker используют одну БД; write переживает kill/restart/upgrade; duplicate flush не создаёт дублей.</td></tr>
+          <tr><td><strong>B3</strong></td><td>Shopping entities, optimistic UI, fixtures.</td><td>Server sequence вместо client time; bootstrap/pull/push; tombstone retention; expired cursor recovery; property-based convergence; authorization tests.</td><td>Randomized 2–3 device test сходится; 10× retry безопасен; offline delete/update policy доказана тестом.</td></tr>
+          <tr><td><strong>B4</strong></td><td>Importer, flagged onboarding, real household.</td><td>Dry-run preview; source freeze; checksums/counts; idempotent re-import; min-version enforcement; canary rings; rollback window.</td><td>0 unexplained discrepancies; old client не пишет после cutoff; export/restore выполнены; rollback rehearsal green.</td></tr>
+          <tr><td><strong>B5</strong></td><td>Meal log, profile, adherence, ration→request.</td><td>Версионировать формулу; timezone/day boundary; partial/replaced rules; units and nutrition completeness; deterministic golden tests.</td><td>Одинаковый 7d/30d результат на client/server для golden dataset; DST и незаполненные meals покрыты.</td></tr>
+          <tr><td><strong>B6</strong></td><td>Server key, tools, preview/apply, audit, quotas.</td><td>Async job lifecycle; resumable SSE; cancellation; prompt/tool versions; capability probe; provider fallback; eval set; transactional idempotent apply.</td><td>Reconnect не теряет job; повторный apply не дублирует события; eval thresholds и cost ceiling проходят.</td></tr>
+          <tr><td><strong>B7</strong></td><td>Opt-in, daily aggregates, separate AI scope.</td><td>Не immutable summary: versioned upsert с provenance; change-token expiry; revoke/delete; incomplete day; timezone; aggregation dedupe.</td><td>Grant/revoke/regrant, late correction и provider deletion дают корректную summary без double count.</td></tr>
+          <tr><td><strong>B8</strong></td><td>Один DTO, primary provider, Huawei QA.</td><td>Сделать target, не release gate; flavor decision; device/OS/region matrix; provider switch/reset semantics.</td><td>Только после B0 spike: поддерживаемая матрица документирована; parity измеряется golden samples.</td></tr>
+          <tr><td><strong>B9</strong></td><td>Nudges, dashboards, export, docs.</td><td>Оставить load/chaos/restore drills, rollout 1%→10%→50%→100%, support runbooks. Security work перенести в ранние блоки.</td><td>SLO соблюдён на canary; restore и rollback timed; release checklist имеет владельца и evidence links.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-header">7 · Минимальный sync-контракт, которого не хватает</div>
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-header">Operation envelope</div>
+      <div class="panel-body">
+        <ul>
+          <li><code>schemaVersion</code>, <code>householdId</code>, <code>deviceId</code>, <code>clientOpId</code>.</li>
+          <li><code>entityType</code>, <code>entityId</code>, <code>operation</code>, payload и <code>baseVersion</code>.</li>
+          <li>Server назначает <code>serverRev</code>; client timestamp остаётся метаданными, а не арбитром порядка.</li>
+          <li>Unique constraint <code>(household_id, client_op_id)</code> делает retry идемпотентным.</li>
+          <li>Batch ack возвращает applied/rejected/conflict и canonical entity/version.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">Cursor lifecycle</div>
+      <div class="panel-body">
+        <ul>
+          <li>Первичная загрузка: consistent snapshot + cursor одной транзакции.</li>
+          <li>Pull: opaque cursor, stable ordering, pagination и repeat-safe delivery.</li>
+          <li>Compaction: cursor expiry возвращает явный <code>RESET_REQUIRED</code>.</li>
+          <li>Tombstones хранятся дольше max offline window; retired devices не удерживают GC бесконечно.</li>
+          <li>Schema incompatibility не маскируется retry — приложение получает upgrade-required.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="callout negative">
+    <div class="callout-title">Критическая правка conflict policy</div>
+    <p>Нельзя переносить текущий <code>LWW by updatedAt</code> на backend буквально: часы устройств не являются доверенным глобальным порядком. Для request metadata и ration meal следует использовать server version / conditional write; независимые response entity продолжают merge по <code>responseId</code>. Для полей, где одновременные правки допустимы, policy должна быть записана по полям, а не только по entity.</p>
+  </div>
+
+  <div class="section-header">8 · Agent и health: реализуемость по платформам</div>
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-header"><span>B6 · Agent</span><span class="pill pill-positive">feasible</span></div>
+      <div class="panel-body">
+        <p><strong>grok-4.5</strong> в актуальной документации поддерживает function calling и structured outputs, поэтому выбранный harness технически реалистичен. Но модель надо считать сменным провайдером: pin конкретной версии, capability check, quotas, cost telemetry и provider-neutral tool schemas.</p>
+        <p style="margin-top:10px"><strong>Транспорт:</strong> выбрать async job + resumable SSE для foreground UX; состояние job хранить на сервере. WebSocket не нужен как обязательный второй путь. Apply — отдельная транзакция с idempotency key и optimistic precondition на ration revision.</p>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><span>B7 · Health Connect</span><span class="pill pill-warning">feasible with constraints</span></div>
+      <div class="panel-body">
+        <p>Health Connect поддерживает фоновые чтения только с отдельным разрешением и feature availability check; aggregates рекомендованы для steps, чтобы избегать double count. История старше стандартного окна также требует отдельного разрешения.</p>
+        <p style="margin-top:10px"><strong>Следствие:</strong> sync должен работать частично при отказе в background/history, хранить provenance и обрабатывать changes-token expiry. «Immutable by source+day+type» заменить на versioned upsert: health providers корректируют и удаляют прошлые записи.</p>
+      </div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header"><span>B8 · Huawei Health</span><span class="pill pill-warning">early spike required</span></div>
+    <div class="panel-body">
+      <p>Официальная документация описывает device-side чтение из Huawei Health с consent, установленным Huawei Health и ограниченной матрицей устройств/OS/регионов. На странице совместимости, актуальной в мае 2026, для phone указан Android 6–13, тогда как Cookish targetSdk — 36. Это не доказывает несовместимость на новых устройствах, но делает B8 отдельным feasibility risk.</p>
+      <p><strong>Корректировка:</strong> начать не только paperwork, а минимальный signed APK spike в B0/B1; проверить реальное Huawei-устройство, Android/EMUI/HMS версии, регион аккаунта, доступные scopes и публикационную модель. При неуспехе B8 не должен задерживать Architecture v2.</p>
+    </div>
+  </div>
+
+  <div class="section-header">9 · Реалистичная оценка объёма</div>
+  <div class="panel">
+    <div class="panel-header"><span>Order-of-magnitude only</span><span class="pill">after B0 decisions</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Контур</th><th>Оценка</th><th>Что входит</th></tr></thead>
+        <tbody>
+          <tr><td>Sheets-independent core: B0–B4</td><td class="text-mono">24–38 engineer-weeks</td><td>Contracts, backend, auth, Room/bridge, sync, importer, canary. Самый рискованный контур.</td></tr>
+          <tr><td>Ration facts: B5</td><td class="text-mono">5–8 engineer-weeks</td><td>Sync model, meal log UX, deterministic adherence, regression.</td></tr>
+          <tr><td>Agent: B6</td><td class="text-mono">8–13 engineer-weeks</td><td>Jobs, tools, streaming, preview/apply, evals, quotas, audit.</td></tr>
+          <tr><td>Health Connect: B7</td><td class="text-mono">5–8 engineer-weeks</td><td>Permissions, aggregation/sync, backend, revoke/correction tests.</td></tr>
+          <tr><td>Huawei: B8</td><td class="text-mono">5–10 engineer-weeks + external lead</td><td>После успешного spike; approval/device availability вне контроля команды.</td></tr>
+          <tr><td>Hardening/release: B9</td><td class="text-mono">6–10 engineer-weeks</td><td>Load, restore, rollout, observability, support, polish.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="panel-body" style="border-top:1px solid var(--border-dim)">
+      <p class="text-muted">Диапазоны включают код, тесты и rollout, но не procurement/approval. Последовательная работа одного инженера — ориентировочно 12–18 месяцев. Команда backend + Android/native + web/QA может приблизить core к 4–6 месяцам, но зависимости B0–B4 ограничивают параллелизм. До выбора stack и DB ownership календарный roadmap будет ложной точностью.</p>
+    </div>
+  </div>
+
+  <div class="section-header">10 · Измеримые release gates</div>
+  <div class="panel">
+    <div class="panel-header">Definition of done · revised</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Gate</th><th>Evidence</th><th>Target</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Offline durability</td><td>Automated process-kill/restart/upgrade suite</td><td>0 lost acknowledged local writes</td></tr>
+          <tr><td>2</td><td>Sync convergence</td><td>Randomized 3-device histories + retries/reordering</td><td>Same canonical state; no duplicate purchase</td></tr>
+          <tr><td>3</td><td>Idempotency</td><td>Каждый op/apply повторён 10 раз</td><td>Один эффект и стабильный ack</td></tr>
+          <tr><td>4</td><td>Migration reconciliation</td><td>Counts + hashes + sampled semantic diff</td><td>0 unexplained discrepancies</td></tr>
+          <tr><td>5</td><td>Rollback</td><td>Timed rehearsal на staging/canary</td><td>В пределах утверждённых RTO/RPO</td></tr>
+          <tr><td>6</td><td>Security/privacy</td><td>Threat model, token/log review, deletion test</td><td>No critical/high open findings</td></tr>
+          <tr><td>7</td><td>Agent safety</td><td>Golden eval + adversarial catalog/note inputs</td><td>No silent writes; apply scope exact; cost cap held</td></tr>
+          <tr><td>8</td><td>Health lifecycle</td><td>Grant/revoke/regrant/correct/delete/provider switch</td><td>No stale access or double count</td></tr>
+          <tr><td>9</td><td>Production health</td><td>Canary dashboard: error rate, sync lag, outbox age</td><td>SLO green for agreed soak period</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-header">11 · Следующий исполнимый шаг</div>
+  <div class="callout positive">
+    <div class="callout-title">Рекомендованный sprint B0A · 1–2 недели</div>
+    <ol>
+      <li>Принять ADR о владельце локальной DB и собрать spike UI → repository → outbox → WorkManager.</li>
+      <li>Сделать sync RFC с state machine, server revision, cursor expiry, tombstone GC и conflict matrix.</li>
+      <li>Собрать Google Credential Manager ID-token spike до staging endpoint.</li>
+      <li>Выбрать backend runtime/hosting/region, migrations, queue, backup/PITR и SLO.</li>
+      <li>Превратить существующие 17 JS cases в transport-neutral fixtures; добавить конкурентные и clock-skew cases.</li>
+      <li>Собрать Health Connect и Huawei feasibility APK; записать device/OS/region matrix и go/no-go.</li>
+      <li>После этого переоценить B1–B9 и зафиксировать owners, calendar ranges и rollback gates.</li>
+    </ol>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">Primary references</div>
+    <div class="panel-body text-small">
+      <ul>
+        <li><a href="https://developer.android.com/identity/sign-in/credential-manager-siwg-implementation">Android · Sign in with Google via Credential Manager</a> — ID token и server-side validation.</li>
+        <li><a href="https://developer.android.com/health-and-fitness/health-connect/read-data">Android · Health Connect read data</a> — aggregates, background/history permissions.</li>
+        <li><a href="https://developer.android.com/health-and-fitness/health-connect/sync-data">Android · Health Connect synchronize data</a> — change tokens, expiry и resync.</li>
+        <li><a href="https://developer.huawei.com/consumer/en/doc/HMSCore-Guides/extended-introduction-0000001050060843">Huawei · Extended Health Service Kit</a> — device-side access, prerequisites и support matrix.</li>
+        <li><a href="https://docs.x.ai/developers/models/grok-4.5">SpaceXAI · grok-4.5 model</a> — function calling и structured outputs.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p>Cookish Architecture Migration Plan · Independent review · 2026-08-07 · Source: <code>cookish-architecture-migration-plan-2026-08-07.html</code> · Terminal Dashboard theme</p>
+  </div>
+</div>
+<script>
+  function toggleTheme() {
+    const html=document.documentElement;
+    const current=html.getAttribute('data-theme');
+    if(current) html.setAttribute('data-theme',current==='dark'?'light':'dark');
+    else html.setAttribute('data-theme',window.matchMedia('(prefers-color-scheme: dark)').matches?'light':'dark');
+    updateToggleIcon();
+  }
+  function updateToggleIcon() {
+    const btn=document.querySelector('.theme-toggle'); if(!btn) return;
+    const attr=document.documentElement.getAttribute('data-theme');
+    const dark=attr==='dark'||(!attr&&window.matchMedia('(prefers-color-scheme: dark)').matches);
+    btn.textContent=dark?'☀ LIGHT':'◐ DARK';
+  }
+  document.addEventListener('DOMContentLoaded',updateToggleIcon);
+</script>
+</body>
+</html>
