@@ -1,0 +1,158 @@
+name: Release Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without v, for example 5.4.0"
+        required: true
+        type: string
+      notes:
+        description: "Optional release notes"
+        required: false
+        type: string
+
+run-name: Release v${{ inputs.version }}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out master
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${INPUT_VERSION#v}"
+          if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Version must use MAJOR.MINOR.PATCH, for example 5.4.0." >&2
+            exit 1
+          fi
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          patch="${BASH_REMATCH[3]}"
+          if (( minor > 999 || patch > 999 )); then
+            echo "MINOR and PATCH must be between 0 and 999." >&2
+            exit 1
+          fi
+          code=$((10#$major * 1000000 + 10#$minor * 1000 + 10#$patch))
+          if (( code <= 5003000 || code > 2100000000 )); then
+            echo "Version code $code must be newer than 5.3.0 and fit Android's limit." >&2
+            exit 1
+          fi
+          tag="v$version"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists." >&2
+            exit 1
+          fi
+          echo "name=$version" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies and test
+        run: |
+          npm ci
+          npm test
+
+      - name: Restore release signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for value in "$KEYSTORE_BASE64" "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD"; do
+            if [[ -z "$value" ]]; then
+              echo "Android release signing secrets are not configured." >&2
+              exit 1
+            fi
+          done
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/cookish-release.jks"
+          chmod 600 "$RUNNER_TEMP/cookish-release.jks"
+
+      - name: Build signed APK
+        shell: bash
+        env:
+          COOKISH_KEYSTORE_FILE: ${{ runner.temp }}/cookish-release.jks
+          COOKISH_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          COOKISH_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          COOKISH_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          npx cap sync android
+          cd android
+          ./gradlew assembleRelease \
+            -PreleaseVersionName='${{ steps.version.outputs.name }}' \
+            -PreleaseVersionCode='${{ steps.version.outputs.code }}'
+
+      - name: Prepare release files
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk dist/Cookish.apk
+          sha256sum dist/Cookish.apk | tee dist/Cookish.apk.sha256
+          if [[ -n "$RELEASE_NOTES" ]]; then
+            printf '%s\n' "$RELEASE_NOTES" > dist/release-notes.md
+          else
+            printf 'Cookish %s\n' "$VERSION" > dist/release-notes.md
+          fi
+          jq -n \
+            --arg version "$VERSION" \
+            --argjson versionCode "$VERSION_CODE" \
+            --arg sha256 "$(cut -d ' ' -f1 dist/Cookish.apk.sha256)" \
+            --arg publishedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{version: $version, versionCode: $versionCode, asset: "Cookish.apk", sha256: $sha256, publishedAt: $publishedAt}' \
+            > dist/update.json
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            dist/Cookish.apk \
+            dist/Cookish.apk.sha256 \
+            dist/update.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Cookish $VERSION" \
+            --notes-file dist/release-notes.md \
+            --latest

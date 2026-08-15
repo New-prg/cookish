@@ -23,6 +23,32 @@ npm run android:apk
 
 Готовый файл: `output/Cookish-debug.apk`.
 
+## Выпуск Android-релиза
+
+Релизы собираются вручную из ветки `master` в GitHub Actions. Workflow запускает
+тесты, собирает подписанный APK, создаёт тег `vX.Y.Z` и публикует GitHub Release
+с файлами `Cookish.apk`, `Cookish.apk.sha256` и `update.json`.
+
+1. Откройте **Actions → Release Android → Run workflow**.
+2. Оставьте ветку `master`.
+3. Укажите новую версию строго в формате `MAJOR.MINOR.PATCH`, например `5.4.0`.
+4. При желании добавьте описание изменений и запустите workflow.
+
+Прямая ссылка на запуск:
+<https://github.com/New-prg/cookish/actions/workflows/release-android.yml>
+
+Приложение проверяет последний публичный GitHub Release при запуске. Если в нём
+есть более новая версия и файл `Cookish.apk`, в профиле появляется кнопка
+**Обновить**. APK скачивается в закрытый кэш приложения, проверяется по SHA-256,
+после чего Android показывает системное подтверждение установки. При первом
+обновлении Android также попросит разрешить установку из Cookish.
+
+Release APK всегда должен быть подписан одним и тем же ключом. Ключ хранится в
+GitHub Secrets (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`), а его резервная копия — вне
+репозитория. Debug-сборка подписана другим ключом, поэтому перед первой установкой
+официального release APK ранее установленную debug-сборку нужно удалить один раз.
+
 Запуск одной командой (телефон **или** эмулятор):
 
 ```powershell

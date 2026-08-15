@@ -1864,6 +1864,17 @@ textarea { resize: vertical; }
   font-size: 20px;
 }
 
+.app-update-section {
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  background: color-mix(in srgb, var(--accent) 4%, #fff);
+}
+
+.app-update-notes {
+  max-height: 144px;
+  overflow: auto;
+  white-space: pre-line;
+}
+
 .danger-zone {
   margin-top: 10px;
   border-top: 4px solid #f0d4d4;

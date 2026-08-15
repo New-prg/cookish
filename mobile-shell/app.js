@@ -60,6 +60,11 @@
   let accessToken = null;
   let authResolve = null;
   let backgroundAccess = null;
+  let appUpdate = {
+    status: window.NativeGoogle?.checkForAppUpdate ? "idle" : "unsupported",
+    installedVersion: "5.3.0",
+  };
+  let appUpdateNoticeShown = false;
   let toastTimer = null;
   let syncTimer = null;
   let foregroundSyncTimer = null;
@@ -185,6 +190,19 @@
     }
     if (changed && route === "profile") renderProfile();
     if (changed && route === "onboarding") renderOnboarding();
+  };
+
+  window.__onNativeAppUpdate = (payload) => {
+    try {
+      appUpdate = JSON.parse(payload);
+    } catch {
+      appUpdate = { ...appUpdate, status: "error", message: "Android вернул некорректный ответ." };
+    }
+    if (appUpdate.status === "available" && !appUpdateNoticeShown && state.onboardingCompleted) {
+      appUpdateNoticeShown = true;
+      showToast(`Доступна новая версия Cookish ${appUpdate.latestVersion}. Обновить можно в профиле.`);
+    }
+    if (route === "profile") renderProfile();
   };
 
   function loadState() {
@@ -4036,6 +4054,57 @@
     return "продуктов";
   }
 
+  function renderAppUpdateSection() {
+    const currentVersion = escapeHtml(appUpdate.installedVersion || "5.3.0");
+    const latestVersion = escapeHtml(appUpdate.latestVersion || "");
+    let content = "";
+
+    if (appUpdate.status === "available") {
+      content = `
+        <p class="success"><strong>Доступна версия ${latestVersion}</strong></p>
+        ${appUpdate.notes ? `<p class="muted app-update-notes">${escapeHtml(appUpdate.notes)}</p>` : ""}
+        <button id="install-app-update" class="button full" type="button">Обновить до ${latestVersion}</button>
+        ${appUpdate.releaseUrl ? `<button id="open-app-release" class="text-button" type="button">Открыть описание релиза</button>` : ""}
+      `;
+    } else if (appUpdate.status === "checking") {
+      content = `<button class="button secondary full" type="button" disabled>Проверяем обновления…</button>`;
+    } else if (appUpdate.status === "downloading") {
+      content = `<p class="success">Загружаем Cookish ${latestVersion}…</p><button class="button full" type="button" disabled>Загрузка обновления…</button>`;
+    } else if (appUpdate.status === "permissionRequired") {
+      content = `<p class="warning">${escapeHtml(appUpdate.message || "Разрешите установку обновлений в настройках Android.")}</p><button id="install-app-update" class="button full" type="button">Открыть разрешение Android</button>`;
+    } else if (appUpdate.status === "installing") {
+      content = `<p class="success">${escapeHtml(appUpdate.message || "Подтвердите установку в Android.")}</p><button id="check-app-update" class="button secondary full" type="button">Проверить ещё раз</button>`;
+    } else if (appUpdate.status === "upToDate") {
+      content = `<p class="success">Установлена актуальная версия.</p><button id="check-app-update" class="button secondary full" type="button">Проверить ещё раз</button>`;
+    } else if (appUpdate.status === "error") {
+      content = `<p class="error">${escapeHtml(appUpdate.message || "Не удалось проверить обновления.")}</p><button id="check-app-update" class="button secondary full" type="button">Повторить проверку</button>`;
+    } else if (appUpdate.status === "unsupported") {
+      content = `<p class="muted">Проверка обновлений доступна в Android-приложении.</p>`;
+    } else {
+      content = `<button id="check-app-update" class="button secondary full" type="button">Проверить обновления</button>`;
+    }
+
+    return `
+      <section class="section profile-settings-section app-update-section">
+        <span class="eyebrow">Приложение</span>
+        <h2 class="profile-section-title">Обновление</h2>
+        <div class="compact-line"><span>Текущая версия</span><strong>${currentVersion}</strong></div>
+        ${content}
+      </section>
+    `;
+  }
+
+  function requestAppUpdateCheck(force = false) {
+    if (!window.NativeGoogle?.checkForAppUpdate) {
+      appUpdate = { ...appUpdate, status: "unsupported" };
+      return;
+    }
+    if (!force && appUpdate.status !== "idle" && appUpdate.status !== "error") return;
+    appUpdate = { ...appUpdate, status: "checking", message: "" };
+    if (route === "profile") renderProfile();
+    window.NativeGoogle.checkForAppUpdate();
+  }
+
   function renderProfile() {
     const completed = activeRequests().filter((item) => item.status === "done");
     const responseCount = activeRequests().reduce((sum, item) => sum + activeResponses(item).length, 0);
@@ -4068,6 +4137,7 @@
           </button>
         ` : `<p class="error">Системный доступ недоступен в этой сборке.</p>`}
       </section>
+      ${renderAppUpdateSection()}
       <section class="section profile-settings-section">
         <span class="eyebrow">Подключения</span>
         <h2 class="profile-section-title">Google-аккаунт</h2>
@@ -4118,6 +4188,13 @@
       showToast("Подтвердите системные запросы Android.");
     });
     window.NativeGoogle?.getBackgroundAccessStatus?.();
+    document.getElementById("check-app-update")?.addEventListener("click", () => requestAppUpdateCheck(true));
+    document.getElementById("install-app-update")?.addEventListener("click", () => {
+      window.NativeGoogle?.installLatestUpdate?.();
+    });
+    document.getElementById("open-app-release")?.addEventListener("click", () => {
+      if (appUpdate.releaseUrl) window.NativeGoogle?.openUrl?.(appUpdate.releaseUrl);
+    });
     document.getElementById("google-auth")?.addEventListener("click", async () => {
       await authorizeGoogle(true);
       renderProfile();
@@ -5119,11 +5196,13 @@
 
   render();
   mirrorStateForBackgroundSync();
+  requestAppUpdateCheck(false);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       stopForegroundSync();
     } else {
       startForegroundSync(true);
+      if (appUpdate.status === "installing") requestAppUpdateCheck(true);
     }
   });
   startForegroundSync(false);
