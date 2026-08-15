@@ -43,16 +43,18 @@ try {
   Invoke-CapturedCommand -Program "gh" -Arguments @("auth", "status") `
     -FailureMessage "GitHub CLI is not authenticated." | Out-Null
 
-  $actualRepository = (Invoke-CapturedCommand -Program "gh" -Arguments @(
+  $actualRepositoryOutput = @(Invoke-CapturedCommand -Program "gh" -Arguments @(
     "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"
-  ) -FailureMessage "Could not identify the GitHub repository.")[-1].ToString().Trim()
+  ) -FailureMessage "Could not identify the GitHub repository.")
+  $actualRepository = $actualRepositoryOutput[-1].ToString().Trim()
   if ($actualRepository -ne $repository) {
     throw "Expected $repository, found $actualRepository."
   }
 
-  $branch = (Invoke-CapturedCommand -Program "git" -Arguments @(
+  $branchOutput = @(Invoke-CapturedCommand -Program "git" -Arguments @(
     "branch", "--show-current"
-  ) -FailureMessage "Could not read the current branch.")[-1].ToString().Trim()
+  ) -FailureMessage "Could not read the current branch.")
+  $branch = $branchOutput[-1].ToString().Trim()
   if ($branch -ne "master") {
     throw "Releases must run from master; current branch is $branch."
   }
@@ -82,19 +84,22 @@ try {
   Invoke-CapturedCommand -Program "git" -Arguments @(
     "fetch", "origin", "master", "--tags", "--quiet"
   ) -FailureMessage "Could not refresh origin/master and tags." | Out-Null
-  $localHead = (Invoke-CapturedCommand -Program "git" -Arguments @(
+  $localHeadOutput = @(Invoke-CapturedCommand -Program "git" -Arguments @(
     "rev-parse", "HEAD"
-  ) -FailureMessage "Could not read local HEAD.")[-1].ToString().Trim()
-  $remoteHead = (Invoke-CapturedCommand -Program "git" -Arguments @(
+  ) -FailureMessage "Could not read local HEAD.")
+  $localHead = $localHeadOutput[-1].ToString().Trim()
+  $remoteHeadOutput = @(Invoke-CapturedCommand -Program "git" -Arguments @(
     "rev-parse", "origin/master"
-  ) -FailureMessage "Could not read origin/master.")[-1].ToString().Trim()
+  ) -FailureMessage "Could not read origin/master.")
+  $remoteHead = $remoteHeadOutput[-1].ToString().Trim()
   if ($localHead -ne $remoteHead) {
     throw "Local HEAD does not match origin/master. Push or synchronize master first."
   }
 
-  $latestTag = (Invoke-CapturedCommand -Program "gh" -Arguments @(
+  $latestTagOutput = @(Invoke-CapturedCommand -Program "gh" -Arguments @(
     "release", "view", "--repo", $repository, "--json", "tagName", "--jq", ".tagName"
-  ) -FailureMessage "Could not read the latest GitHub Release.")[-1].ToString().Trim()
+  ) -FailureMessage "Could not read the latest GitHub Release.")
+  $latestTag = $latestTagOutput[-1].ToString().Trim()
   $latestVersion = Normalize-Version $latestTag
 
   if ([string]::IsNullOrWhiteSpace($Version)) {
