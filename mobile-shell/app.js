@@ -2,7 +2,6 @@
   "use strict";
 
   const STORAGE_KEY = "cookish.android.data.v1";
-  const FOREGROUND_SYNC_INTERVAL_MS = 30_000;
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
   // на 100 г (для напитков — на 100 мл) и могут отличаться у конкретных марок.
   const FOOD_CATALOG = [
@@ -46,19 +45,18 @@
     spreadsheetId: "",
     spreadsheetTitle: "",
     user: null,
-    onboardingCompleted: false,
+    onboardingCompleted: true,
     backgroundAccessSkipped: false,
     seenRemoteRequestIds: [],
     remoteTrackingInitialized: false,
   };
 
   let state = loadState();
-  let route = state.onboardingCompleted ? "summary" : "onboarding";
+  let route = "summary";
   let routeId = null;
   let routeSubId = null;
   let draftItems = [];
   let accessToken = null;
-  let authResolve = null;
   let backgroundAccess = null;
   let appUpdate = {
     status: window.NativeGoogle?.checkForAppUpdate ? "idle" : "unsupported",
@@ -66,10 +64,6 @@
   };
   let appUpdateNoticeShown = false;
   let toastTimer = null;
-  let syncTimer = null;
-  let foregroundSyncTimer = null;
-  let syncInProgress = false;
-  let onboardingWorking = false;
   let productLookupWorking = false;
   let remoteProductSuggestions = [];
   let productNameSearchTimer = null;
@@ -85,7 +79,6 @@
   let rationPortionTarget = null;
   let formDirty = false;
   let requestAutosaveTimer = null;
-  let syncStatusLabel = "";
   let confirmResolve = null;
   let productEditReturn = null;
   let requestGestureToken = 0;
@@ -99,7 +92,6 @@
   const headerMore = document.getElementById("header-more");
   const requestHeaderMenu = document.getElementById("request-header-menu");
   const rationHeaderPicker = document.getElementById("ration-header-picker");
-  const syncChip = document.getElementById("sync-chip");
   const nav = document.querySelector(".bottom-nav");
 
   document.querySelectorAll(".bottom-nav button").forEach((button) => {
@@ -152,13 +144,6 @@
 
   window.__handleNativeBack = () => attemptBackNavigation();
 
-  window.__onNativeGoogleAuth = (payload) => {
-    const result = JSON.parse(payload);
-    if (!authResolve) return;
-    authResolve(result);
-    authResolve = null;
-  };
-
   window.__onNativeBarcodeScan = (payload) => {
     const result = JSON.parse(payload);
     if (!result.ok) {
@@ -189,7 +174,6 @@
       saveState(false);
     }
     if (changed && route === "profile") renderProfile();
-    if (changed && route === "onboarding") renderOnboarding();
   };
 
   window.__onNativeAppUpdate = (payload) => {
@@ -209,9 +193,7 @@
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
       const loaded = { ...defaultState, ...stored };
-      if (typeof stored.onboardingCompleted !== "boolean") {
-        loaded.onboardingCompleted = Boolean(stored.user && stored.spreadsheetId);
-      }
+      loaded.onboardingCompleted = true;
       loaded.products = loaded.products.map((product) => normalizeProductRecord({
         ...product,
         updatedAt: product.updatedAt || new Date(0).toISOString(),
@@ -237,7 +219,6 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
     state = normalized;
     mirrorStateForBackgroundSync();
-    if (sync) queueAutoSync();
   }
 
   function navigate(next, id = null, subId = null, options = {}) {
@@ -366,20 +347,6 @@
     if (resolve) resolve(result);
   }
 
-  function setSyncChip(label, kind = "") {
-    syncStatusLabel = label || "";
-    if (!syncChip) return;
-    if (!label) {
-      syncChip.hidden = true;
-      syncChip.textContent = "";
-      syncChip.className = "sync-chip";
-      return;
-    }
-    syncChip.hidden = false;
-    syncChip.textContent = label;
-    syncChip.className = `sync-chip${kind ? ` ${kind}` : ""}`;
-  }
-
   function clearRationSelection() {
     rationSelectedDates.clear();
     rationSelectedItemIds.clear();
@@ -397,13 +364,12 @@
       if (active) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     });
-    nav.hidden = route === "onboarding" || route.includes("-new") || route.endsWith("-edit") || route === "request-answer";
+    nav.hidden = route.includes("-new") || route.endsWith("-edit") || route === "request-answer";
     document.body.classList.toggle("nav-hidden", Boolean(nav.hidden));
     document.body.style.paddingBottom = "";
     configureHeader();
 
-    if (route === "onboarding") renderOnboarding();
-    else if (route === "summary") renderSummary();
+    if (route === "summary") renderSummary();
     else if (route === "products") renderProducts();
     else if (route === "product-new") renderProductForm();
     else if (route === "product-edit") renderProductForm();
@@ -421,7 +387,6 @@
 
   function configureHeader() {
     const config = {
-      onboarding: ["Первый запуск", "", false],
       summary: ["Сводка", "", false],
       products: ["Продукты", "Добавить", false],
       "product-new": ["Новый продукт", "Отмена", true],
@@ -445,124 +410,6 @@
   function closeRequestHeaderMenu() {
     requestHeaderMenu.hidden = true;
     headerMore.setAttribute("aria-expanded", "false");
-  }
-
-  function renderOnboarding() {
-    const backgroundSupported = Boolean(window.NativeGoogle?.requestBackgroundAccess);
-    const backgroundReady = Boolean(backgroundAccess?.fullyGranted);
-    const backgroundStepDone = backgroundReady || state.backgroundAccessSkipped;
-    if (backgroundStepDone && state.user && state.spreadsheetId) {
-      state.onboardingCompleted = true;
-      saveState();
-      navigate("summary");
-      showToast("Первоначальная настройка завершена.");
-      return;
-    }
-
-    const step = !backgroundStepDone ? 1 : !state.user ? 2 : 3;
-    app.innerHTML = `
-      <section class="section onboarding-card">
-        <p class="muted">Шаг ${step} из 3</p>
-        ${step === 1 ? `
-          <p class="onboarding-eyebrow">Настройка уведомлений</p>
-          <h2 class="onboarding-title">Разрешите фоновую работу</h2>
-          <p>Чтобы «Cookish» проверял общую таблицу в фоне, Android попросит уведомления и разрешение не ограничивать приложение батареей. Это можно включить позже в профиле.</p>
-          <div class="compact-line"><span>Уведомления</span><strong>${backgroundAccess?.notificationsGranted ? "Разрешены" : "Ожидают разрешения"}</strong></div>
-          <div class="compact-line"><span>Фоновая работа</span><strong>${backgroundAccess?.batteryOptimizationDisabled ? "Разрешена" : "Ожидает разрешения"}</strong></div>
-          ${backgroundSupported
-            ? `<button id="onboarding-background" class="button full" type="button">${backgroundAccess ? "Выдать разрешения" : "Запросить разрешения"}</button>
-               <button id="onboarding-check-background" class="button secondary full onboarding-secondary" type="button">Проверить снова</button>`
-            : `<p class="warning">Системный запрос сейчас недоступен. Можно продолжить и включить фоновую синхронизацию позже в профиле.</p>`}
-          <button id="onboarding-skip-background" class="text-button onboarding-skip" type="button">Продолжить без фоновой синхронизации</button>
-        ` : step === 2 ? `
-          <p class="onboarding-eyebrow">Общий доступ</p>
-          <h2 class="onboarding-title">Подключите Google-аккаунт</h2>
-          <p>Аккаунт используется для доступа к общей Google Таблице. Пароль приложение не получает и не хранит.</p>
-          <button id="onboarding-google" class="button full" type="button" ${onboardingWorking ? "disabled" : ""}>${onboardingWorking ? "Подключение…" : "Войти через Google"}</button>
-        ` : `
-          <p class="onboarding-eyebrow">Хранилище данных</p>
-          <h2 class="onboarding-title">Настройте Google Таблицу</h2>
-          <p>Создайте новую таблицу или подключите существующую таблицу участников.</p>
-          <label class="field"><span>Ссылка или ID существующей таблицы</span><input id="onboarding-sheet-input" autocomplete="off" ${onboardingWorking ? "disabled" : ""}></label>
-          <button id="onboarding-connect-sheet" class="button secondary full" type="button" ${onboardingWorking ? "disabled" : ""}>Подключить существующую</button>
-          <button id="onboarding-create-sheet" class="button full" type="button" style="margin-top:10px" ${onboardingWorking ? "disabled" : ""}>${onboardingWorking ? "Настройка…" : "Создать новую таблицу"}</button>
-        `}
-        <p id="onboarding-status" class="muted"></p>
-      </section>
-    `;
-
-    window.NativeGoogle?.getBackgroundAccessStatus?.();
-    document.getElementById("onboarding-background")?.addEventListener("click", () => {
-      window.NativeGoogle.requestBackgroundAccess();
-      setOnboardingStatus("Подтвердите системные запросы Android.");
-    });
-    document.getElementById("onboarding-check-background")?.addEventListener("click", () => {
-      window.NativeGoogle.getBackgroundAccessStatus?.();
-      setOnboardingStatus("Проверяем системные разрешения…");
-    });
-    document.getElementById("onboarding-skip-background")?.addEventListener("click", () => {
-      state.backgroundAccessSkipped = true;
-      saveState(false);
-      renderOnboarding();
-    });
-    document.getElementById("onboarding-google")?.addEventListener("click", async () => {
-      onboardingWorking = true;
-      renderOnboarding();
-      const token = await authorizeGoogle(false);
-      onboardingWorking = false;
-      if (!token) {
-        renderOnboarding();
-        return setOnboardingStatus("Не удалось подключить Google-аккаунт.", true);
-      }
-      renderOnboarding();
-    });
-    document.getElementById("onboarding-connect-sheet")?.addEventListener("click", async () => {
-      const spreadsheetId = extractSpreadsheetId(document.getElementById("onboarding-sheet-input").value);
-      if (!spreadsheetId) return setOnboardingStatus("Укажите корректную ссылку или ID.", true);
-      await configureOnboardingSheet(async (token) => {
-        const sheetTitle = await setupSpreadsheet(token, spreadsheetId);
-        state.spreadsheetId = spreadsheetId;
-        state.spreadsheetTitle = sheetTitle;
-      });
-    });
-    document.getElementById("onboarding-create-sheet")?.addEventListener("click", async () => {
-      await configureOnboardingSheet(async (token) => {
-        const response = await googleFetch("https://sheets.googleapis.com/v4/spreadsheets", token, {
-          method: "POST",
-          body: JSON.stringify({ properties: { title: `Cookish — ${new Date().toLocaleDateString("ru-RU")}` } }),
-        });
-        state.spreadsheetId = response.spreadsheetId;
-        state.spreadsheetTitle = response.properties.title;
-        await setupSpreadsheet(token, response.spreadsheetId);
-      });
-    });
-  }
-
-  async function configureOnboardingSheet(action) {
-    if (onboardingWorking) return;
-    onboardingWorking = true;
-    renderOnboarding();
-    try {
-      const token = accessToken || await authorizeGoogle(false);
-      if (!token) throw new Error("Google-аккаунт не подключён.");
-      await action(token);
-      state.onboardingCompleted = true;
-      saveState();
-      onboardingWorking = false;
-      navigate("summary");
-      showToast("Первоначальная настройка завершена.");
-    } catch (error) {
-      onboardingWorking = false;
-      renderOnboarding();
-      setOnboardingStatus(error.message || "Не удалось настроить таблицу.", true);
-    }
-  }
-
-  function setOnboardingStatus(message, error = false) {
-    const element = document.getElementById("onboarding-status");
-    if (!element) return showToast(message);
-    element.textContent = message;
-    element.className = error ? "error" : "muted";
   }
 
   function renderSummary() {
@@ -4138,40 +3985,6 @@
         ` : `<p class="error">Системный доступ недоступен в этой сборке.</p>`}
       </section>
       ${renderAppUpdateSection()}
-      <section class="section profile-settings-section">
-        <span class="eyebrow">Подключения</span>
-        <h2 class="profile-section-title">Google-аккаунт</h2>
-        ${state.user ? `
-          <div class="account">
-            ${state.user.picture ? `<img class="avatar" src="${escapeAttr(state.user.picture)}" alt="">` : `<div class="avatar"></div>`}
-            <div class="row-main"><strong>${escapeHtml(state.user.name || "Google")}</strong><span>${escapeHtml(state.user.email || "")}</span></div>
-          </div>
-          <button id="google-disconnect" class="text-button error" type="button" style="margin-top:10px">Отключить</button>
-        ` : `
-          <p class="muted">Нужен только для синхронизации с Google Sheets.</p>
-          <button id="google-auth" class="button secondary full" type="button">Войти через Google</button>
-        `}
-      </section>
-      <section class="section profile-settings-section">
-        <h2 class="profile-section-title">Google Таблица</h2>
-        ${state.spreadsheetId ? `
-          <p><strong>${escapeHtml(state.spreadsheetTitle || "Подключённая таблица")}</strong></p>
-          <p class="muted">${escapeHtml(state.spreadsheetId)}</p>
-          ${!state.user ? `<p class="warning">Таблица сохранена, но синхронизация приостановлена до повторного входа в Google.</p>` : ""}
-          <button id="sync-sheet" class="button full" type="button">${state.user ? "Синхронизировать" : "Войти и синхронизировать"}</button>
-          <div class="button-row">
-            <button id="open-sheet" class="button secondary" type="button">Открыть таблицу</button>
-            <button id="share-sheet" class="button secondary" type="button">Поделиться</button>
-          </div>
-          ${state.lastSyncAt ? `<p class="muted">Последняя синхронизация: ${dateTime(state.lastSyncAt)}</p>` : ""}
-          <button id="disconnect-sheet" class="text-button error" type="button" style="margin-top:8px">Отключить таблицу</button>
-        ` : `
-          <label class="field"><span>Ссылка или ID существующей таблицы</span><input id="sheet-input" autocomplete="off"></label>
-          <button id="connect-sheet" class="button secondary full" type="button">Подключить и разметить</button>
-          <button id="create-sheet" class="button full" type="button" style="margin-top:10px">Создать пустую таблицу</button>
-        `}
-        <p id="sync-status" class="muted"></p>
-      </section>
       <section class="section danger-zone">
         <span class="eyebrow">Опасная зона</span>
         <h2 class="profile-section-title">Данные устройства</h2>
@@ -4195,130 +4008,13 @@
     document.getElementById("open-app-release")?.addEventListener("click", () => {
       if (appUpdate.releaseUrl) window.NativeGoogle?.openUrl?.(appUpdate.releaseUrl);
     });
-    document.getElementById("google-auth")?.addEventListener("click", async () => {
-      await authorizeGoogle(true);
-      renderProfile();
-    });
-    document.getElementById("google-disconnect")?.addEventListener("click", async () => {
-      if (!await askConfirm("Отключить Google-аккаунт? Автоматическая синхронизация остановится.")) return;
-      accessToken = null;
-      state.user = null;
-      saveState();
-      renderProfile();
-      showToast("Google-аккаунт отключён.");
-    });
-    document.getElementById("connect-sheet")?.addEventListener("click", async () => {
-      const value = document.getElementById("sheet-input").value;
-      const spreadsheetId = extractSpreadsheetId(value);
-      if (!spreadsheetId) return setSyncStatus("Укажите корректную ссылку или ID.", true);
-      await runSheetAction(async (token) => {
-        const title = await setupSpreadsheet(token, spreadsheetId);
-        state.spreadsheetId = spreadsheetId;
-        state.spreadsheetTitle = title;
-        saveState();
-      }, "Таблица подключена.");
-    });
-    document.getElementById("create-sheet")?.addEventListener("click", async () => {
-      await runSheetAction(async (token) => {
-        const response = await googleFetch("https://sheets.googleapis.com/v4/spreadsheets", token, {
-          method: "POST",
-          body: JSON.stringify({ properties: { title: `Cookish — ${new Date().toLocaleDateString("ru-RU")}` } }),
-        });
-        state.spreadsheetId = response.spreadsheetId;
-        state.spreadsheetTitle = response.properties.title;
-        await setupSpreadsheet(token, response.spreadsheetId);
-        saveState();
-      }, "Пустая таблица создана и размечена.");
-    });
-    document.getElementById("sync-sheet")?.addEventListener("click", async () => {
-      await runSheetAction(
-        (token) => setupSpreadsheet(token, state.spreadsheetId),
-        "Данные синхронизированы."
-      );
-    });
-    document.getElementById("open-sheet")?.addEventListener("click", () => {
-      const url = spreadsheetUrl();
-      if (window.NativeGoogle?.openUrl) window.NativeGoogle.openUrl(url);
-      else window.open(url, "_blank");
-    });
-    document.getElementById("share-sheet")?.addEventListener("click", () => {
-      const url = spreadsheetUrl();
-      if (window.NativeGoogle?.shareText) window.NativeGoogle.shareText("Таблица закупок", url);
-      else if (navigator.share) navigator.share({ title: "Таблица закупок", url });
-    });
-    document.getElementById("disconnect-sheet")?.addEventListener("click", async () => {
-      if (!await askConfirm("Отключить Google Таблицу? Локальные данные останутся на устройстве.")) return;
-      state.spreadsheetId = "";
-      state.spreadsheetTitle = "";
-      state.lastSyncAt = "";
-      saveState();
-      renderProfile();
-      showToast("Google Таблица отключена.");
-    });
     document.getElementById("clear-data")?.addEventListener("click", async () => {
       if (!await askConfirm("Удалить продукты, запросы и настройки с этого устройства?")) return;
       state = structuredClone(defaultState);
       accessToken = null;
       saveState();
-      navigate("onboarding");
+      navigate("summary");
     });
-  }
-
-  async function runSheetAction(action, successMessage) {
-    setSyncStatus("Подготовка…");
-    try {
-      const token = await authorizeGoogle(false);
-      if (!token) return;
-      setSyncStatus("Синхронизация…");
-      await action(token);
-      renderProfile();
-      setSyncStatus(successMessage);
-      showToast(successMessage);
-    } catch (error) {
-      setSyncStatus(error.message || "Ошибка Google Sheets.", true);
-    }
-  }
-
-  async function authorizeGoogle(showSuccess) {
-    if (!window.NativeGoogle?.authorize) {
-      setSyncStatus("Google-вход доступен только в Android-приложении.", true);
-      return null;
-    }
-    const resultPromise = new Promise((resolve) => { authResolve = resolve; });
-    window.NativeGoogle.authorize();
-    const result = await resultPromise;
-    if (!result.ok) {
-      setSyncStatus(result.error, true);
-      return null;
-    }
-    accessToken = result.accessToken;
-    const user = await googleFetch("https://www.googleapis.com/oauth2/v3/userinfo", accessToken);
-    state.user = {
-      name: user.name || "",
-      email: user.email || "",
-      picture: user.picture || "",
-    };
-    state.products.forEach((product) => {
-      if (!product.updatedBy || product.updatedBy === "local") product.updatedBy = state.user.email;
-    });
-    state.requests.forEach((request) => {
-      if (!request.createdBy || request.createdBy === "local") request.createdBy = state.user.email;
-      if (!request.updatedBy || request.updatedBy === "local") request.updatedBy = state.user.email;
-      request.responses.forEach((response) => {
-        if (!response.createdBy || response.createdBy === "local") response.createdBy = state.user.email;
-        if (!response.updatedBy || response.updatedBy === "local") response.updatedBy = state.user.email;
-      });
-    });
-    const migratedRationDays = {};
-    Object.values(state.rationDays || {}).forEach((day) => {
-      if (!day.owner || day.owner === "local") day.owner = state.user.email.toLowerCase();
-      if (!day.updatedBy || day.updatedBy === "local") day.updatedBy = state.user.email;
-      migratedRationDays[`${day.owner}|${day.date}`] = day;
-    });
-    state.rationDays = migratedRationDays;
-    saveState(false);
-    if (showSuccess) showToast("Вход выполнен.");
-    return accessToken;
   }
 
   function mirrorStateForBackgroundSync() {
@@ -4331,52 +4027,6 @@
     );
   }
 
-  function queueAutoSync(delay = 700) {
-    if (!state.spreadsheetId || !state.user) return;
-    clearTimeout(syncTimer);
-    syncTimer = setTimeout(() => autoSync(), delay);
-  }
-
-  async function autoSync() {
-    if (syncInProgress || !state.spreadsheetId || !state.user) return;
-    syncInProgress = true;
-    setSyncChip("Синхронизация…", "busy");
-    try {
-      const token = accessToken || await authorizeGoogle(false);
-      if (token) {
-        await setupSpreadsheet(token, state.spreadsheetId);
-        setSyncChip(state.lastSyncAt ? `Синхр. ${dateTime(state.lastSyncAt)}` : "Синхронизировано", "ok");
-        setTimeout(() => {
-          if (syncStatusLabel.startsWith("Синхр.") || syncStatusLabel === "Синхронизировано") setSyncChip("");
-        }, 2500);
-      } else {
-        setSyncChip("");
-      }
-    } catch (error) {
-      console.warn("Automatic sync failed", error);
-      setSyncChip("Ошибка синхр.", "error");
-    } finally {
-      syncInProgress = false;
-    }
-  }
-
-  function startForegroundSync(syncImmediately = true) {
-    clearInterval(foregroundSyncTimer);
-    foregroundSyncTimer = null;
-    if (document.visibilityState === "hidden") return;
-
-    if (syncImmediately) queueAutoSync(0);
-    foregroundSyncTimer = setInterval(() => {
-      if (document.visibilityState !== "hidden") queueAutoSync(0);
-    }, FOREGROUND_SYNC_INTERVAL_MS);
-  }
-
-  function stopForegroundSync() {
-    clearInterval(foregroundSyncTimer);
-    foregroundSyncTimer = null;
-    clearTimeout(syncTimer);
-    syncTimer = null;
-  }
 
   async function setupSpreadsheet(token, spreadsheetId) {
     let metadata = await googleFetch(
@@ -5198,13 +4848,6 @@
   mirrorStateForBackgroundSync();
   requestAppUpdateCheck(false);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") {
-      stopForegroundSync();
-    } else {
-      startForegroundSync(true);
-      if (appUpdate.status === "installing") requestAppUpdateCheck(true);
-    }
+    if (document.visibilityState !== "hidden" && appUpdate.status === "installing") requestAppUpdateCheck(true);
   });
-  startForegroundSync(false);
-  if (state.spreadsheetId && state.user) queueAutoSync(1200);
 })();

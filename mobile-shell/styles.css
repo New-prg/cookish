@@ -89,24 +89,6 @@ summary:focus-visible {
   white-space: nowrap;
 }
 
-.sync-chip {
-  flex: 0 0 auto;
-  max-width: 42vw;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: #eef2ef;
-  color: var(--muted);
-  font-size: var(--font-min);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sync-chip.busy { background: #e8f1ec; color: var(--accent); }
-.sync-chip.ok { background: #e7f6ec; color: var(--accent); }
-.sync-chip.error { background: #fdecec; color: var(--danger); }
-
 .text-button {
   border: 0;
   background: transparent;
@@ -339,29 +321,6 @@ main {
 .form {
   padding: 16px;
 }
-
-.onboarding-card {
-  max-width: 560px;
-  margin: 24px auto;
-}
-
-.onboarding-eyebrow {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-}
-
-.onboarding-title {
-  margin: 0 0 12px;
-  font-size: 24px;
-  line-height: 1.2;
-}
-
-.onboarding-secondary { margin-top: 10px; }
-.onboarding-skip { display: block; margin: 12px auto 0; text-align: center; }
 
 .field {
   display: block;

@@ -3,6 +3,18 @@ import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
+test("app opens locally without a Google sign-in flow", () => {
+  const appSource = fs.readFileSync(new URL("../mobile-shell/app.js", import.meta.url), "utf8");
+  const activitySource = fs.readFileSync(
+    new URL("../android/app/src/main/java/ru/listok/purchases/MainActivity.java", import.meta.url),
+    "utf8"
+  );
+
+  assert.match(appSource, /let route = "summary";/);
+  assert.doesNotMatch(appSource, /authorizeGoogle|__onNativeGoogleAuth|onboarding-google|google-auth/);
+  assert.doesNotMatch(activitySource, /public void authorize\(\)/);
+});
+
 function loadModel() {
   const sourcePath = new URL("../mobile-shell/app.js", import.meta.url);
   const source = fs.readFileSync(sourcePath, "utf8");
