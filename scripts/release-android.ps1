@@ -113,9 +113,19 @@ try {
     throw "Version $Version must be newer than the latest release $latestVersion."
   }
 
-  & gh release view "v$Version" --repo $repository *> $null
-  if ($LASTEXITCODE -eq 0) {
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    & gh release view "v$Version" --repo $repository 2>$null | Out-Null
+    $releaseLookupExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if ($releaseLookupExitCode -eq 0) {
     throw "Release v$Version already exists."
+  }
+  if ($releaseLookupExitCode -ne 1) {
+    throw "Could not confirm whether release v$Version already exists."
   }
 
   if ([string]::IsNullOrWhiteSpace($Notes)) {
