@@ -606,3 +606,79 @@ test("ration request includes only selected positions and rounds portions to pac
   assert.equal(items[0].quantity, 2);
   assert.equal(items[0].packageSize, 1000);
 });
+
+function shoppingList() {
+  const data = openLocalData(memoryStorage());
+  const created = data.createRequest();
+  const saved = data.saveRequestItems(created.requestId, [
+    { name: "Вода", quantity: 2, unit: "л" },
+    { name: "Хлеб", quantity: 3, unit: "шт." },
+  ]);
+  assert.equal(saved.ok, true);
+  const request = data.snapshot().requests.find((item) => item.id === created.requestId);
+  return {
+    data,
+    requestId: created.requestId,
+    waterId: request.items[0].productId,
+    breadId: request.items[1].productId,
+  };
+}
+
+test("partial purchase keeps a multi-product request open", () => {
+  const { data, requestId, waterId } = shoppingList();
+  const marked = data.markBought(requestId, waterId, { quantity: 2 });
+  assert.equal(marked.ok, true);
+  const request = data.snapshot().requests.find((item) => item.id === requestId);
+  assert.equal(isRequestFulfilled(request), false);
+  assert.equal(request.status, "open");
+});
+
+test("repeat purchase mark does not add a second receipt line", () => {
+  const { data, requestId, waterId } = shoppingList();
+  const first = data.markBought(requestId, waterId, { quantity: 2, price: 80, completionMode: "filled" });
+  assert.equal(first.ok, true);
+  const afterFirst = data.snapshot().requests.find((item) => item.id === requestId);
+  const historyLength = afterFirst.history.length;
+  const second = data.markBought(requestId, waterId, { quantity: 2, price: 80, completionMode: "filled" });
+  assert.equal(second.ok, true);
+  assert.equal(second.changed, false);
+  const request = data.snapshot().requests.find((item) => item.id === requestId);
+  assert.equal(activeResponses(request).length, 1);
+  assert.equal(activeResponses(request)[0].items.filter((item) => item.productId === waterId).length, 1);
+  assert.equal(request.history.length, historyLength);
+});
+
+test("request version restore rolls back items and purchases", () => {
+  const data = openLocalData(memoryStorage());
+  const created = data.createRequest();
+  const initialId = data.snapshot().requests.find((item) => item.id === created.requestId).history[0].id;
+  data.saveRequestItems(created.requestId, [{ name: "Вода", quantity: 2, unit: "л" }]);
+  const waterId = data.snapshot().requests.find((item) => item.id === created.requestId).items[0].productId;
+  data.markBought(created.requestId, waterId, { quantity: 2 });
+  const restored = data.restoreVersion(created.requestId, initialId);
+  assert.equal(restored.ok, true);
+  const request = data.snapshot().requests.find((item) => item.id === created.requestId);
+  assert.equal(request.items.length, 0);
+  assert.equal(activeResponses(request).length, 0);
+  assert.equal(request.status, "open");
+});
+
+test("duplicate product lines in one request are rejected", () => {
+  const data = openLocalData(memoryStorage());
+  const created = data.createRequest();
+  const saved = data.saveRequestItems(created.requestId, [
+    { name: "Вода", quantity: 1, unit: "л" },
+    { name: "вода", quantity: 2, unit: "л" },
+  ]);
+  assert.equal(saved.ok, false);
+  assert.match(saved.reason, /дважды/);
+  const request = data.snapshot().requests.find((item) => item.id === created.requestId);
+  assert.equal(request.items.length, 0);
+});
+
+test("product used in a request cannot be deleted", () => {
+  const { data, waterId } = shoppingList();
+  const removed = data.removeProduct(waterId);
+  assert.equal(removed.ok, false);
+  assert.match(removed.reason, /используется/);
+});

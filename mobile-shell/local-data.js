@@ -50,6 +50,32 @@ export function openLocalData(storage) {
     return structuredClone(current);
   }
 
+  function apply(mutator) {
+    const next = structuredClone(current);
+    const context = {
+      now: new Date().toISOString(),
+      actor: String(next.user?.email || "local"),
+    };
+    const result = mutator(next, context) || { ok: false };
+    if (result.ok === false) return result;
+    if (result.changed === false) {
+      result.request = result.requestId
+        ? snapshot().requests.find((item) => item.id === result.requestId)
+        : undefined;
+      result.product = result.productId
+        ? snapshot().products.find((item) => item.id === result.productId)
+        : undefined;
+      return result;
+    }
+    current = prepareState(next);
+    storage.write(current);
+    const view = snapshot();
+    if (result.requestId) result.request = view.requests.find((item) => item.id === result.requestId);
+    if (result.productId) result.product = view.products.find((item) => item.id === result.productId);
+    result.state = view;
+    return result;
+  }
+
   return {
     load() {
       const stored = storage.read();
@@ -66,6 +92,299 @@ export function openLocalData(storage) {
       current = prepareState(emptyState());
       storage.write(current);
       return snapshot();
+    },
+
+    saveProduct(fields) {
+      return apply((next, { now, actor }) => {
+        const name = String(fields.name || "").trim();
+        if (!name) return { ok: false, reason: "Название продукта не заполнено." };
+        const category = String(fields.category || "").trim();
+        const barcode = String(fields.barcode || "").trim();
+        const values = {
+          name,
+          barcode,
+          category,
+          unit: fields.unit || "шт.",
+          brand: fields.brand || "",
+          kind: barcode ? "sku" : (fields.kind || "generic"),
+          genericKey: fields.genericKey || genericKeyFromParts(category, name),
+          confirmed: true,
+          updatedAt: now,
+          updatedBy: actor,
+          nutrition: fields.nutrition || null,
+          ingredients: String(fields.ingredients || "").trim(),
+          catalogSource: fields.catalogSource || "",
+        };
+        if (fields.id) {
+          const product = next.products.find((item) => item.id === fields.id);
+          if (!product || product.deletedAt) return { ok: false, reason: "Продукт не найден." };
+          Object.assign(product, values);
+          return { ok: true, productId: product.id };
+        }
+        const product = { id: createId("product"), ...values };
+        next.products.push(product);
+        return { ok: true, productId: product.id };
+      });
+    },
+
+    removeProduct(productId) {
+      return apply((next, { now, actor }) => {
+        const used = (next.requests || []).some((request) =>
+          !request.deletedAt && (
+            (request.items || []).some((item) => item.productId === productId)
+            || (request.responses || []).some((response) => !response.deletedAt && (response.items || []).some((item) =>
+              (item.purchasedProductId || item.productId) === productId
+            ))
+          )
+        );
+        if (used) return { ok: false, reason: "Продукт используется в запросе." };
+        const product = next.products.find((item) => item.id === productId);
+        if (!product || product.deletedAt) return { ok: false, reason: "Продукт не найден." };
+        product.deletedAt = now;
+        product.updatedAt = now;
+        product.updatedBy = actor;
+        return { ok: true, productId, name: product.name };
+      });
+    },
+
+    restoreProduct(productId) {
+      return apply((next, { now, actor }) => {
+        const product = next.products.find((item) => item.id === productId);
+        if (!product) return { ok: false, reason: "Продукт не найден." };
+        if (!product.deletedAt) return { ok: true, changed: false, productId };
+        product.deletedAt = "";
+        product.updatedAt = now;
+        product.updatedBy = actor;
+        return { ok: true, productId, name: product.name };
+      });
+    },
+
+    createRequest() {
+      return apply((next, { now, actor }) => {
+        const request = {
+          id: createId("request"),
+          createdAt: now,
+          status: "open",
+          items: [],
+          responses: [],
+          createdBy: actor,
+          updatedBy: actor,
+          updatedAt: now,
+          history: [],
+        };
+        appendRequestVersion(request, "Запрос создан", now, actor);
+        next.requests.push(request);
+        return { ok: true, requestId: request.id };
+      });
+    },
+
+    saveRequestItems(requestId, lines) {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
+        if (!request) return { ok: false, reason: "Запрос не найден." };
+        const items = [];
+        for (const line of lines || []) {
+          const product = resolveOrCreateProduct(next, line, now, actor);
+          if (!product) continue;
+          const previous = (request.items || []).find((item) => item.productId === product.id) || {};
+          const unit = String(previous.unit || product.unit || line.unit || "шт.").trim() || "шт.";
+          items.push({
+            ...previous,
+            productId: product.id,
+            quantity: Number(line.quantity) || 1,
+            unit,
+            note: String(line.note || "").trim(),
+          });
+        }
+        if (new Set(items.map((item) => item.productId)).size !== items.length) {
+          return { ok: false, reason: "Один продукт нельзя добавлять в запрос дважды." };
+        }
+        const answeredProductIds = new Set(
+          activeResponses(request).flatMap((response) =>
+            response.items.filter((item) => item.quantity || item.price).map((item) => item.productId)
+          )
+        );
+        if ([...answeredProductIds].some((productId) => !items.some((item) => item.productId === productId))) {
+          return { ok: false, reason: "Нельзя удалить товар, который уже указан в ответе." };
+        }
+        if (items.some((item) => responseItemTotal(request, item.productId).quantity > Number(item.quantity))) {
+          return { ok: false, reason: "Количество нельзя уменьшить ниже уже купленного." };
+        }
+        const sameItems = items.length === (request.items || []).length
+          && items.every((item, index) => {
+            const previous = request.items[index];
+            return previous
+              && previous.productId === item.productId
+              && Number(previous.quantity) === Number(item.quantity)
+              && String(previous.unit || "") === String(item.unit || "")
+              && String(previous.note || "") === String(item.note || "");
+          });
+        if (sameItems) return { ok: true, changed: false, requestId };
+        request.items = items;
+        request.updatedAt = now;
+        request.updatedBy = actor;
+        updateRequestStatus(request);
+        appendRequestVersion(request, items.length ? "Запрос изменён" : "Запрос очищен", now, actor);
+        return { ok: true, requestId };
+      });
+    },
+
+    removeRequest(requestId) {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId);
+        if (!request || request.deletedAt) return { ok: false, reason: "Запрос не найден." };
+        request.deletedAt = now;
+        request.updatedAt = now;
+        request.updatedBy = actor;
+        (request.responses || []).forEach((response) => {
+          response.deletedAt = now;
+          response.updatedAt = now;
+          response.updatedBy = actor;
+        });
+        return { ok: true, requestId };
+      });
+    },
+
+    markBought(requestId, productId, details = {}) {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
+        if (!request) return { ok: false, reason: "Запрос не найден." };
+        const requestItem = (request.items || []).find((item) => item.productId === productId)
+          || (request.items || []).find((item) =>
+            normalizeProductName(liveProduct(next, item.productId)?.name || "")
+            === normalizeProductName(liveProduct(next, productId)?.name || details.query || "")
+          );
+        const resolvedProductId = requestItem?.productId || (liveProduct(next, productId) ? productId : "");
+        if (!resolvedProductId) return { ok: false, reason: "Товар не найден в запросе." };
+        const requested = Number(requestItem?.quantity || 0);
+        let quantity = Number(details.quantity);
+        if (!Number.isFinite(quantity) || quantity <= 0) quantity = requested || 1;
+        quantity = Math.min(quantity, requested || quantity);
+        const price = Number(details.price);
+        const safePrice = Number.isFinite(price) && price >= 0 ? price : 0;
+        const currentLine = receiptLine(request, resolvedProductId);
+        const expectedPurchasedProductId = details.purchasedProductId || resolvedProductId;
+        const expectedFilled = safePrice > 0
+          || Boolean(details.purchasedProduct)
+          || expectedPurchasedProductId !== resolvedProductId
+          || details.completionMode === "filled";
+        const expectedCompletionMode = expectedFilled ? "filled" : (details.completionMode || "closed");
+        if (!details.purchasedProduct && purchaseLineMatches(currentLine, {
+          productId: resolvedProductId,
+          purchasedProductId: expectedPurchasedProductId,
+          quantity,
+          price: safePrice,
+          completionMode: expectedCompletionMode,
+        })) {
+          return { ok: true, changed: false, requestId };
+        }
+        const purchasedProductId = materializePurchasedProduct(next, {
+          ...details,
+          productId: resolvedProductId,
+        }, now, actor) || resolvedProductId;
+        const receipt = ensureSingleReceipt(request, now, actor);
+        let line = receipt.items.find((item) => item.productId === resolvedProductId);
+        const isNewLine = !line;
+        const filled = safePrice > 0
+          || Boolean(details.purchasedProduct)
+          || (purchasedProductId && purchasedProductId !== resolvedProductId)
+          || details.completionMode === "filled";
+        if (!line) {
+          line = {
+            productId: resolvedProductId,
+            purchasedProductId,
+            quantity,
+            price: safePrice,
+            completionMode: filled ? "filled" : (details.completionMode || "closed"),
+          };
+          receipt.items.push(line);
+        } else {
+          line.quantity = quantity;
+          line.price = safePrice;
+          line.purchasedProductId = purchasedProductId;
+          line.completionMode = filled ? "filled" : (details.completionMode || line.completionMode || "closed");
+        }
+        receipt.updatedAt = now;
+        receipt.updatedBy = actor;
+        receipt.deletedAt = "";
+        request.updatedAt = now;
+        request.updatedBy = actor;
+        updateRequestStatus(request, now);
+        appendRequestVersion(
+          request,
+          isNewLine ? "Покупка отмечена" : "Детали покупки обновлены",
+          now,
+          actor
+        );
+        return { ok: true, requestId, productId: resolvedProductId };
+      });
+    },
+
+    unmarkBought(requestId, productId) {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
+        if (!request) return { ok: false, reason: "Запрос не найден." };
+        if (!receiptLine(request, productId)) return { ok: true, changed: false, requestId };
+        const receipt = ensureSingleReceipt(request, now, actor);
+        const before = receipt.items.length;
+        receipt.items = receipt.items.filter((item) => item.productId !== productId);
+        if (receipt.items.length === before) return { ok: true, changed: false, requestId };
+        receipt.updatedAt = now;
+        receipt.updatedBy = actor;
+        if (!receipt.items.length) receipt.deletedAt = now;
+        request.updatedAt = now;
+        request.updatedBy = actor;
+        updateRequestStatus(request, now);
+        appendRequestVersion(request, "Отметка покупки снята", now, actor);
+        return { ok: true, requestId, productId };
+      });
+    },
+
+    saveReceipt(requestId, items, responseId = "") {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
+        if (!request) return { ok: false, reason: "Запрос не найден." };
+        const sourceItems = (items || []).filter((item) => item.productId);
+        if (!sourceItems.length) return { ok: false, reason: "Отметьте хотя бы одну купленную позицию." };
+        const responseItems = sourceItems.map((item) => ({
+          productId: item.productId,
+          purchasedProductId: materializePurchasedProduct(next, item, now, actor),
+          quantity: Number(item.quantity),
+          price: Number(item.price) || 0,
+          completionMode: item.completionMode || "filled",
+        }));
+        const edited = responseId
+          ? (request.responses || []).find((response) => response.id === responseId)
+          : null;
+        if (edited) {
+          edited.items = responseItems;
+          edited.updatedAt = now;
+          edited.updatedBy = actor;
+          edited.deletedAt = "";
+        } else {
+          const receipt = ensureSingleReceipt(request, now, actor);
+          receipt.items = responseItems;
+          receipt.updatedAt = now;
+          receipt.updatedBy = actor;
+          receipt.deletedAt = "";
+        }
+        request.updatedAt = now;
+        request.updatedBy = actor;
+        updateRequestStatus(request, now);
+        appendRequestVersion(request, edited ? "Транзакция изменена" : "Транзакция добавлена", now, actor);
+        return { ok: true, requestId };
+      });
+    },
+
+    restoreVersion(requestId, historyId) {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
+        if (!request) return { ok: false, reason: "Запрос не найден." };
+        const transaction = (request.history || []).find((item) => item.id === historyId);
+        if (!transaction) return { ok: false, reason: "Версия не найдена." };
+        restoreRequestVersion(request, transaction, now, actor);
+        return { ok: true, requestId };
+      });
     },
   };
 }
@@ -308,6 +627,64 @@ export function productPurchasedTotal(productId, source) {
   ), 0);
 }
 
+export function requestReceipt(request) {
+  return activeResponses(request)
+    .slice()
+    .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))[0] || null;
+}
+
+export function receiptLine(request, productId) {
+  return requestReceipt(request)?.items.find((item) => item.productId === productId) || null;
+}
+
+export function remainingRequestQuantity(request, productId, excludedResponseId = "") {
+  const requested = Number(request.items.find((item) => item.productId === productId)?.quantity || 0);
+  const bought = activeResponses(request)
+    .filter((response) => response.id !== excludedResponseId)
+    .reduce((sum, response) => sum + Number(response.items.find((item) => item.productId === productId)?.quantity || 0), 0);
+  return Math.max(0, requested - bought);
+}
+
+function liveProduct(source, productId) {
+  return (source.products || []).find((product) => product.id === productId && !product.deletedAt) || null;
+}
+
+function resolveOrCreateProduct(source, draft, changedAt, actor) {
+  const name = String(draft.name || draft.query || "").trim();
+  const existingById = draft.productId ? liveProduct(source, draft.productId) : null;
+  if (existingById) return existingById;
+  const key = normalizeProductName(name);
+  if (key) {
+    const existing = (source.products || []).find((product) =>
+      !product.deletedAt && normalizeProductName(product.name) === key
+    );
+    if (existing) return existing;
+  }
+  if (!name) return null;
+  const catalog = draft.hint && typeof draft.hint === "object" ? draft.hint : null;
+  const category = catalog?.category || "";
+  const product = {
+    id: createId("product"),
+    name,
+    category,
+    unit: catalog?.unit || draft.unit || "шт.",
+    brand: catalog?.brand || "",
+    kind: catalog?.kind || (catalog?.barcode ? "sku" : "generic"),
+    genericKey: catalog?.genericKey || genericKeyFromParts(category, name),
+    confirmed: false,
+    updatedAt: changedAt,
+    updatedBy: actor,
+    nutrition: catalog?.nutrition ? structuredClone(catalog.nutrition) : null,
+    barcode: catalog?.barcode || "",
+    ingredients: catalog?.ingredients || "",
+    catalogSource: catalog?.catalogSource || (catalog ? "Встроенный справочник" : ""),
+    nutritionSource: catalog?.catalogSource || (catalog ? "Справочник" : ""),
+  };
+  source.products = source.products || [];
+  source.products.push(product);
+  return product;
+}
+
 export function plannedRationRequestItems(source, dates, selectedItemIds) {
   const portions = new Map();
   dates.forEach((dateKey) => (rationDayFor(source, dateKey)?.meals || []).forEach((meal) =>
@@ -526,7 +903,7 @@ function requestSnapshot(request) {
   });
 }
 
-function responseItemTotal(request, productId) {
+export function responseItemTotal(request, productId) {
   return activeResponses(request).reduce((total, response) => {
     const item = response.items.find((value) => value.productId === productId);
     if (item) {

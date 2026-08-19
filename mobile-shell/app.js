@@ -2,26 +2,25 @@ import {
   activeResponses,
   appendRequestVersion,
   browserStorage,
-  ensureSingleReceipt,
   formatRationDate,
   genericKeyFromParts,
   isProductConfirmed,
   isRequestFulfilled,
-  materializePurchasedProduct,
   normalizeProductName,
   openFoodFactsSuggestion,
   openLocalData,
   parseRationDate,
   plannedRationRequestItems,
   productPurchasedTotal,
-  purchaseLineMatches,
   rationDayFor,
   rationDayKey,
   rationMeasure,
   rationOwner,
+  receiptLine,
+  remainingRequestQuantity,
+  responseItemTotal,
   timestamp,
   todayDateKey,
-  updateRequestStatus,
 } from "./local-data.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
@@ -181,14 +180,6 @@ import {
     }
     if (route === "profile") renderProfile();
   };
-
-  function actor() {
-    return state.user?.email || "local";
-  }
-
-  function saveState() {
-    state = localData.commit(state);
-  }
 
   function commitState(nextState) {
     state = localData.commit(nextState);
@@ -681,29 +672,17 @@ import {
     document.getElementById("products-empty-add")?.addEventListener("click", () => navigate("product-new"));
     document.querySelectorAll(".delete-product").forEach((button) => {
       button.addEventListener("click", async () => {
-        const used = activeRequests().some((request) =>
-          request.items.some((item) => item.productId === button.dataset.id)
-          || request.responses.some((response) => response.items.some((item) =>
-            (item.purchasedProductId || item.productId) === button.dataset.id
-          ))
-        );
-        if (used) return showToast("Продукт используется в запросе.");
         const product = state.products.find((item) => item.id === button.dataset.id);
         if (!product) return;
         if (!await askConfirm(`Удалить продукт «${product.name}»?`)) return;
-        const changedAt = new Date().toISOString();
-        product.deletedAt = changedAt;
-        product.updatedAt = changedAt;
-        product.updatedBy = state.user?.email || "local";
-        saveState();
+        const removed = localData.removeProduct(product.id);
+        if (!removed.ok) return showToast(removed.reason);
+        state = localData.snapshot();
         renderProducts();
         showToast(`Продукт «${product.name}» удалён.`, "Отменить", () => {
-          const deletedProduct = state.products.find((item) => item.id === product.id);
-          if (!deletedProduct) return;
-          deletedProduct.deletedAt = "";
-          deletedProduct.updatedAt = new Date().toISOString();
-          deletedProduct.updatedBy = state.user?.email || "local";
-          saveState();
+          const restored = localData.restoreProduct(product.id);
+          if (!restored.ok) return;
+          state = localData.snapshot();
           renderProducts();
           showToast(`Продукт «${product.name}» восстановлен.`);
         });
@@ -762,28 +741,21 @@ import {
     document.getElementById("product-form").addEventListener("submit", (event) => {
       event.preventDefault();
       const data = new FormData(event.currentTarget);
-      const changedAt = new Date().toISOString();
-      const name = data.get("name").trim();
-      const category = data.get("category").trim();
-      const barcode = data.get("barcode").trim();
-      const values = {
-        name,
-        barcode,
-        category,
+      const saved = localData.saveProduct({
+        id: product?.id,
+        name: data.get("name").trim(),
+        barcode: data.get("barcode").trim(),
+        category: data.get("category").trim(),
         unit: data.get("unit"),
         brand: product?.brand || "",
-        kind: barcode ? "sku" : (product?.kind || "generic"),
-        genericKey: product?.genericKey || genericKeyFromParts(category, name),
-        confirmed: true,
-        updatedAt: changedAt,
-        updatedBy: state.user?.email || "local",
+        kind: product?.kind || "generic",
+        genericKey: product?.genericKey || "",
         nutrition: nutritionFromForm(data, event.currentTarget.dataset.nutritionSource || product?.nutrition?.source || "Введено пользователем"),
         ingredients: data.get("ingredients").trim(),
         catalogSource: event.currentTarget.dataset.nutritionSource || product?.catalogSource || "",
-      };
-      if (product) Object.assign(product, values);
-      else state.products.push({ id: id("product"), ...values });
-      saveState();
+      });
+      if (!saved.ok) return showToast(saved.reason);
+      state = localData.snapshot();
       const ret = productEditReturn;
       productEditReturn = null;
       if (ret?.route) navigate(ret.route, ret.id || null);
@@ -806,24 +778,11 @@ import {
   }
 
   function createEmptyRequestAndOpen() {
-    const changedAt = new Date().toISOString();
-    const nextRequest = {
-      id: id("request"),
-      createdAt: changedAt,
-      status: "open",
-      items: [],
-      responses: [],
-      createdBy: state.user?.email || "local",
-      updatedBy: state.user?.email || "local",
-      updatedAt: changedAt,
-      history: [],
-    };
-    appendRequestVersion(nextRequest, "Запрос создан", changedAt, nextRequest.createdBy);
-    const nextState = structuredClone(state);
-    nextState.requests.push(nextRequest);
-    commitState(nextState);
+    const created = localData.createRequest();
+    if (!created.ok) return showToast(created.reason || "Не удалось создать запрос.");
+    state = localData.snapshot();
     draftItems = [];
-    navigate("request-edit", nextRequest.id);
+    navigate("request-edit", created.requestId);
   }
 
   function ensureRequestDraftRows(request) {
@@ -1620,16 +1579,6 @@ import {
     return "";
   }
 
-  function requestReceipt(request) {
-    return activeResponses(request)
-      .slice()
-      .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))[0] || null;
-  }
-
-  function receiptLine(request, productId) {
-    return requestReceipt(request)?.items.find((item) => item.productId === productId) || null;
-  }
-
   function openInlinePurchaseDetails(request, productId) {
     const line = receiptLine(request, productId);
     const remaining = remainingRequestQuantity(request, productId);
@@ -1671,109 +1620,24 @@ import {
   }
 
   function applyInlinePurchase(requestId, productId, draftItem) {
-    const request = getRequest(requestId);
-    if (!request || !productId) return;
-    const changedAt = new Date().toISOString();
-    const nextState = structuredClone(state);
-    const nextRequest = nextState.requests.find((item) => item.id === requestId);
-    if (!nextRequest) return;
-    // Guard against catalog-only ids: purchases must use real product ids from the request.
-    const requestItem = nextRequest.items.find((item) => item.productId === productId)
-      || nextRequest.items.find((item) =>
-        normalizeProductName(getProduct(item.productId)?.name || "")
-        === normalizeProductName(getProduct(productId)?.name || draftItem?.query || "")
-      );
-    const resolvedProductId = requestItem?.productId || (isRealProductId(productId) ? productId : "");
-    if (!resolvedProductId) return;
-    const requested = Number(requestItem?.quantity || nextRequest.items.find((item) => item.productId === resolvedProductId)?.quantity || 0);
-    let quantity = Number(draftItem.quantity);
-    if (!Number.isFinite(quantity) || quantity <= 0) quantity = requested || 1;
-    quantity = Math.min(quantity, requested || quantity);
-    const price = Number(draftItem.price);
-    const safePrice = Number.isFinite(price) && price >= 0 ? price : 0;
-    const currentLine = receiptLine(request, resolvedProductId);
-    const expectedPurchasedProductId = draftItem.purchasedProductId || resolvedProductId;
-    const expectedFilled = safePrice > 0
-      || Boolean(draftItem.purchasedProduct)
-      || expectedPurchasedProductId !== resolvedProductId
-      || draftItem.completionMode === "filled";
-    const expectedCompletionMode = expectedFilled ? "filled" : (draftItem.completionMode || "closed");
-    if (!draftItem.purchasedProduct && purchaseLineMatches(currentLine, {
-      productId: resolvedProductId,
-      purchasedProductId: expectedPurchasedProductId,
-      quantity,
-      price: safePrice,
-      completionMode: expectedCompletionMode,
-    })) {
-      patchRequestItemRow(requestId, resolvedProductId);
-      return;
-    }
-    const purchasedProductId = materializePurchasedProduct(nextState, { ...draftItem, productId: resolvedProductId }, changedAt, actor()) || resolvedProductId;
-    const receipt = ensureSingleReceipt(nextRequest, changedAt, actor());
-    let line = receipt.items.find((item) => item.productId === resolvedProductId);
-    const isNewLine = !line;
-    const filled = safePrice > 0
-      || Boolean(draftItem.purchasedProduct)
-      || (purchasedProductId && purchasedProductId !== resolvedProductId)
-      || draftItem.completionMode === "filled";
-    if (!line) {
-      line = {
-        productId: resolvedProductId,
-        purchasedProductId,
-        quantity,
-        price: safePrice,
-        completionMode: filled ? "filled" : (draftItem.completionMode || "closed"),
-      };
-      receipt.items.push(line);
-    } else {
-      line.quantity = quantity;
-      line.price = safePrice;
-      line.purchasedProductId = purchasedProductId;
-      line.completionMode = filled ? "filled" : (draftItem.completionMode || line.completionMode || "closed");
-    }
-    receipt.updatedAt = changedAt;
-    receipt.updatedBy = state.user?.email || "local";
-    receipt.deletedAt = "";
-    nextRequest.updatedAt = changedAt;
-    nextRequest.updatedBy = state.user?.email || "local";
-    updateRequestStatus(nextRequest, changedAt);
-    appendRequestVersion(
-      nextRequest,
-      isNewLine ? "Покупка отмечена" : "Детали покупки обновлены",
-      changedAt,
-      nextRequest.updatedBy
-    );
-    commitState(nextState);
+    const marked = localData.markBought(requestId, productId, {
+      quantity: draftItem.quantity,
+      price: draftItem.price,
+      purchasedProductId: draftItem.purchasedProductId,
+      purchasedProduct: draftItem.purchasedProduct,
+      completionMode: draftItem.completionMode,
+      query: draftItem.query,
+    });
+    if (!marked.ok) return;
+    state = localData.snapshot();
     formDirty = false;
-    patchRequestItemRow(requestId, resolvedProductId);
+    patchRequestItemRow(requestId, marked.productId || productId);
   }
 
   function undoLatestPurchaseForProduct(requestId, productId) {
-    const request = getRequest(requestId);
-    if (!request) return;
-    if (!receiptLine(request, productId)) {
-      patchRequestItemRow(requestId, productId);
-      return;
-    }
-    const nextState = structuredClone(state);
-    const nextRequest = nextState.requests.find((item) => item.id === requestId);
-    if (!nextRequest) return;
-    const changedAt = new Date().toISOString();
-    const receipt = ensureSingleReceipt(nextRequest, changedAt, actor());
-    const before = receipt.items.length;
-    receipt.items = receipt.items.filter((item) => item.productId !== productId);
-    if (receipt.items.length === before) {
-      patchRequestItemRow(requestId, productId);
-      return;
-    }
-    receipt.updatedAt = changedAt;
-    receipt.updatedBy = state.user?.email || "local";
-    if (!receipt.items.length) receipt.deletedAt = changedAt;
-    nextRequest.updatedAt = changedAt;
-    nextRequest.updatedBy = state.user?.email || "local";
-    updateRequestStatus(nextRequest, changedAt);
-    appendRequestVersion(nextRequest, "Отметка покупки снята", changedAt, nextRequest.updatedBy);
-    commitState(nextState);
+    const unmarked = localData.unmarkBought(requestId, productId);
+    if (!unmarked.ok) return;
+    state = localData.snapshot();
     formDirty = false;
     patchRequestItemRow(requestId, productId);
   }
@@ -1895,61 +1759,20 @@ import {
     if (!editedRequest) return false;
     syncDraftFromForm();
     const filledDraftItems = draftItems.filter((item) => item.confirmed && item.query.trim());
-    const nextState = structuredClone(state);
-    const nextRequest = nextState.requests.find((request) => request.id === editedRequest.id);
-    if (!nextRequest) return false;
-
-    const items = [];
-    for (const draft of filledDraftItems) {
-      const product = resolveOrCreateProduct(draft, nextState.products, new Date().toISOString());
-      const previous = editedRequest.items.find((item) => item.productId === product.id) || {};
-      // Unit comes from the product card (not a free-text field on the line).
-      const unit = String(previous.unit || product.unit || draft.unit || "шт.").trim() || "шт.";
-      items.push({
-        ...previous,
-        productId: product.id,
-        quantity: Number(draft.quantity) || 1,
-        unit,
-        note: String(draft.note || "").trim(),
-      });
-    }
-
-    if (new Set(items.map((item) => item.productId)).size !== items.length) {
-      if (!silent) showToast("Один продукт нельзя добавлять в запрос дважды.");
+    const saved = localData.saveRequestItems(editedRequest.id, filledDraftItems.map((draft) => ({
+      productId: draft.productId,
+      name: draft.query.trim(),
+      quantity: draft.quantity,
+      unit: draft.unit,
+      note: draft.note,
+      hint: suggestionByName(draft.query),
+    })));
+    if (!saved.ok) {
+      if (!silent) showToast(saved.reason);
       return false;
     }
-    const answeredProductIds = new Set(
-      activeResponses(editedRequest).flatMap((response) =>
-        response.items.filter((item) => item.quantity || item.price).map((item) => item.productId)
-      )
-    );
-    if ([...answeredProductIds].some((productId) => !items.some((item) => item.productId === productId))) {
-      if (!silent) showToast("Нельзя удалить товар, который уже указан в ответе.");
-      return false;
-    }
-    if (items.some((item) => responseItemTotal(editedRequest, item.productId).quantity > Number(item.quantity))) {
-      if (!silent) showToast("Количество нельзя уменьшить ниже уже купленного.");
-      return false;
-    }
-
-    const sameItems = items.length === editedRequest.items.length
-      && items.every((item, index) => {
-        const previous = editedRequest.items[index];
-        return previous
-          && previous.productId === item.productId
-           && Number(previous.quantity) === Number(item.quantity)
-           && String(previous.unit || "") === String(item.unit || "")
-           && String(previous.note || "") === String(item.note || "");
-      });
-    if (sameItems) return true;
-
-    const changedAt = new Date().toISOString();
-    nextRequest.items = items;
-    nextRequest.updatedAt = changedAt;
-    nextRequest.updatedBy = state.user?.email || "local";
-    updateRequestStatus(nextRequest);
-    appendRequestVersion(nextRequest, items.length ? "Запрос изменён" : "Запрос очищен", changedAt, nextRequest.updatedBy);
-    commitState(nextState);
+    state = localData.snapshot();
+    const items = getRequest(editedRequest.id)?.items || [];
 
     // Keep only draft rows that still exist in the DOM (filled + current blank line).
     const keysInDom = new Set([...document.querySelectorAll(".request-item")].map((row) => row.dataset.key));
@@ -1996,20 +1819,9 @@ import {
 
   async function deleteRequestWithTransactions(request) {
     if (!await askConfirm("Удалить запрос и все данные о покупках?")) return;
-    const changedAt = new Date().toISOString();
-    const actor = state.user?.email || "local";
-    const nextState = structuredClone(state);
-    const nextRequest = nextState.requests.find((item) => item.id === request.id);
-    if (!nextRequest) return;
-    nextRequest.deletedAt = changedAt;
-    nextRequest.updatedAt = changedAt;
-    nextRequest.updatedBy = actor;
-    nextRequest.responses.forEach((response) => {
-      response.deletedAt = changedAt;
-      response.updatedAt = changedAt;
-      response.updatedBy = actor;
-    });
-    commitState(nextState);
+    const removed = localData.removeRequest(request.id);
+    if (!removed.ok) return showToast(removed.reason);
+    state = localData.snapshot();
     navigate("requests");
     showToast("Запрос удалён.");
   }
@@ -2122,14 +1934,6 @@ import {
       price: 0,
       completionMode: "closed",
     };
-  }
-
-  function remainingRequestQuantity(request, productId, excludedResponseId = "") {
-    const requested = Number(request.items.find((item) => item.productId === productId)?.quantity || 0);
-    const bought = activeResponses(request)
-      .filter((response) => response.id !== excludedResponseId)
-      .reduce((sum, response) => sum + Number(response.items.find((item) => item.productId === productId)?.quantity || 0), 0);
-    return Math.max(0, requested - bought);
   }
 
   function commitInlinePurchaseDraft(productId) {
@@ -2429,36 +2233,9 @@ import {
 
   function saveAnswerTransaction(event, request, editedResponse) {
     event.preventDefault();
-    if (!answerDraftItems.size) return showToast("Отметьте хотя бы одну купленную позицию.");
-    const changedAt = new Date().toISOString();
-    const nextState = structuredClone(state);
-    const responseItems = [...answerDraftItems.values()].map((item) => ({
-      productId: item.productId,
-      purchasedProductId: materializePurchasedProduct(nextState, item, changedAt, actor()),
-      quantity: Number(item.quantity),
-      price: Number(item.price) || 0,
-      completionMode: item.completionMode || "filled",
-    }));
-    const nextRequest = nextState.requests.find((item) => item.id === request.id);
-    const nextEditedResponse = editedResponse
-      ? nextRequest.responses.find((response) => response.id === editedResponse.id)
-      : null;
-    if (nextEditedResponse) {
-      nextEditedResponse.items = responseItems;
-      nextEditedResponse.updatedAt = changedAt;
-      nextEditedResponse.updatedBy = state.user?.email || "local";
-    } else {
-      nextRequest.responses.push({
-        id: id("response"), requestId: nextRequest.id, items: responseItems,
-        createdAt: changedAt, createdBy: state.user?.email || "local",
-        updatedAt: changedAt, updatedBy: state.user?.email || "local",
-      });
-    }
-    nextRequest.updatedAt = changedAt;
-    nextRequest.updatedBy = state.user?.email || "local";
-    updateRequestStatus(nextRequest, changedAt);
-    appendRequestVersion(nextRequest, nextEditedResponse ? "Транзакция изменена" : "Транзакция добавлена", changedAt, nextRequest.updatedBy);
-    commitState(nextState);
+    const saved = localData.saveReceipt(request.id, [...answerDraftItems.values()], editedResponse?.id || "");
+    if (!saved.ok) return showToast(saved.reason);
+    state = localData.snapshot();
     draftItems = [];
     navigate("request-edit", request.id);
     showToast("Покупки сохранены.");
