@@ -3,22 +3,35 @@ import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-test("app opens locally without a Google sign-in flow", () => {
+test("app opens locally without Google Sheets or a sign-in flow", () => {
   const appSource = fs.readFileSync(new URL("../mobile-shell/app.js", import.meta.url), "utf8");
   const activitySource = fs.readFileSync(
     new URL("../android/app/src/main/java/ru/listok/purchases/MainActivity.java", import.meta.url),
     "utf8"
   );
+  const gradleSource = fs.readFileSync(
+    new URL("../android/app/build.gradle", import.meta.url),
+    "utf8"
+  );
+  const manifestSource = fs.readFileSync(
+    new URL("../android/app/src/main/AndroidManifest.xml", import.meta.url),
+    "utf8"
+  );
 
   assert.match(appSource, /let route = "summary";/);
+  assert.match(appSource, /cookish\.android\.data\.v1/);
   assert.doesNotMatch(appSource, /authorizeGoogle|__onNativeGoogleAuth|onboarding-google|google-auth/);
+  assert.doesNotMatch(appSource, /sheets\.googleapis\.com|configureBackgroundSync|googleFetch/);
   assert.doesNotMatch(activitySource, /public void authorize\(\)/);
+  assert.doesNotMatch(activitySource, /SheetsSyncWorker|configureBackgroundSync|play-services-auth/);
+  assert.doesNotMatch(gradleSource, /play-services-auth|work-runtime|google-services/);
+  assert.doesNotMatch(manifestSource, /GOOGLE_ANDROID_CLIENT_ID|POST_NOTIFICATIONS|WAKE_LOCK/);
 });
 
 function loadModel() {
   const sourcePath = new URL("../mobile-shell/app.js", import.meta.url);
   const source = fs.readFileSync(sourcePath, "utf8");
-  const markerMatch = source.match(/  render\(\);\r?\n  mirrorStateForBackgroundSync\(\);/);
+  const markerMatch = source.match(/  render\(\);\r?\n  requestAppUpdateCheck\(false\);/);
   assert.ok(markerMatch, "Test export marker was not found");
   const instrumented = source.replace(markerMatch[0], `
   globalThis.__cookishModel = {
@@ -35,8 +48,6 @@ function loadModel() {
     normalizeProductRecord,
     normalizeRequest,
     openFoodFactsSuggestion,
-    parseProductRow,
-    parseResponseRow,
     plannedRationRequestItems,
     productPurchasedTotal,
     purchaseLineMatches,
@@ -118,27 +129,30 @@ test("request line text stays separate from the product identity", () => {
   assert.equal(result.items[0].note, "без лактозы, если будет");
 });
 
-test("product nutrition survives Google Sheets round-trip", () => {
-  const nutrition = {
-    calories: 52,
-    protein: 2.8,
-    fat: 2.5,
-    carbs: 4.7,
-    fiber: 0,
-    vitamins: "B12: 0,4 мкг",
-    minerals: "Кальций: 120 мг",
-    source: "Встроенный справочник",
-  };
-  const parsed = model.parseProductRow([
-    "product_milk", "Молоко 2,5%", "Молочные продукты", "л",
-    "2026-01-01T00:01:00.000Z", "a@example.com", JSON.stringify(nutrition),
-    nutrition.source, "4605035006964", "Минеральная вода", "2026-01-02T00:00:00.000Z",
-  ]);
+test("existing local blob keeps products, requests, purchases and ration", () => {
+  const result = model.buildSyncPackage({
+    schemaVersion: 9,
+    spreadsheetId: "legacy_sheet",
+    user: { email: "a@example.com" },
+    products: [{
+      ...baseProduct,
+      nutrition: { calories: 0, protein: 0, fat: 0, carbs: 0 },
+    }],
+    requests: [requestWithResponses([
+      response("response_keep", 2, "2026-01-01T00:02:00.000Z"),
+    ])],
+    rationDays: {
+      "2026-08-03": {
+        date: "2026-08-03",
+        meals: [{ id: "meal_1", name: "Обед", time: "13:00", items: [{ id: "item_1", productId: "product_water" }] }],
+        updatedAt: "2026-08-03T08:00:00.000Z",
+      },
+    },
+  });
 
-  assert.equal(JSON.stringify(parsed.nutrition), JSON.stringify(nutrition));
-  assert.equal(parsed.barcode, "4605035006964");
-  assert.equal(parsed.ingredients, "Минеральная вода");
-  assert.equal(parsed.deletedAt, "2026-01-02T00:00:00.000Z");
+  assert.equal(result.products[0].id, "product_water");
+  assert.equal(result.requests[0].responses[0].id, "response_keep");
+  assert.equal(result.rationDays["a@example.com|2026-08-03"].meals[0].items[0].productId, "product_water");
 });
 
 test("newer local product deletion survives an older remote merge", () => {

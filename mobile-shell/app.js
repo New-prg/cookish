@@ -42,13 +42,8 @@
     rationTemplates: [],
     rationView: "week",
     rationAnchor: "",
-    spreadsheetId: "",
-    spreadsheetTitle: "",
     user: null,
     onboardingCompleted: true,
-    backgroundAccessSkipped: false,
-    seenRemoteRequestIds: [],
-    remoteTrackingInitialized: false,
   };
 
   let state = loadState();
@@ -56,8 +51,6 @@
   let routeId = null;
   let routeSubId = null;
   let draftItems = [];
-  let accessToken = null;
-  let backgroundAccess = null;
   let appUpdate = {
     status: window.NativeGoogle?.checkForAppUpdate ? "idle" : "unsupported",
     installedVersion: "5.3.0",
@@ -165,17 +158,6 @@
     lookupProductBarcode();
   };
 
-  window.__onNativeBackgroundAccess = (payload) => {
-    const next = JSON.parse(payload);
-    const changed = JSON.stringify(next) !== JSON.stringify(backgroundAccess);
-    backgroundAccess = next;
-    if (next?.fullyGranted && state.backgroundAccessSkipped) {
-      state.backgroundAccessSkipped = false;
-      saveState(false);
-    }
-    if (changed && route === "profile") renderProfile();
-  };
-
   window.__onNativeAppUpdate = (payload) => {
     try {
       appUpdate = JSON.parse(payload);
@@ -210,15 +192,14 @@
     }
   }
 
-  function saveState(sync = true) {
-    commitState(state, sync);
+  function saveState() {
+    commitState(state);
   }
 
-  function commitState(nextState, sync = true) {
+  function commitState(nextState) {
     const normalized = buildSyncPackage(nextState);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
     state = normalized;
-    mirrorStateForBackgroundSync();
   }
 
   function navigate(next, id = null, subId = null, options = {}) {
@@ -246,23 +227,6 @@
     if (document.getElementById("request-items") && !persistRequestDraft({ silent: false })) return;
     draftItems = [];
     navigate("requests", null, null, { skipRequestPersist: true });
-  }
-
-  function isInteractiveEditing() {
-    if (document.querySelector("dialog[open]")) return true;
-    if (formDirty) return true;
-    if (route === "ration" && routeSubId) return true;
-    if (["product-new", "product-edit", "request-edit", "request-answer"].includes(route)) return true;
-    const active = document.activeElement;
-    return Boolean(
-      active
-      && app.contains(active)
-      && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)
-      && active.type !== "checkbox"
-      && active.type !== "radio"
-      && active.type !== "button"
-      && active.type !== "submit"
-    );
   }
 
   function attemptBackNavigation() {
@@ -3340,7 +3304,7 @@
     refreshRationSelectedDate(dateKey);
     const nextState = structuredClone(state);
     nextState.rationAnchor = dateKey;
-    commitState(nextState, false);
+    commitState(nextState);
     if (navigator.vibrate) navigator.vibrate(20);
     renderRation();
   }
@@ -3361,7 +3325,7 @@
     }
     const nextState = structuredClone(state);
     nextState.rationAnchor = dateKey;
-    commitState(nextState, false);
+    commitState(nextState);
     if (navigator.vibrate) navigator.vibrate(20);
     renderRation();
   }
@@ -3956,7 +3920,6 @@
     const completed = activeRequests().filter((item) => item.status === "done");
     const responseCount = activeRequests().reduce((sum, item) => sum + activeResponses(item).length, 0);
     const spent = completed.reduce((sum, item) => sum + requestTotal(item), 0);
-    const backgroundSupported = Boolean(window.NativeGoogle?.requestBackgroundAccess);
     app.innerHTML = `
       <div class="metrics">
         ${metric("Всего запросов", activeRequests().length)}
@@ -3968,21 +3931,6 @@
         <div class="section-heading"><div><span class="eyebrow">Данные</span><h2 class="profile-section-title">Продукты</h2></div><strong>${state.products.filter((item) => !item.deletedAt).length}</strong></div>
         <p class="muted">Каталог, единицы измерения, штрихкоды и пищевая ценность продуктов.</p>
         <button id="manage-products" class="button secondary full" type="button">Открыть продукты</button>
-      </section>
-      <section class="section profile-settings-section">
-        <span class="eyebrow">Система</span>
-        <h2 class="profile-section-title">Фоновая синхронизация</h2>
-        <p class="muted">Для проверки общей таблицы при закрытом приложении Android должен разрешить уведомления и не ограничивать «Cookish» экономией батареи.</p>
-        ${state.backgroundAccessSkipped && !backgroundAccess?.fullyGranted ? `<p class="warning">Фоновая синхронизация отключена. Приложение продолжает работать, пока оно открыто.</p>` : ""}
-        ${backgroundSupported ? `
-          <div class="compact-line"><span>Уведомления</span><strong>${backgroundAccess?.notificationsGranted ? "Разрешены" : "Не разрешены"}</strong></div>
-          <div class="compact-line"><span>Работа без ограничения батареи</span><strong>${backgroundAccess?.batteryOptimizationDisabled ? "Разрешена" : "Не разрешена"}</strong></div>
-          ${backgroundAccess?.lastBackgroundSyncAt ? `<p class="muted">Последняя фоновая синхронизация: ${dateTime(new Date(backgroundAccess.lastBackgroundSyncAt).toISOString())}</p>` : `<p class="muted">Фоновая синхронизация ещё не выполнялась.</p>`}
-          ${backgroundAccess?.lastBackgroundSyncError ? `<p class="error">${escapeHtml(backgroundAccess.lastBackgroundSyncError)}</p>` : ""}
-          <button id="request-background-access" class="button ${backgroundAccess?.fullyGranted ? "secondary" : ""} full" type="button" ${backgroundAccess?.fullyGranted ? "disabled" : ""}>
-            ${backgroundAccess?.fullyGranted ? "Фоновый доступ предоставлен" : "Разрешить фоновую работу"}
-          </button>
-        ` : `<p class="error">Системный доступ недоступен в этой сборке.</p>`}
       </section>
       ${renderAppUpdateSection()}
       <section class="section danger-zone">
@@ -3996,11 +3944,6 @@
 
   function bindProfileActions() {
     document.getElementById("manage-products")?.addEventListener("click", () => navigate("products"));
-    document.getElementById("request-background-access")?.addEventListener("click", () => {
-      window.NativeGoogle.requestBackgroundAccess();
-      showToast("Подтвердите системные запросы Android.");
-    });
-    window.NativeGoogle?.getBackgroundAccessStatus?.();
     document.getElementById("check-app-update")?.addEventListener("click", () => requestAppUpdateCheck(true));
     document.getElementById("install-app-update")?.addEventListener("click", () => {
       window.NativeGoogle?.installLatestUpdate?.();
@@ -4011,309 +3954,9 @@
     document.getElementById("clear-data")?.addEventListener("click", async () => {
       if (!await askConfirm("Удалить продукты, запросы и настройки с этого устройства?")) return;
       state = structuredClone(defaultState);
-      accessToken = null;
       saveState();
       navigate("summary");
     });
-  }
-
-  function mirrorStateForBackgroundSync() {
-    if (!window.NativeGoogle?.configureBackgroundSync) return;
-    const syncPackage = buildSyncPackage(state);
-    window.NativeGoogle.configureBackgroundSync(
-      JSON.stringify(syncPackage),
-      syncPackage.spreadsheetId || "",
-      syncPackage.user?.email || ""
-    );
-  }
-
-
-  async function setupSpreadsheet(token, spreadsheetId) {
-    let metadata = await googleFetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties(sheetId,title)`,
-      token
-    );
-    const required = ["Продукты", "Запросы", "Покупки", "Рацион"];
-    const existing = new Set(metadata.sheets.map((sheet) => sheet.properties.title));
-    const requests = [];
-    if (metadata.sheets.length === 1 && !existing.has("Продукты")) {
-      requests.push({
-        updateSheetProperties: {
-          properties: { sheetId: metadata.sheets[0].properties.sheetId, title: "Продукты" },
-          fields: "title",
-        },
-      });
-      existing.add("Продукты");
-    }
-    required.forEach((name) => {
-      if (!existing.has(name)) requests.push({ addSheet: { properties: { title: name } } });
-    });
-    if (requests.length) {
-      await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, token, {
-        method: "POST",
-        body: JSON.stringify({ requests }),
-      });
-      metadata = await googleFetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties(sheetId,title)`,
-        token
-      );
-    }
-    await readAndMergeSpreadsheetData(token, spreadsheetId);
-    await writeSpreadsheetData(token, spreadsheetId);
-    state.spreadsheetTitle = metadata.properties.title;
-    state.lastSyncAt = new Date().toISOString();
-    saveState(false);
-    return metadata.properties.title;
-  }
-
-  async function readAndMergeSpreadsheetData(token, spreadsheetId) {
-    const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet`);
-    url.searchParams.append("ranges", "Продукты!A2:P");
-    url.searchParams.append("ranges", "Запросы!A2:N");
-    url.searchParams.append("ranges", "Покупки!A2:L");
-    url.searchParams.append("ranges", "Рацион!A2:N");
-    const response = await googleFetch(url.toString(), token);
-    const productRows = response.valueRanges?.[0]?.values || [];
-    const requestRows = response.valueRanges?.[1]?.values || [];
-    const responseRows = response.valueRanges?.[2]?.values || [];
-    const rationRows = response.valueRanges?.[3]?.values || [];
-
-    const remoteProducts = productRows
-      .filter((row) => row[0])
-      .map(parseProductRow);
-    state.products = mergeVersioned(state.products, remoteProducts);
-
-    const remoteById = new Map();
-    requestRows.forEach((row) => {
-      if (!row[0] || !row[1]) return;
-      const legacyStockSchema = isLegacyRequestRow(row);
-      const offset = legacyStockSchema ? 1 : 0;
-      const requestId = String(row[0]);
-      const request = remoteById.get(requestId) || {
-        id: requestId,
-        status: String(row[3 + offset]) === "Выполнен" ? "done" : "open",
-        createdAt: String(row[4 + offset] || new Date().toISOString()),
-        completedAt: String(row[5 + offset] || ""),
-        createdBy: String(row[6 + offset] || "remote"),
-        updatedAt: String(row[7 + offset] || row[5 + offset] || row[4 + offset] || new Date(0).toISOString()),
-        updatedBy: String(row[8 + offset] || row[6 + offset] || "remote"),
-        deletedAt: String(row[9 + offset] || ""),
-        items: [],
-        responses: [],
-      };
-      const plannedAmount = Number(row[10 + offset]) || 0;
-      const measureOrUnit = String(row[12 + offset] || "");
-      const item = {
-        productId: String(row[1]),
-        quantity: Number(row[2]) || 0,
-        plannedAmount,
-        packageSize: Number(row[11 + offset]) || 0,
-        measureUnit: plannedAmount ? measureOrUnit : "",
-        // Shopping unit is request-local; defaults from product only when missing.
-        unit: plannedAmount ? "уп." : measureOrUnit,
-        note: legacyStockSchema ? "" : String(row[13] || ""),
-      };
-      const existingIndex = request.items.findIndex((value) => value.productId === item.productId);
-      if (existingIndex === -1) request.items.push(item);
-      else request.items[existingIndex] = item;
-      remoteById.set(requestId, request);
-    });
-
-    const parsedResponses = new Map();
-    responseRows.forEach((row) => {
-      const normalized = parseResponseRow(row, remoteById);
-      if (!normalized) return;
-      const existing = parsedResponses.get(normalized.id);
-      if (!existing || timestamp(normalized.updatedAt) > timestamp(existing.updatedAt)) {
-        parsedResponses.set(normalized.id, normalized);
-      } else if (timestamp(normalized.updatedAt) === timestamp(existing.updatedAt)) {
-        existing.items = dedupeByProduct([...existing.items, ...normalized.items]);
-      }
-    });
-    parsedResponses.forEach((responseValue) => {
-      remoteById.get(responseValue.requestId)?.responses.push(responseValue);
-    });
-    const remoteRequests = [...remoteById.values()].map(normalizeRequest);
-
-    const knownIds = new Set(state.requests.map((request) => request.id));
-    const seenIds = new Set(state.seenRemoteRequestIds || []);
-    const trackingWasInitialized = Boolean(state.remoteTrackingInitialized);
-    remoteRequests.forEach((request) => {
-      if (
-        trackingWasInitialized &&
-        !knownIds.has(request.id) &&
-        !seenIds.has(request.id) &&
-        !request.deletedAt &&
-        request.status === "open" &&
-        isRemoteRequest(request)
-      ) {
-        notifyRemoteRequest(request);
-      }
-      if (isRemoteRequest(request)) seenIds.add(request.id);
-    });
-    state.requests = mergeRequests(state.requests, remoteRequests);
-    const remoteRationDays = {};
-    rationRows.forEach((row) => {
-      const dateKey = String(row[0] || "");
-      const mealId = String(row[1] || "");
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey) || !mealId) return;
-      const owner = String(row[10] || state.user?.email || "local").trim().toLowerCase();
-      const storageKey = `${owner}|${dateKey}`;
-      const day = remoteRationDays[storageKey] || {
-        date: dateKey, owner, meals: [], updatedAt: String(row[8] || ""), updatedBy: String(row[9] || "remote"),
-      };
-      if (timestamp(row[8]) > timestamp(day.updatedAt)) {
-        day.updatedAt = String(row[8]);
-        day.updatedBy = String(row[9] || "remote");
-      }
-      if (mealId === "__empty__") {
-        remoteRationDays[storageKey] = day;
-        return;
-      }
-      let meal = day.meals.find((item) => item.id === mealId);
-      if (!meal) {
-        meal = { id: mealId, name: String(row[2] || "Приём пищи"), time: String(row[13] || ""), items: [], order: Number(row[6]) || 0 };
-        day.meals.push(meal);
-      }
-      if (row[3]) {
-        meal.items.push({
-          id: String(row[3]), productId: String(row[4] || ""), name: String(row[5] || ""), order: Number(row[7]) || 0,
-          portionSize: Number(row[11]) || 0, packageSize: Number(row[12]) || 0,
-        });
-      }
-      remoteRationDays[storageKey] = day;
-    });
-    Object.values(remoteRationDays).forEach((day) => {
-      day.meals.sort((a, b) => a.order - b.order).forEach((meal) => {
-        delete meal.order;
-        meal.items.sort((a, b) => a.order - b.order).forEach((item) => delete item.order);
-      });
-    });
-    state.rationDays = mergeRationDays(state.rationDays || {}, remoteRationDays);
-    state.seenRemoteRequestIds = [...seenIds];
-    state.remoteTrackingInitialized = true;
-    saveState(false);
-
-    if (["summary", "products", "requests", "ration"].includes(route) && !isInteractiveEditing()) render();
-  }
-
-  async function writeSpreadsheetData(token, spreadsheetId) {
-    const syncPackage = buildSyncPackage(state);
-    const requestRows = syncPackage.requests.flatMap((request) =>
-      request.items.map((item) => [
-        request.id,
-        item.productId,
-        item.quantity,
-        request.status === "open" ? "Активен" : "Выполнен",
-        request.createdAt,
-        request.completedAt || "",
-        request.createdBy || "local",
-        request.updatedAt || request.createdAt,
-        request.updatedBy || request.createdBy || "local",
-        request.deletedAt || "",
-        item.plannedAmount || "",
-        item.packageSize || "",
-        item.plannedAmount ? (item.measureUnit || "") : (item.unit || item.measureUnit || ""),
-        item.note || "",
-      ])
-    );
-    const responseRows = syncPackage.requests.flatMap((request) =>
-      request.responses.flatMap((response) =>
-        response.items.map((item) => [
-          response.id,
-          request.id,
-          item.productId,
-          item.purchasedProductId || item.productId,
-          item.quantity,
-          item.price,
-          response.createdAt,
-          response.createdBy || "local",
-          response.updatedAt || response.createdAt,
-          response.updatedBy || response.createdBy || "local",
-          response.deletedAt || "",
-          item.completionMode || "filled",
-        ])
-      )
-    );
-    const rationRows = Object.values(syncPackage.rationDays || {}).flatMap((day) => {
-      if (!(day.meals || []).length) {
-        return [[day.date, "__empty__", "", "", "", "", 0, 0, day.updatedAt || "", day.updatedBy || "local", day.owner || "local", "", "", ""]];
-      }
-      return (day.meals || []).flatMap((meal, mealIndex) => {
-        const items = meal.items?.length ? meal.items : [{ id: "", productId: "", name: "" }];
-        return items.map((item, itemIndex) => [
-          day.date, meal.id, meal.name, item.id || "", item.productId || "", item.name || "",
-          mealIndex, itemIndex, day.updatedAt || "", day.updatedBy || "local", day.owner || "local",
-          item.portionSize || "", item.packageSize || "", meal.time || rationMealTime(meal, mealIndex),
-        ]);
-      });
-    });
-    await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, token, {
-      method: "POST",
-      body: JSON.stringify({ ranges: ["Продукты!A:P", "Запросы!A:N", "Покупки!A:L", "Рацион!A:N"] }),
-    });
-    await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, token, {
-      method: "POST",
-      body: JSON.stringify({
-        valueInputOption: "USER_ENTERED",
-        data: [
-          {
-            range: "Продукты!A1:P",
-            values: [["id", "Наименование", "Категория", "Единица", "Обновлён", "Кем обновлён", "Пищевая ценность JSON", "Источник данных", "Штрихкод", "Состав", "Удалён", "Подтверждён", "Тип", "generic_key", "Бренд", "catalog_source"], ...syncPackage.products.map((item) =>
-              [
-                item.id,
-                item.name,
-                item.category,
-                item.unit,
-                item.updatedAt || "",
-                item.updatedBy || "",
-                item.nutrition ? JSON.stringify(item.nutrition) : "",
-                item.nutrition?.source || "",
-                item.barcode || "",
-                item.ingredients || "",
-                item.deletedAt || "",
-                item.confirmed ? "true" : "false",
-                item.kind || "",
-                item.genericKey || "",
-                item.brand || "",
-                item.catalogSource || "",
-              ]
-            )],
-          },
-          {
-            range: "Запросы!A1:N",
-            values: [["request_id", "product_id", "Запрошено", "Статус", "Создан", "Закрыт", "Автор", "Обновлён", "Кем обновлён", "Удалён", "Объём рациона", "Размер упаковки", "Единица объёма", "Текст строки"], ...requestRows],
-          },
-          {
-            range: "Покупки!A1:L",
-            values: [["response_id", "request_id", "product_id", "purchased_product_id", "Куплено", "Цена позиции", "Ответ создан", "Автор ответа", "Ответ обновлён", "Кем обновлён", "Удалён", "Режим"], ...responseRows],
-          },
-          {
-            range: "Рацион!A1:N",
-            values: [["Дата", "meal_id", "Приём пищи", "item_id", "product_id", "Продукт", "Порядок приёма", "Порядок продукта", "Обновлён", "Кем обновлён", "Владелец рациона", "Размер порции", "Размер упаковки", "Плановое время"], ...rationRows],
-          },
-        ],
-      }),
-    });
-  }
-
-  async function googleFetch(url, token, options = {}) {
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-      },
-    });
-    if (response.ok) return response.status === 204 ? {} : response.json();
-    let message = `Google API: ${response.status}`;
-    try {
-      const body = await response.json();
-      message = body.error?.message || message;
-    } catch {}
-    if (response.status === 401) accessToken = null;
-    throw new Error(message);
   }
 
   function bindRequestRows() {
@@ -4473,15 +4116,6 @@
     return Boolean(currentEmail && creator && creator !== "local" && creator !== currentEmail);
   }
 
-  function notifyRemoteRequest(request) {
-    const summary = requestSummary(request);
-    if (window.NativeGoogle?.notifyRequest) {
-      window.NativeGoogle.notifyRequest(request.id, summary, request.createdBy || "");
-    } else {
-      showToast(`Новый запрос: ${summary}`);
-    }
-  }
-
   function mergeVersioned(localValues, remoteValues) {
     const merged = new Map(localValues.map((value) => [value.id, value]));
     remoteValues.forEach((remote) => {
@@ -4491,17 +4125,6 @@
       }
     });
     return [...merged.values()];
-  }
-
-  function mergeRationDays(localValues, remoteValues) {
-    const merged = structuredClone(localValues || {});
-    Object.entries(remoteValues || {}).forEach(([dateKey, remote]) => {
-      const local = merged[dateKey];
-      if (!local || timestamp(remote.updatedAt) > timestamp(local.updatedAt)) {
-        merged[dateKey] = structuredClone(remote);
-      }
-    });
-    return merged;
   }
 
   function mergeRequests(localValues, remoteValues) {
@@ -4667,79 +4290,6 @@
     return result;
   }
 
-  function isLegacyProductRow(row) {
-    if (!row || row.length < 8) return false;
-    const maybeStock = String(row[4] ?? "").trim();
-    // Modern rows store ISO updatedAt at index 4; legacy stock quantity is a plain number.
-    if (/^\d{4}-\d{2}-\d{2}/.test(maybeStock)) return false;
-    const looksLikeStock = maybeStock !== "" && Number.isFinite(Number(maybeStock));
-    return looksLikeStock && Boolean(row[7]);
-  }
-
-  function parseProductRow(row) {
-    const legacyStockSchema = isLegacyProductRow(row);
-    const updatedAt = String((legacyStockSchema ? row[7] : row[4]) || new Date(0).toISOString());
-    let nutrition = null;
-    const nutritionIndex = legacyStockSchema ? 9 : 6;
-    try { nutrition = row[nutritionIndex] ? JSON.parse(String(row[nutritionIndex])) : null; } catch { nutrition = null; }
-    const confirmedRaw = String(row[legacyStockSchema ? 14 : 11] || "").toLowerCase();
-    const product = {
-      id: String(row[0]),
-      name: String(row[1] || ""),
-      category: String(row[2] || ""),
-      unit: String(row[3] || "шт."),
-      updatedAt,
-      updatedBy: String((legacyStockSchema ? row[8] : row[5]) || "remote"),
-      nutrition,
-      barcode: String(row[legacyStockSchema ? 11 : 8] || ""),
-      ingredients: String(row[legacyStockSchema ? 12 : 9] || ""),
-      deletedAt: String(row[legacyStockSchema ? 13 : 10] || ""),
-      confirmed: confirmedRaw === "1" || confirmedRaw === "true" || confirmedRaw === "да",
-      kind: String(row[legacyStockSchema ? 15 : 12] || ""),
-      genericKey: String(row[legacyStockSchema ? 16 : 13] || ""),
-      brand: String(row[legacyStockSchema ? 17 : 14] || ""),
-      catalogSource: String(row[legacyStockSchema ? 18 : 15] || ""),
-    };
-    if (!confirmedRaw) delete product.confirmed;
-    return normalizeProductRecord(product);
-  }
-
-  function isLegacyRequestRow(row) {
-    const statuses = new Set(["Активен", "Выполнен"]);
-    return !statuses.has(String(row[3] || "")) && statuses.has(String(row[4] || ""));
-  }
-
-  function parseResponseRow(row, requestsById) {
-    if (!row[0] || !row[1]) return null;
-    const modern = row.length >= 5 && requestsById.has(String(row[1]));
-    const requestId = String(modern ? row[1] : row[0]);
-    const request = requestsById.get(requestId);
-    if (!request) return null;
-    const extended = modern && row.length >= 11;
-    const createdAt = String(
-      (modern ? row[extended ? 6 : 5] : request.completedAt || request.updatedAt) ||
-      request.updatedAt ||
-      request.createdAt ||
-      new Date(0).toISOString()
-    );
-    return normalizeResponse({
-      id: modern ? String(row[0]) : `response_legacy_${requestId}`,
-      requestId,
-      items: [{
-        productId: String(modern ? row[2] : row[1]),
-        purchasedProductId: String(extended ? row[3] || row[2] : modern ? row[2] : row[1]),
-        quantity: Number(modern ? row[extended ? 4 : 3] : row[2]) || 0,
-        price: Number(modern ? row[extended ? 5 : 4] : row[3]) || 0,
-        completionMode: String(extended ? row[11] || "filled" : "filled"),
-      }],
-      createdAt,
-      createdBy: String((modern ? row[extended ? 7 : 6] : request.updatedBy || request.createdBy) || "remote"),
-      updatedAt: String((modern ? row[extended ? 8 : 7] : request.updatedAt) || createdAt),
-      updatedBy: String((modern ? row[extended ? 9 : 8] : request.updatedBy || request.createdBy) || "remote"),
-      deletedAt: String(modern ? row[extended ? 10 : 9] || "" : ""),
-    }, requestId);
-  }
-
   function timestamp(value) {
     const result = Date.parse(value || "");
     return Number.isFinite(result) ? result : 0;
@@ -4751,24 +4301,6 @@
 
   function getRequest(requestId) {
     return state.requests.find((request) => request.id === requestId && !request.deletedAt);
-  }
-
-  function extractSpreadsheetId(value) {
-    const trimmed = value.trim();
-    const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-    if (match) return match[1];
-    return /^[a-zA-Z0-9_-]{20,}$/.test(trimmed) ? trimmed : null;
-  }
-
-  function spreadsheetUrl() {
-    return `https://docs.google.com/spreadsheets/d/${state.spreadsheetId}/edit`;
-  }
-
-  function setSyncStatus(message, error = false) {
-    const element = document.getElementById("sync-status");
-    if (!element) return showToast(message);
-    element.textContent = message;
-    element.className = error ? "error" : "muted";
   }
 
   function showToast(message, actionLabel = "", action = null) {
@@ -4814,15 +4346,6 @@
       .format(new Date(value));
   }
 
-  function dateTime(value) {
-    return new Intl.DateTimeFormat("ru-RU", {
-      day: "2-digit",
-      month: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(new Date(value));
-  }
-
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -4845,7 +4368,6 @@
   }
 
   render();
-  mirrorStateForBackgroundSync();
   requestAppUpdateCheck(false);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "hidden" && appUpdate.status === "installing") requestAppUpdateCheck(true);
