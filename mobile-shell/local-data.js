@@ -386,6 +386,243 @@ export function openLocalData(storage) {
         return { ok: true, requestId };
       });
     },
+
+    setRationCalendar({ view, anchor } = {}) {
+      return apply((next) => {
+        if (view) next.rationView = view;
+        if (anchor) next.rationAnchor = anchor;
+        return { ok: true };
+      });
+    },
+
+    addRationMeal(dateKey) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const meal = {
+          id: createId("meal"),
+          name: `Приём пищи ${day.meals.length + 1}`,
+          time: defaultRationMealTime(null, day.meals.length),
+          items: [],
+        };
+        day.meals.push(meal);
+        touchRationDayRecord(day, now, actor, next);
+        next.rationAnchor = dateKey;
+        return { ok: true, mealId: meal.id };
+      });
+    },
+
+    updateRationMeal(dateKey, mealId, fields) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const meal = day.meals.find((item) => item.id === mealId);
+        if (!meal) return { ok: false, reason: "Приём пищи не найден." };
+        if (fields.name != null) meal.name = String(fields.name).trim() || "Приём пищи";
+        if (fields.time != null) meal.time = /^\d{2}:\d{2}$/.test(fields.time) ? fields.time : "12:00";
+        next.rationAnchor = dateKey;
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true, mealId };
+      });
+    },
+
+    removeRationMeal(dateKey, mealId) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const before = day.meals.length;
+        day.meals = day.meals.filter((meal) => meal.id !== mealId);
+        if (day.meals.length === before) return { ok: false, reason: "Приём пищи не найден." };
+        next.rationAnchor = dateKey;
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true };
+      });
+    },
+
+    addRationFood(dateKey, mealId) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const meal = day.meals.find((item) => item.id === mealId);
+        if (!meal) return { ok: false, reason: "Приём пищи не найден." };
+        const item = { id: createId("ration_item"), productId: "", name: "" };
+        meal.items = meal.items || [];
+        meal.items.push(item);
+        next.rationAnchor = dateKey;
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true, itemId: item.id, mealId };
+      });
+    },
+
+    saveRationFood(dateKey, mealId, itemId, { name, hint, addNext } = {}) {
+      return apply((next, { now, actor }) => {
+        const value = String(name || "").trim();
+        if (!value) return { ok: false, reason: "Введите название продукта." };
+        const day = ensureRationDay(next, dateKey);
+        const meal = day.meals.find((item) => item.id === mealId);
+        const item = meal?.items.find((entry) => entry.id === itemId);
+        if (!item) return { ok: false, reason: "Позиция рациона не найдена." };
+        const product = resolveOrCreateProduct(next, { name: value, hint }, now, actor);
+        item.productId = product.id;
+        item.name = product.name;
+        let nextItemId = "";
+        if (addNext) {
+          const nextItem = { id: createId("ration_item"), productId: "", name: "" };
+          meal.items.push(nextItem);
+          nextItemId = nextItem.id;
+        }
+        next.rationAnchor = dateKey;
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true, itemId, nextItemId, mealId };
+      });
+    },
+
+    removeRationFood(dateKey, mealId, itemId) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const meal = day.meals.find((item) => item.id === mealId);
+        if (!meal) return { ok: false, reason: "Приём пищи не найден." };
+        const before = (meal.items || []).length;
+        meal.items = (meal.items || []).filter((item) => item.id !== itemId);
+        if (meal.items.length === before) return { ok: false, reason: "Позиция рациона не найдена." };
+        next.rationAnchor = dateKey;
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true, mealId };
+      });
+    },
+
+    setRationPortion(dateKey, mealId, itemId, { portionSize, packageSize, measureUnit } = {}) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const meal = day.meals.find((item) => item.id === mealId);
+        const item = meal?.items.find((entry) => entry.id === itemId);
+        if (!item) return { ok: false, reason: "Позиция рациона не найдена." };
+        item.portionSize = Number(portionSize) || 1;
+        item.packageSize = Number(packageSize) || 1;
+        item.measureUnit = measureUnit || item.measureUnit || "г";
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true, itemId };
+      });
+    },
+
+    saveRationTemplateFromDay(dateKey, name) {
+      return apply((next, { now, actor }) => {
+        const title = String(name || "").trim();
+        if (!title) return { ok: false, reason: "Название шаблона не заполнено." };
+        const day = rationDayFor(next, dateKey);
+        if (!day?.meals?.length) return { ok: false, reason: "День больше не содержит приёмов пищи." };
+        next.rationTemplates = next.rationTemplates || [];
+        const template = {
+          id: createId("ration_template"),
+          name: title,
+          owner: rationOwner(next),
+          meals: cloneRationTemplateMeals(day.meals),
+          createdAt: now,
+          updatedAt: now,
+          updatedBy: actor,
+        };
+        next.rationTemplates.push(template);
+        return { ok: true, templateId: template.id };
+      });
+    },
+
+    renameRationTemplate(templateId, name) {
+      return apply((next, { now }) => {
+        const title = String(name || "").trim();
+        if (!title) return { ok: false, reason: "Название шаблона не заполнено." };
+        const template = (next.rationTemplates || []).find((item) => item.id === templateId);
+        if (!template) return { ok: false, reason: "Шаблон не найден." };
+        template.name = title;
+        template.updatedAt = now;
+        return { ok: true, templateId };
+      });
+    },
+
+    removeRationTemplate(templateId) {
+      return apply((next) => {
+        const before = (next.rationTemplates || []).length;
+        next.rationTemplates = (next.rationTemplates || []).filter((item) => item.id !== templateId);
+        if (next.rationTemplates.length === before) return { ok: false, reason: "Шаблон не найден." };
+        return { ok: true };
+      });
+    },
+
+    applyRationTemplate(templateId, dates) {
+      return apply((next, { now, actor }) => {
+        const template = (next.rationTemplates || []).find((item) => item.id === templateId);
+        if (!template) return { ok: false, reason: "Шаблон не найден." };
+        const keys = [...new Set(dates || [])];
+        if (!keys.length) return { ok: false, reason: "Выберите дни для шаблона." };
+        keys.forEach((dateKey) => {
+          const day = ensureRationDay(next, dateKey);
+          day.meals = cloneRationTemplateMeals(template.meals);
+          touchRationDayRecord(day, now, actor, next);
+        });
+        return { ok: true, dates: keys };
+      });
+    },
+
+    deleteRationSelection({ mealIds, itemIds, dates } = {}) {
+      return apply((next, { now, actor }) => {
+        const selectedMealIds = new Set(mealIds || []);
+        const selectedItemIds = new Set(itemIds || []);
+        const selectedDates = new Set(dates || []);
+        if (!selectedMealIds.size && !selectedItemIds.size && !selectedDates.size) {
+          return { ok: false, reason: "Ничего не выбрано." };
+        }
+        const datesToEdit = new Set(selectedDates);
+        Object.values(next.rationDays || {}).forEach((day) => {
+          if (!day?.date) return;
+          const hasMeal = (day.meals || []).some((meal) => selectedMealIds.has(meal.id));
+          const hasItem = (day.meals || []).some((meal) =>
+            (meal.items || []).some((item) => selectedItemIds.has(item.id))
+          );
+          if (hasMeal || hasItem) datesToEdit.add(day.date);
+        });
+        let changed = false;
+        datesToEdit.forEach((dateKey) => {
+          const day = ensureRationDay(next, dateKey);
+          let dayChanged = false;
+          if (selectedMealIds.size) {
+            const before = day.meals.length;
+            day.meals = day.meals.filter((meal) => !selectedMealIds.has(meal.id));
+            dayChanged = day.meals.length !== before;
+          } else if (selectedItemIds.size) {
+            day.meals.forEach((meal) => {
+              const before = (meal.items || []).length;
+              meal.items = (meal.items || []).filter((item) => !selectedItemIds.has(item.id));
+              if (meal.items.length !== before) dayChanged = true;
+            });
+          } else if (selectedDates.has(dateKey) && day.meals.length) {
+            day.meals = [];
+            dayChanged = true;
+          }
+          if (dayChanged) {
+            touchRationDayRecord(day, now, actor, next);
+            changed = true;
+          }
+        });
+        if (!changed) return { ok: false, reason: "В сохранённом рационе нечего удалять." };
+        return { ok: true };
+      });
+    },
+
+    createRequestFromRation({ dates, itemIds } = {}) {
+      return apply((next, { now, actor }) => {
+        const requestItems = plannedRationRequestItems(next, [...dates || []].sort(), new Set(itemIds || []));
+        if (!requestItems.length) return { ok: false, reason: "Выберите хотя бы одну позицию рациона." };
+        const request = {
+          id: createId("request"),
+          createdAt: now,
+          status: "open",
+          items: requestItems,
+          responses: [],
+          createdBy: actor,
+          updatedBy: actor,
+          updatedAt: now,
+          history: [],
+        };
+        appendRequestVersion(request, "Запрос создан из рациона", now, actor);
+        next.requests.push(request);
+        return { ok: true, requestId: request.id };
+      });
+    },
   };
 }
 
@@ -647,6 +884,55 @@ export function remainingRequestQuantity(request, productId, excludedResponseId 
 
 function liveProduct(source, productId) {
   return (source.products || []).find((product) => product.id === productId && !product.deletedAt) || null;
+}
+
+function ensureRationDay(source, dateKey) {
+  if (!source.rationDays) source.rationDays = {};
+  const key = rationDayKey(dateKey, source);
+  if (!source.rationDays[key]) {
+    source.rationDays[key] = {
+      date: dateKey,
+      owner: rationOwner(source),
+      meals: [],
+      updatedAt: "",
+      updatedBy: "",
+    };
+  }
+  return source.rationDays[key];
+}
+
+function touchRationDayRecord(day, now, actor, source) {
+  day.updatedAt = now;
+  day.updatedBy = actor;
+  day.owner = rationOwner(source);
+}
+
+function defaultRationMealTime(meal, index = 0) {
+  return /^\d{2}:\d{2}$/.test(meal?.time || "")
+    ? meal.time
+    : ["08:00", "13:00", "19:00"][index] || `${String(Math.min(22, 8 + index * 3)).padStart(2, "0")}:00`;
+}
+
+function cloneRationTemplateMeals(meals) {
+  return (meals || []).map((meal, mealIndex) => ({
+    id: createId("meal"),
+    name: meal.name || `Приём пищи ${mealIndex + 1}`,
+    time: defaultRationMealTime(meal, mealIndex),
+    items: (meal.items || []).map((item) => ({
+      id: createId("ration_item"),
+      productId: item.productId || "",
+      name: item.name || "",
+      portionSize: Number(item.portionSize) || 0,
+      packageSize: Number(item.packageSize) || 0,
+    })),
+  }));
+}
+
+export function rationTemplatesForUser(source) {
+  const owner = rationOwner(source);
+  return (source.rationTemplates || [])
+    .filter((template) => String(template.owner || "local").trim().toLowerCase() === owner)
+    .sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
 }
 
 function resolveOrCreateProduct(source, draft, changedAt, actor) {

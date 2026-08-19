@@ -682,3 +682,56 @@ test("product used in a request cannot be deleted", () => {
   assert.equal(removed.ok, false);
   assert.match(removed.reason, /используется/);
 });
+
+test("ration template applies meals to several days", () => {
+  const data = openLocalData(memoryStorage());
+  data.addRationMeal("2026-08-03");
+  const mealId = data.snapshot().rationDays["local|2026-08-03"].meals[0].id;
+  data.saveRationFood("2026-08-03", mealId, data.addRationFood("2026-08-03", mealId).itemId, { name: "Гречка" });
+  const saved = data.saveRationTemplateFromDay("2026-08-03", "Будний день");
+  assert.equal(saved.ok, true);
+  data.applyRationTemplate(saved.templateId, ["2026-08-04", "2026-08-05"]);
+  const state = data.snapshot();
+  assert.equal(state.rationDays["local|2026-08-04"].meals.length, 1);
+  assert.equal(state.rationDays["local|2026-08-05"].meals[0].items[0].name, "Гречка");
+  assert.notEqual(state.rationDays["local|2026-08-04"].meals[0].id, mealId);
+});
+
+test("ration request merges the same product across days and rounds packages", () => {
+  const data = openLocalData(memoryStorage());
+  const first = data.addRationMeal("2026-08-03");
+  const second = data.addRationMeal("2026-08-04");
+  const firstItem = data.addRationFood("2026-08-03", first.mealId);
+  const secondItem = data.addRationFood("2026-08-04", second.mealId);
+  data.saveRationFood("2026-08-03", first.mealId, firstItem.itemId, { name: "Куриная грудка" });
+  data.saveRationFood("2026-08-04", second.mealId, secondItem.itemId, { name: "Куриная грудка" });
+  const chickenId = data.snapshot().products.find((item) => item.name === "Куриная грудка").id;
+  data.setRationPortion("2026-08-03", first.mealId, firstItem.itemId, { portionSize: 150, packageSize: 1000, measureUnit: "г" });
+  data.setRationPortion("2026-08-04", second.mealId, secondItem.itemId, { portionSize: 150, packageSize: 1000, measureUnit: "г" });
+  const created = data.createRequestFromRation({
+    dates: ["2026-08-03", "2026-08-04"],
+    itemIds: [firstItem.itemId, secondItem.itemId],
+  });
+  assert.equal(created.ok, true);
+  const request = data.snapshot().requests.find((item) => item.id === created.requestId);
+  assert.equal(request.items.length, 1);
+  assert.equal(request.items[0].productId, chickenId);
+  assert.equal(request.items[0].plannedAmount, 300);
+  assert.equal(request.items[0].quantity, 1);
+});
+
+test("ration selection delete removes meals and items", () => {
+  const data = openLocalData(memoryStorage());
+  const meal = data.addRationMeal("2026-08-03");
+  const kept = data.addRationFood("2026-08-03", meal.mealId);
+  const gone = data.addRationFood("2026-08-03", meal.mealId);
+  data.saveRationFood("2026-08-03", meal.mealId, kept.itemId, { name: "Рис" });
+  data.saveRationFood("2026-08-03", meal.mealId, gone.itemId, { name: "Огурцы" });
+  const deleted = data.deleteRationSelection({ itemIds: [gone.itemId] });
+  assert.equal(deleted.ok, true);
+  const day = data.snapshot().rationDays["local|2026-08-03"];
+  assert.equal(day.meals[0].items.length, 1);
+  assert.equal(day.meals[0].items[0].name, "Рис");
+  data.deleteRationSelection({ mealIds: [meal.mealId] });
+  assert.equal(data.snapshot().rationDays["local|2026-08-03"].meals.length, 0);
+});

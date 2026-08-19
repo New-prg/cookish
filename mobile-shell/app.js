@@ -1,21 +1,17 @@
 import {
   activeResponses,
-  appendRequestVersion,
   browserStorage,
   formatRationDate,
-  genericKeyFromParts,
   isProductConfirmed,
   isRequestFulfilled,
   normalizeProductName,
   openFoodFactsSuggestion,
   openLocalData,
   parseRationDate,
-  plannedRationRequestItems,
   productPurchasedTotal,
   rationDayFor,
-  rationDayKey,
   rationMeasure,
-  rationOwner,
+  rationTemplatesForUser,
   receiptLine,
   remainingRequestQuantity,
   responseItemTotal,
@@ -181,8 +177,13 @@ import {
     if (route === "profile") renderProfile();
   };
 
-  function commitState(nextState) {
-    state = localData.commit(nextState);
+  function applyLocal(result, reasonFallback) {
+    if (!result?.ok) {
+      if (result?.reason || reasonFallback) showToast(result?.reason || reasonFallback);
+      return false;
+    }
+    state = localData.snapshot();
+    return true;
   }
 
   function navigate(next, id = null, subId = null, options = {}) {
@@ -423,37 +424,8 @@ import {
     if (previous && normalizeProductName(previous.name) === key) return previousId;
     const existing = state.products.find((product) => !product.deletedAt && normalizeProductName(product.name) === key);
     if (existing) return existing.id;
-    // Catalog/OFF ids are not real products until resolveOrCreateProduct runs.
+    // Catalog/OFF ids are not real products until they are saved into local data.
     return "";
-  }
-
-  function resolveOrCreateProduct(draft, products, changedAt) {
-    const key = normalizeProductName(draft.query);
-    const existing = products.find((product) => !product.deletedAt && normalizeProductName(product.name) === key);
-    if (existing) return existing;
-    const catalog = [...remoteProductSuggestions, ...FOOD_CATALOG]
-      .find((product) => normalizeProductName(product.name) === key);
-    const category = catalog?.category || "";
-    const name = draft.query.trim();
-    const product = {
-      id: id("product"),
-      name,
-      category,
-      unit: catalog?.unit || "шт.",
-      brand: catalog?.brand || "",
-      kind: catalog?.kind || (catalog?.barcode ? "sku" : "generic"),
-      genericKey: catalog?.genericKey || genericKeyFromParts(category, name),
-      confirmed: false,
-      updatedAt: changedAt,
-      updatedBy: state.user?.email || "local",
-      nutrition: catalog ? structuredClone(catalog.nutrition) : null,
-      barcode: catalog?.barcode || "",
-      ingredients: catalog?.ingredients || "",
-      catalogSource: catalog?.catalogSource || (catalog ? "Встроенный справочник" : ""),
-      nutritionSource: catalog?.catalogSource || (catalog ? "Справочник" : ""),
-    };
-    products.push(product);
-    return product;
   }
 
   function suggestionLabel(product) {
@@ -2504,7 +2476,7 @@ import {
   }
 
   function rationTemplateControls() {
-    const templates = rationTemplatesForUser();
+    const templates = rationTemplatesForUser(state);
     return `<section class="ration-template-actions">
       <button id="create-ration-template" class="button secondary" type="button" ${rationSelectedDates.size !== 1 ? "disabled" : ""}>Создать шаблон дня</button>
       <div class="ration-template-apply">
@@ -2634,10 +2606,7 @@ import {
     };
     document.querySelectorAll(".ration-view-option").forEach((button) => {
       button.onclick = () => {
-        const nextState = structuredClone(state);
-        nextState.rationView = button.dataset.view;
-        nextState.rationAnchor = anchor;
-        commitState(nextState);
+        applyLocal(localData.setRationCalendar({ view: button.dataset.view, anchor }));
         renderRation();
       };
     });
@@ -2657,11 +2626,8 @@ import {
     };
     document.querySelectorAll(".ration-month-day").forEach((button) => {
       button.onclick = () => {
-        const nextState = structuredClone(state);
-        nextState.rationAnchor = button.dataset.date;
-        nextState.rationView = "day";
         routeSubId = null;
-        commitState(nextState);
+        applyLocal(localData.setRationCalendar({ view: "day", anchor: button.dataset.date }));
         renderRation();
       };
     });
@@ -2675,9 +2641,7 @@ import {
           toggleRationMealSelection(button);
           return;
         }
-        const nextState = structuredClone(state);
-        nextState.rationAnchor = button.dataset.date;
-        commitState(nextState);
+        applyLocal(localData.setRationCalendar({ anchor: button.dataset.date }));
         routeSubId = button.dataset.mealId;
         renderRation();
       };
@@ -2688,13 +2652,9 @@ import {
       });
     });
     document.getElementById("ration-add-meal").onclick = () => {
-      const nextState = structuredClone(state);
-      const day = mutableRationDay(nextState, anchor);
-      const nextMeal = { id: id("meal"), name: `Приём пищи ${day.meals.length + 1}`, time: rationMealTime(null, day.meals.length), items: [] };
-      day.meals.push(nextMeal);
-      touchRationDay(day);
-      commitState(nextState);
-      routeSubId = nextMeal.id;
+      const added = localData.addRationMeal(anchor);
+      if (!applyLocal(added)) return;
+      routeSubId = added.mealId;
       renderRation();
     };
     document.querySelectorAll(".ration-select-day:not(.ration-month-day)").forEach((selector) => {
@@ -2705,10 +2665,7 @@ import {
         }
         if (rationSelectionMode) return toggleRationDaySelection(selector.dataset.date);
         if (view === "week") {
-          const nextState = structuredClone(state);
-          nextState.rationAnchor = selector.dataset.date;
-          nextState.rationView = "day";
-          commitState(nextState);
+          applyLocal(localData.setRationCalendar({ view: "day", anchor: selector.dataset.date }));
           renderRation();
         }
       };
@@ -2730,12 +2687,7 @@ import {
     document.getElementById("delete-ration-template")?.addEventListener("click", deleteRationTemplate);
     document.querySelectorAll(".add-ration-meal").forEach((button) => {
       button.onclick = () => {
-        const nextState = structuredClone(state);
-        const day = mutableRationDay(nextState, button.dataset.date);
-        nextState.rationAnchor = button.dataset.date;
-        day.meals.push({ id: id("meal"), name: `Приём пищи ${day.meals.length + 1}`, time: rationMealTime(null, day.meals.length), items: [] });
-        touchRationDay(day);
-        commitState(nextState);
+        applyLocal(localData.addRationMeal(button.dataset.date));
         renderRation();
       };
     });
@@ -2829,9 +2781,7 @@ import {
     else rationSelectedMealIds.add(mealId);
     itemIds.forEach((itemId) => allSelected ? rationSelectedItemIds.delete(itemId) : rationSelectedItemIds.add(itemId));
     refreshRationSelectedDate(dateKey);
-    const nextState = structuredClone(state);
-    nextState.rationAnchor = dateKey;
-    commitState(nextState);
+    applyLocal(localData.setRationCalendar({ anchor: dateKey }));
     if (navigator.vibrate) navigator.vibrate(20);
     renderRation();
   }
@@ -2850,9 +2800,7 @@ import {
       itemIds.forEach((itemId) => rationSelectedItemIds.add(itemId));
       mealIds.forEach((mealId) => rationSelectedMealIds.add(mealId));
     }
-    const nextState = structuredClone(state);
-    nextState.rationAnchor = dateKey;
-    commitState(nextState);
+    applyLocal(localData.setRationCalendar({ anchor: dateKey }));
     if (navigator.vibrate) navigator.vibrate(20);
     renderRation();
   }
@@ -2904,16 +2852,16 @@ import {
     document.getElementById("ration-portion-form")?.addEventListener("submit", (event) => {
       event.preventDefault();
       if (!rationPortionTarget) return;
-      const nextState = structuredClone(state);
-      const day = mutableRationDay(nextState, rationPortionTarget.dateKey);
-      const meal = day.meals.find((value) => value.id === rationPortionTarget.mealId);
-      const item = meal?.items.find((value) => value.id === rationPortionTarget.itemId);
-      if (!item) return;
-      item.portionSize = Number(document.getElementById("ration-portion-size").value) || 1;
-      item.packageSize = Number(document.getElementById("ration-package-size").value) || 1;
-      item.measureUnit = document.getElementById("ration-portion-unit").textContent;
-      touchRationDay(day);
-      commitState(nextState);
+      applyLocal(localData.setRationPortion(
+        rationPortionTarget.dateKey,
+        rationPortionTarget.mealId,
+        rationPortionTarget.itemId,
+        {
+          portionSize: document.getElementById("ration-portion-size").value,
+          packageSize: document.getElementById("ration-package-size").value,
+          measureUnit: document.getElementById("ration-portion-unit").textContent,
+        }
+      ));
       rationPortionTarget = null;
       renderRation();
     });
@@ -2928,28 +2876,6 @@ import {
     if (preview) preview.textContent = packageSize ? `Одной упаковки хватит примерно на ${number(count)} порц. по ${number(portion)} ${unit}.` : "";
   }
 
-  function rationTemplatesForUser(source = state) {
-    const owner = rationOwner(source);
-    return (source.rationTemplates || [])
-      .filter((template) => String(template.owner || "local").trim().toLowerCase() === owner)
-      .sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
-  }
-
-  function cloneTemplateMeals(meals) {
-    return (meals || []).map((meal, mealIndex) => ({
-      id: id("meal"),
-      name: meal.name || `Приём пищи ${mealIndex + 1}`,
-      time: rationMealTime(meal, mealIndex),
-      items: (meal.items || []).map((item) => ({
-        id: id("ration_item"),
-        productId: item.productId || "",
-        name: item.name || "",
-        portionSize: Number(item.portionSize) || 0,
-        packageSize: Number(item.packageSize) || 0,
-      })),
-    }));
-  }
-
   function createRationTemplate() {
     const dates = [...rationSelectedDates];
     if (dates.length !== 1) return showToast("Для шаблона выберите один день.");
@@ -2960,7 +2886,7 @@ import {
 
   function renameRationTemplate() {
     const templateId = document.getElementById("ration-template-select")?.value;
-    const template = rationTemplatesForUser().find((item) => item.id === templateId);
+    const template = rationTemplatesForUser(state).find((item) => item.id === templateId);
     if (template) openRationTemplateDialog("rename", template.name, "", template.id);
   }
 
@@ -2991,90 +2917,55 @@ import {
   }
 
   function saveNewRationTemplate(dateKey, name) {
-    const day = rationDayFor(state, dateKey);
-    if (!day?.meals?.length) return showToast("День больше не содержит приёмов пищи.");
-    const changedAt = new Date().toISOString();
-    const nextState = structuredClone(state);
-    nextState.rationTemplates = nextState.rationTemplates || [];
-    nextState.rationTemplates.push({
-      id: id("ration_template"),
-      name,
-      owner: rationOwner(nextState),
-      meals: cloneTemplateMeals(day.meals),
-      createdAt: changedAt,
-      updatedAt: changedAt,
-    });
-    commitState(nextState);
+    if (!applyLocal(localData.saveRationTemplateFromDay(dateKey, name))) return;
     renderRation();
     showToast("Шаблон дня сохранён.");
   }
 
   function saveRenamedRationTemplate(templateId, name) {
-    const nextState = structuredClone(state);
-    const template = (nextState.rationTemplates || []).find((item) => item.id === templateId);
-    if (!template) return;
-    template.name = name;
-    template.updatedAt = new Date().toISOString();
-    commitState(nextState);
+    if (!applyLocal(localData.renameRationTemplate(templateId, name))) return;
     renderRation();
     showToast("Шаблон переименован.");
   }
 
   async function deleteRationTemplate() {
     const templateId = document.getElementById("ration-template-select")?.value;
-    const template = rationTemplatesForUser().find((item) => item.id === templateId);
+    const template = rationTemplatesForUser(state).find((item) => item.id === templateId);
     if (!template || !await askConfirm(`Удалить шаблон «${template.name}»?`)) return;
-    const previousState = structuredClone(state);
-    const nextState = structuredClone(state);
-    nextState.rationTemplates = (nextState.rationTemplates || []).filter((item) => item.id !== templateId);
-    commitState(nextState);
+    const previous = localData.snapshot();
+    if (!applyLocal(localData.removeRationTemplate(templateId))) return;
     renderRation();
     showToast(`Шаблон «${template.name}» удалён.`, "Отменить", () => {
-      commitState(previousState);
+      state = localData.commit(previous);
       renderRation();
     });
   }
 
   async function applyRationTemplate() {
     const templateId = document.getElementById("ration-template-select")?.value;
-    const template = rationTemplatesForUser().find((item) => item.id === templateId);
+    const template = rationTemplatesForUser(state).find((item) => item.id === templateId);
     const dates = [...rationSelectedDates];
     if (!template || !dates.length) return;
     const filledDates = dates.filter((dateKey) => (rationDayFor(state, dateKey)?.meals || []).some((meal) => meal.items?.length || meal.name));
     if (filledDates.length && !await askConfirm(`Шаблон заменит существующий рацион в ${filledDates.length} ${filledDates.length === 1 ? "дне" : "днях"}. Продолжить?`)) return;
-    const previousState = structuredClone(state);
-    const nextState = structuredClone(state);
-    dates.forEach((dateKey) => {
-      const day = mutableRationDay(nextState, dateKey);
-      day.meals = cloneTemplateMeals(template.meals);
-      touchRationDay(day);
-    });
-    commitState(nextState);
+    const previous = localData.snapshot();
+    if (!applyLocal(localData.applyRationTemplate(templateId, dates))) return;
     renderRation();
     showToast(`Шаблон применён к ${dates.length} дн.`, "Отменить", () => {
-      commitState(previousState);
+      state = localData.commit(previous);
       renderRation();
     });
   }
 
   function createRequestFromRationSelection() {
-    const dates = [...rationSelectedDates].sort();
-    const requestItems = plannedRationRequestItems(state, dates, rationSelectedItemIds);
-    if (!requestItems.length) return showToast("Выберите хотя бы одну позицию рациона.");
-    const changedAt = new Date().toISOString();
-    const nextState = structuredClone(state);
-    const nextRequest = {
-      id: id("request"), createdAt: changedAt, status: "open",
-      items: requestItems,
-      responses: [], createdBy: state.user?.email || "local", updatedBy: state.user?.email || "local",
-      updatedAt: changedAt, history: [],
-    };
-    appendRequestVersion(nextRequest, "Запрос создан из рациона", changedAt, nextRequest.createdBy);
-    nextState.requests.push(nextRequest);
-    commitState(nextState);
+    const created = localData.createRequestFromRation({
+      dates: [...rationSelectedDates],
+      itemIds: [...rationSelectedItemIds],
+    });
+    if (!applyLocal(created)) return;
     clearRationSelection();
     draftItems = [];
-    navigate("request-edit", nextRequest.id);
+    navigate("request-edit", created.requestId);
     showToast("Продукты рациона добавлены в запрос.");
   }
 
@@ -3102,67 +2993,29 @@ import {
     }
     if (!await askConfirm(confirmText)) return;
 
-    const previousState = structuredClone(state);
-    const nextState = structuredClone(state);
-    const datesToEdit = new Set(selectedDates);
-    Object.values(state.rationDays || {}).forEach((day) => {
-      if (!day?.date) return;
-      const hasMeal = (day.meals || []).some((meal) => selectedMealIds.has(meal.id));
-      const hasItem = (day.meals || []).some((meal) =>
-        (meal.items || []).some((item) => selectedItemIds.has(item.id))
-      );
-      if (hasMeal || hasItem) datesToEdit.add(day.date);
+    const previous = localData.snapshot();
+    const deleted = localData.deleteRationSelection({
+      mealIds: [...selectedMealIds],
+      itemIds: [...selectedItemIds],
+      dates: [...selectedDates],
     });
-
-    let changed = false;
-    datesToEdit.forEach((dateKey) => {
-      const day = mutableRationDay(nextState, dateKey);
-      let dayChanged = false;
-
-      if (selectedMealIds.size) {
-        const before = day.meals.length;
-        day.meals = day.meals.filter((meal) => !selectedMealIds.has(meal.id));
-        dayChanged = day.meals.length !== before;
-      } else if (selectedItemIds.size) {
-        day.meals.forEach((meal) => {
-          const before = (meal.items || []).length;
-          meal.items = (meal.items || []).filter((item) => !selectedItemIds.has(item.id));
-          if (meal.items.length !== before) dayChanged = true;
-        });
-      } else if (selectedDates.has(dateKey)) {
-        if (day.meals.length) {
-          day.meals = [];
-          dayChanged = true;
-        }
-      }
-
-      if (dayChanged) {
-        touchRationDay(day);
-        changed = true;
-      }
-    });
-
-    if (!changed) {
+    if (!applyLocal(deleted)) {
       clearRationSelection();
       renderRation();
-      return showToast("В сохранённом рационе нечего удалять.");
+      return;
     }
-
-    commitState(nextState);
     clearRationSelection();
     routeSubId = null;
     renderRation();
     showToast("Выбранное удалено из рациона.", "Отменить", () => {
-      commitState(previousState);
+      state = localData.commit(previous);
       renderRation();
     });
   }
 
   function setRationAnchor(dateKey) {
-    const nextState = structuredClone(state);
-    nextState.rationAnchor = dateKey;
     routeSubId = null;
-    commitState(nextState);
+    applyLocal(localData.setRationCalendar({ anchor: dateKey }));
     renderRation();
   }
 
@@ -3175,27 +3028,14 @@ import {
 
   function updateRationMealName(input) {
     const card = input.closest(".ration-meal");
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    nextState.rationAnchor = card.dataset.date;
-    const meal = day.meals.find((item) => item.id === card.dataset.mealId);
-    if (!meal) return;
-    meal.name = input.value.trim() || "Приём пищи";
-    touchRationDay(day);
-    commitState(nextState);
+    applyLocal(localData.updateRationMeal(card.dataset.date, card.dataset.mealId, { name: input.value }));
     renderRation();
   }
 
   function updateRationMealTime(input) {
     const card = input.closest(".ration-meal");
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    const meal = day.meals.find((item) => item.id === card.dataset.mealId);
-    if (!meal) return;
-    meal.time = /^\d{2}:\d{2}$/.test(input.value) ? input.value : "12:00";
-    touchRationDay(day);
-    commitState(nextState);
-    routeSubId = meal.id;
+    applyLocal(localData.updateRationMeal(card.dataset.date, card.dataset.mealId, { time: input.value }));
+    routeSubId = card.dataset.mealId;
     renderRation();
   }
 
@@ -3204,17 +3044,12 @@ import {
     const currentDay = rationDayFor(state, card.dataset.date);
     const currentMeal = currentDay?.meals.find((meal) => meal.id === card.dataset.mealId);
     if (!currentMeal || !await askConfirm(`Удалить приём пищи «${currentMeal.name}» и все его продукты?`)) return;
-    const previousState = structuredClone(state);
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    nextState.rationAnchor = card.dataset.date;
-    day.meals = day.meals.filter((meal) => meal.id !== card.dataset.mealId);
-    touchRationDay(day);
-    commitState(nextState);
+    const previous = localData.snapshot();
+    if (!applyLocal(localData.removeRationMeal(card.dataset.date, card.dataset.mealId))) return;
     routeSubId = null;
     renderRation();
     showToast(`Приём пищи «${currentMeal.name}» удалён.`, "Отменить", () => {
-      commitState(previousState);
+      state = localData.commit(previous);
       routeSubId = currentMeal.id;
       renderRation();
     });
@@ -3222,84 +3057,42 @@ import {
 
   function addRationFood(button) {
     const card = button.closest(".ration-meal");
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    nextState.rationAnchor = card.dataset.date;
-    const meal = day.meals.find((item) => item.id === card.dataset.mealId);
-    if (!meal) return;
-    const item = { id: id("ration_item"), productId: "", name: "" };
-    meal.items.push(item);
-    touchRationDay(day);
-    commitState(nextState);
-    renderRation(item.id);
+    const added = localData.addRationFood(card.dataset.date, card.dataset.mealId);
+    if (!applyLocal(added)) return;
+    renderRation(added.itemId);
   }
 
   function removeRationFood(button) {
     const card = button.closest(".ration-meal");
     const row = button.closest(".ration-food-row");
-    const previousState = structuredClone(state);
     const removedItem = rationDayFor(state, card.dataset.date)?.meals
       .find((meal) => meal.id === card.dataset.mealId)?.items
       .find((item) => item.id === row.dataset.itemId);
     const removedName = getProduct(removedItem?.productId)?.name || removedItem?.name || "Продукт";
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    nextState.rationAnchor = card.dataset.date;
-    const meal = day.meals.find((item) => item.id === card.dataset.mealId);
-    if (!meal) return;
-    meal.items = meal.items.filter((item) => item.id !== row.dataset.itemId);
-    touchRationDay(day);
-    commitState(nextState);
+    const previous = localData.snapshot();
+    if (!applyLocal(localData.removeRationFood(card.dataset.date, card.dataset.mealId, row.dataset.itemId))) return;
     renderRation();
     showToast(`«${removedName}» удалён из рациона.`, "Отменить", () => {
-      commitState(previousState);
+      state = localData.commit(previous);
       routeSubId = card.dataset.mealId;
       renderRation();
     });
   }
 
   function saveRationFood(input, addNext) {
-    const value = input.value.trim();
-    if (!value) return showToast("Введите название продукта.");
     const card = input.closest(".ration-meal");
     const row = input.closest(".ration-food-row");
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    nextState.rationAnchor = card.dataset.date;
-    const meal = day.meals.find((item) => item.id === card.dataset.mealId);
-    const item = meal?.items.find((value) => value.id === row.dataset.itemId);
-    if (!item) return;
-    const product = resolveOrCreateProduct({ query: value }, nextState.products, new Date().toISOString());
-    item.productId = product.id;
-    item.name = product.name;
-    let focusId = "";
-    if (addNext) {
-      const nextItem = { id: id("ration_item"), productId: "", name: "" };
-      meal.items.push(nextItem);
-      focusId = nextItem.id;
-    }
-    touchRationDay(day);
-    commitState(nextState);
-    renderRation(focusId);
-  }
-
-  function mutableRationDay(nextState, dateKey) {
-    if (!nextState.rationDays) nextState.rationDays = {};
-    const key = rationDayKey(dateKey, nextState);
-    if (!nextState.rationDays[key]) {
-      nextState.rationDays[key] = { date: dateKey, owner: rationOwner(nextState), meals: defaultRationMeals(dateKey), updatedAt: "", updatedBy: "" };
-    }
-    return nextState.rationDays[key];
+    const saved = localData.saveRationFood(card.dataset.date, card.dataset.mealId, row.dataset.itemId, {
+      name: input.value,
+      hint: suggestionByName(input.value),
+      addNext,
+    });
+    if (!applyLocal(saved)) return;
+    renderRation(saved.nextItemId || "");
   }
 
   function defaultRationMeals(dateKey) {
     return [];
-  }
-
-  function touchRationDay(day) {
-    day.updatedAt = new Date().toISOString();
-    day.updatedBy = state.user?.email || "local";
-    day.owner = rationOwner(state);
   }
 
   function addRationDays(value, count) {
