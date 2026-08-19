@@ -1,10 +1,27 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
+
+import {
+  activeResponses,
+  appendRequestVersion,
+  ensureSingleReceipt,
+  isRequestFulfilled,
+  materializePurchasedProduct,
+  memoryStorage,
+  openFoodFactsSuggestion,
+  openLocalData,
+  plannedRationRequestItems,
+  prepareState,
+  productPurchasedTotal,
+  purchaseLineMatches,
+  restoreRequestVersion,
+  STORAGE_KEY,
+} from "../mobile-shell/local-data.js";
 
 test("app opens locally without Google Sheets or a sign-in flow", () => {
   const appSource = fs.readFileSync(new URL("../mobile-shell/app.js", import.meta.url), "utf8");
+  const localDataSource = fs.readFileSync(new URL("../mobile-shell/local-data.js", import.meta.url), "utf8");
   const activitySource = fs.readFileSync(
     new URL("../android/app/src/main/java/ru/listok/purchases/MainActivity.java", import.meta.url),
     "utf8"
@@ -19,7 +36,9 @@ test("app opens locally without Google Sheets or a sign-in flow", () => {
   );
 
   assert.match(appSource, /let route = "summary";/);
-  assert.match(appSource, /cookish\.android\.data\.v1/);
+  assert.match(appSource, /openLocalData\(browserStorage/);
+  assert.match(localDataSource, new RegExp(STORAGE_KEY.replaceAll(".", "\\.")));
+  assert.doesNotMatch(appSource, /localStorage\.setItem|localStorage\.getItem/);
   assert.doesNotMatch(appSource, /authorizeGoogle|__onNativeGoogleAuth|onboarding-google|google-auth/);
   assert.doesNotMatch(appSource, /sheets\.googleapis\.com|configureBackgroundSync|googleFetch/);
   assert.doesNotMatch(activitySource, /public void authorize\(\)/);
@@ -28,69 +47,6 @@ test("app opens locally without Google Sheets or a sign-in flow", () => {
   assert.doesNotMatch(manifestSource, /GOOGLE_ANDROID_CLIENT_ID|POST_NOTIFICATIONS|WAKE_LOCK/);
 });
 
-function loadModel() {
-  const sourcePath = new URL("../mobile-shell/app.js", import.meta.url);
-  const source = fs.readFileSync(sourcePath, "utf8");
-  const markerMatch = source.match(/  render\(\);\r?\n  requestAppUpdateCheck\(false\);/);
-  assert.ok(markerMatch, "Test export marker was not found");
-  const instrumented = source.replace(markerMatch[0], `
-  globalThis.__cookishModel = {
-    activeResponses,
-    appendRequestVersion,
-    buildSyncPackage,
-    ensureSingleReceipt,
-    isProductConfirmed,
-    isRequestFulfilled,
-    materializePurchasedProduct,
-    mergeRequests,
-    mergeVersioned,
-    migrateRequest,
-    normalizeProductRecord,
-    normalizeRequest,
-    openFoodFactsSuggestion,
-    plannedRationRequestItems,
-    productPurchasedTotal,
-    purchaseLineMatches,
-    restoreRequestVersion,
-  };
-  return;
-${markerMatch[0]}`);
-  const element = {
-    addEventListener() {},
-    classList: { add() {}, remove() {}, toggle() {} },
-    hidden: false,
-    style: {},
-  };
-  const context = {
-    console,
-    FormData,
-    Intl,
-    Map,
-    Set,
-    URL,
-    clearInterval,
-    clearTimeout,
-    document: {
-      addEventListener() {},
-      getElementById: () => element,
-      querySelector: () => element,
-      querySelectorAll: () => [],
-    },
-    localStorage: {
-      getItem: () => null,
-      setItem() {},
-    },
-    setInterval,
-    setTimeout,
-    structuredClone,
-    window: { scrollTo() {} },
-  };
-  context.globalThis = context;
-  vm.runInNewContext(instrumented, context, { filename: "mobile-shell/app.js" });
-  return context.__cookishModel;
-}
-
-const model = loadModel();
 const baseProduct = {
   id: "product_water",
   name: "Вода",
@@ -100,8 +56,48 @@ const baseProduct = {
   updatedBy: "a@example.com",
 };
 
-test("sync package preserves completed first-run setup", () => {
-  const result = model.buildSyncPackage({
+function requestWithResponses(responses, updatedAt = "2026-01-01T00:01:00.000Z") {
+  return {
+    id: "request_1",
+    createdAt: "2026-01-01T00:01:00.000Z",
+    createdBy: "a@example.com",
+    updatedAt,
+    updatedBy: "a@example.com",
+    status: "done",
+    items: [{ productId: "product_water", quantity: 2, stockAtRequest: 0 }],
+    responses,
+  };
+}
+
+function response(id, quantity, updatedAt, createdAt = updatedAt) {
+  return {
+    id,
+    requestId: "request_1",
+    createdAt,
+    createdBy: "a@example.com",
+    updatedAt,
+    updatedBy: "a@example.com",
+    items: [{ productId: "product_water", quantity, price: 100 }],
+  };
+}
+
+test("local data loads and commits through a memory adapter", () => {
+  const storage = memoryStorage();
+  const data = openLocalData(storage);
+  data.commit({
+    products: [baseProduct],
+    requests: [],
+    spreadsheetId: "legacy_sheet",
+  });
+  const loaded = openLocalData(storage).load();
+  assert.equal(loaded.schemaVersion, 11);
+  assert.equal(loaded.onboardingCompleted, true);
+  assert.equal(loaded.products[0].id, baseProduct.id);
+  assert.equal(loaded.spreadsheetId, "legacy_sheet");
+});
+
+test("prepared state preserves completed first-run setup", () => {
+  const result = prepareState({
     onboardingCompleted: true,
     products: [],
     requests: [],
@@ -114,23 +110,25 @@ test("sync package preserves completed first-run setup", () => {
 });
 
 test("request line text stays separate from the product identity", () => {
-  const result = model.normalizeRequest({
-    id: "request_note",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-    updatedBy: "a@example.com",
-    status: "open",
-    items: [{ productId: baseProduct.id, quantity: 1, unit: "л", note: "без лактозы, если будет" }],
-    responses: [],
-    history: [],
+  const result = prepareState({
+    requests: [{
+      id: "request_note",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      updatedBy: "a@example.com",
+      status: "open",
+      items: [{ productId: baseProduct.id, quantity: 1, unit: "л", note: "без лактозы, если будет" }],
+      responses: [],
+      history: [],
+    }],
   });
 
-  assert.equal(result.items[0].productId, baseProduct.id);
-  assert.equal(result.items[0].note, "без лактозы, если будет");
+  assert.equal(result.requests[0].items[0].productId, baseProduct.id);
+  assert.equal(result.requests[0].items[0].note, "без лактозы, если будет");
 });
 
 test("existing local blob keeps products, requests, purchases and ration", () => {
-  const result = model.buildSyncPackage({
+  const storage = memoryStorage({
     schemaVersion: 9,
     spreadsheetId: "legacy_sheet",
     user: { email: "a@example.com" },
@@ -149,6 +147,7 @@ test("existing local blob keeps products, requests, purchases and ration", () =>
       },
     },
   });
+  const result = openLocalData(storage).load();
 
   assert.equal(result.products[0].id, "product_water");
   assert.equal(result.requests[0].responses[0].id, "response_keep");
@@ -166,14 +165,14 @@ test("newer local product deletion survives an older remote merge", () => {
     updatedAt: "2026-08-03T11:00:00.000Z",
   };
 
-  const merged = model.mergeVersioned([local], [remote]);
+  const result = prepareState({ products: [local, remote] });
 
-  assert.equal(merged.length, 1);
-  assert.equal(merged[0].deletedAt, "2026-08-03T12:00:00.000Z");
+  assert.equal(result.products.length, 1);
+  assert.equal(result.products[0].deletedAt, "2026-08-03T12:00:00.000Z");
 });
 
 test("Open Food Facts name search result becomes a complete local suggestion", () => {
-  const suggestion = model.openFoodFactsSuggestion({
+  const suggestion = openFoodFactsSuggestion({
     code: "4605035006964",
     product_name_ru: "Вода минеральная Псыж газ",
     brands: "Псыж",
@@ -192,7 +191,7 @@ test("Open Food Facts name search result becomes a complete local suggestion", (
 });
 
 test("replacement purchase keeps product records independent from purchase quantities", () => {
-  const result = model.buildSyncPackage({
+  const result = prepareState({
     schemaVersion: 4,
     products: [
       { ...baseProduct, id: "product_requested" },
@@ -233,7 +232,7 @@ test("scanned replacement confirms and fully corrects a request item instead of 
     confirmed: false,
     nutrition: null,
   }];
-  const purchasedProductId = model.materializePurchasedProduct({ products }, {
+  const purchasedProductId = materializePurchasedProduct({ products }, {
     productId: "product_manual",
     purchasedProduct: {
       name: "Молоко Простоквашино 2,5%",
@@ -265,7 +264,7 @@ test("confirmed product is not rewritten when a different SKU is scanned", () =>
     kind: "sku",
     category: "Молочные продукты",
   }];
-  const purchasedProductId = model.materializePurchasedProduct({ products }, {
+  const purchasedProductId = materializePurchasedProduct({ products }, {
     productId: "product_domik",
     purchasedProduct: {
       name: "Молоко Простоквашино 2,5%",
@@ -288,7 +287,7 @@ test("confirmed product is not rewritten when a different SKU is scanned", () =>
 });
 
 test("Open Food Facts suggestion carries generic key and sku kind", () => {
-  const suggestion = model.openFoodFactsSuggestion({
+  const suggestion = openFoodFactsSuggestion({
     code: "4607053473544",
     product_name_ru: "Кукуруза молодая Global Village",
     generic_name_ru: "Кукуруза",
@@ -313,36 +312,11 @@ test("deleted request and its transactions stay deleted after an older remote me
   local.responses[0].updatedAt = "2026-01-01T00:04:00.000Z";
   local.responses[0].deletedAt = "2026-01-01T00:04:00.000Z";
 
-  const merged = model.mergeRequests([local], [remote])[0];
+  const merged = prepareState({ requests: [local, remote] }).requests[0];
 
   assert.equal(merged.deletedAt, "2026-01-01T00:04:00.000Z");
   assert.equal(merged.responses[0].deletedAt, "2026-01-01T00:04:00.000Z");
 });
-
-function requestWithResponses(responses, updatedAt = "2026-01-01T00:01:00.000Z") {
-  return {
-    id: "request_1",
-    createdAt: "2026-01-01T00:01:00.000Z",
-    createdBy: "a@example.com",
-    updatedAt,
-    updatedBy: "a@example.com",
-    status: "done",
-    items: [{ productId: "product_water", quantity: 2, stockAtRequest: 0 }],
-    responses,
-  };
-}
-
-function response(id, quantity, updatedAt, createdAt = updatedAt) {
-  return {
-    id,
-    requestId: "request_1",
-    createdAt,
-    createdBy: "a@example.com",
-    updatedAt,
-    updatedBy: "a@example.com",
-    items: [{ productId: "product_water", quantity, price: 100 }],
-  };
-}
 
 test("package deduplicates resends and sums distinct responses", () => {
   const state = {
@@ -361,7 +335,7 @@ test("package deduplicates resends and sums distinct responses", () => {
     ],
   };
 
-  const result = model.buildSyncPackage(state);
+  const result = prepareState(state);
   assert.equal(result.products.length, 1);
   assert.equal(result.requests.length, 1);
   assert.equal(result.requests[0].responses.length, 2);
@@ -370,7 +344,7 @@ test("package deduplicates resends and sums distinct responses", () => {
 });
 
 test("sync package removes legacy stock fields", () => {
-  const state = {
+  const result = prepareState({
     products: [{
       ...baseProduct,
       baseQuantity: 7,
@@ -381,9 +355,7 @@ test("sync package removes legacy stock fields", () => {
     requests: [requestWithResponses([
       response("response_old", 3, "2026-01-01T00:03:00.000Z"),
     ])],
-  };
-
-  const result = model.buildSyncPackage(state);
+  });
   assert.equal("baseQuantity" in result.products[0], false);
   assert.equal("baseUpdatedAt" in result.products[0], false);
   assert.equal("quantity" in result.products[0], false);
@@ -398,16 +370,18 @@ test("legacy purchase becomes one stable response without double counting", () =
     quantity: 2,
     updatedAt: "2026-01-01T00:04:00.000Z",
   };
-  const migrated = model.migrateRequest({
-    id: "request_legacy",
-    createdAt: "2026-01-01T00:01:00.000Z",
-    completedAt: "2026-01-01T00:03:00.000Z",
-    updatedAt: "2026-01-01T00:03:00.000Z",
-    createdBy: "a@example.com",
-    items: [{ productId: "product_water", quantity: 2, stockAtRequest: 0 }],
-    purchases: [{ productId: "product_water", quantity: 2, price: 100 }],
-  }, [product]);
-  const result = model.buildSyncPackage({ products: [product], requests: [migrated] });
+  const result = prepareState({
+    products: [product],
+    requests: [{
+      id: "request_legacy",
+      createdAt: "2026-01-01T00:01:00.000Z",
+      completedAt: "2026-01-01T00:03:00.000Z",
+      updatedAt: "2026-01-01T00:03:00.000Z",
+      createdBy: "a@example.com",
+      items: [{ productId: "product_water", quantity: 2, stockAtRequest: 0 }],
+      purchases: [{ productId: "product_water", quantity: 2, price: 100 }],
+    }],
+  });
 
   assert.equal(result.requests[0].responses.length, 1);
   assert.equal(result.requests[0].responses[0].id, "response_legacy_request_legacy");
@@ -416,11 +390,11 @@ test("legacy purchase becomes one stable response without double counting", () =
 
 test("checkbox reuses one receipt after repeated uncheck and recheck", () => {
   const request = requestWithResponses([], "2026-01-01T00:01:00.000Z");
-  const first = model.ensureSingleReceipt(request, "2026-01-01T00:02:00.000Z");
+  const first = ensureSingleReceipt(request, "2026-01-01T00:02:00.000Z");
   first.items.push({ productId: "product_water", purchasedProductId: "product_water", quantity: 2, price: 0, completionMode: "closed" });
   first.deletedAt = "2026-01-01T00:03:00.000Z";
 
-  const reused = model.ensureSingleReceipt(request, "2026-01-01T00:04:00.000Z");
+  const reused = ensureSingleReceipt(request, "2026-01-01T00:04:00.000Z");
 
   assert.equal(request.responses.length, 1);
   assert.equal(reused.id, "response_request_1");
@@ -437,8 +411,8 @@ test("saving unchanged purchase details is detected as a no-op", () => {
     completionMode: "filled",
   };
 
-  assert.equal(model.purchaseLineMatches(line, structuredClone(line)), true);
-  assert.equal(model.purchaseLineMatches(line, { ...line, price: 180 }), false);
+  assert.equal(purchaseLineMatches(line, structuredClone(line)), true);
+  assert.equal(purchaseLineMatches(line, { ...line, price: 180 }), false);
 });
 
 test("all-time purchased total uses the purchased product identity", () => {
@@ -456,68 +430,74 @@ test("all-time purchased total uses the purchased product identity", () => {
     }],
   };
 
-  assert.equal(model.productPurchasedTotal("product_water", state), 5);
-  assert.equal(model.productPurchasedTotal("product_requested", state), 0);
+  assert.equal(productPurchasedTotal("product_water", state), 5);
+  assert.equal(productPurchasedTotal("product_requested", state), 0);
 });
 
 test("partial response keeps a multi-product request active", () => {
-  const request = model.normalizeRequest({
-    id: "request_multi",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:01:00.000Z",
-    items: [
-      { productId: "product_water", quantity: 2, stockAtRequest: 0 },
-      { productId: "product_bread", quantity: 3, stockAtRequest: 0 },
-    ],
-    responses: [response("response_partial", 2, "2026-01-01T00:01:00.000Z")],
-  });
+  const request = prepareState({
+    requests: [{
+      id: "request_multi",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:01:00.000Z",
+      items: [
+        { productId: "product_water", quantity: 2, stockAtRequest: 0 },
+        { productId: "product_bread", quantity: 3, stockAtRequest: 0 },
+      ],
+      responses: [response("response_partial", 2, "2026-01-01T00:01:00.000Z")],
+    }],
+  }).requests[0];
 
   assert.equal(request.items.length, 2);
-  assert.equal(model.isRequestFulfilled(request), false);
+  assert.equal(isRequestFulfilled(request), false);
   assert.equal(request.status, "open");
   assert.equal(request.completedAt, "");
 });
 
 test("request closes only when every product is fulfilled across responses", () => {
-  const request = model.normalizeRequest({
-    id: "request_fulfilled",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:03:00.000Z",
-    items: [
-      { productId: "product_water", quantity: 2, stockAtRequest: 0 },
-      { productId: "product_bread", quantity: 3, stockAtRequest: 0 },
-    ],
-    responses: [
-      response("response_water", 2, "2026-01-01T00:01:00.000Z"),
-      {
-        ...response("response_bread", 3, "2026-01-01T00:02:00.000Z"),
-        items: [{ productId: "product_bread", quantity: 3, price: 120 }],
-      },
-    ],
-  });
+  const request = prepareState({
+    requests: [{
+      id: "request_fulfilled",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:03:00.000Z",
+      items: [
+        { productId: "product_water", quantity: 2, stockAtRequest: 0 },
+        { productId: "product_bread", quantity: 3, stockAtRequest: 0 },
+      ],
+      responses: [
+        response("response_water", 2, "2026-01-01T00:01:00.000Z"),
+        {
+          ...response("response_bread", 3, "2026-01-01T00:02:00.000Z"),
+          items: [{ productId: "product_bread", quantity: 3, price: 120 }],
+        },
+      ],
+    }],
+  }).requests[0];
 
-  assert.equal(model.isRequestFulfilled(request), true);
+  assert.equal(isRequestFulfilled(request), true);
   assert.equal(request.status, "done");
 });
 
 test("request versions restore items and responses atomically", () => {
-  const request = model.normalizeRequest({
-    id: "request_history",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-    createdBy: "a@example.com",
-    updatedBy: "a@example.com",
-    items: [
-      { productId: "product_water", quantity: 2, stockAtRequest: 0 },
-      { productId: "product_bread", quantity: 3, stockAtRequest: 0 },
-    ],
-    responses: [],
-  });
+  const request = prepareState({
+    requests: [{
+      id: "request_history",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "a@example.com",
+      updatedBy: "a@example.com",
+      items: [
+        { productId: "product_water", quantity: 2, stockAtRequest: 0 },
+        { productId: "product_bread", quantity: 3, stockAtRequest: 0 },
+      ],
+      responses: [],
+    }],
+  }).requests[0];
   const initial = request.history[0];
   request.items[0].quantity = 9;
   request.responses.push(response("response_changed", 1, "2026-01-01T00:02:00.000Z"));
   request.updatedAt = "2026-01-01T00:02:00.000Z";
-  model.appendRequestVersion(
+  appendRequestVersion(
     request,
     "Ответ добавлен",
     request.updatedAt,
@@ -525,7 +505,7 @@ test("request versions restore items and responses atomically", () => {
     "transaction_changed"
   );
 
-  model.restoreRequestVersion(
+  restoreRequestVersion(
     request,
     initial,
     "2026-01-01T00:03:00.000Z",
@@ -533,7 +513,7 @@ test("request versions restore items and responses atomically", () => {
   );
 
   assert.equal(request.items.map((item) => item.quantity).join(","), "2,3");
-  assert.equal(model.activeResponses(request).length, 0);
+  assert.equal(activeResponses(request).length, 0);
   assert.equal(Boolean(request.responses[0].deletedAt), true);
   assert.equal(request.status, "open");
   assert.equal(request.history.at(-1).action, "Откат: Исходная версия");
@@ -548,9 +528,9 @@ test("rolled back response stays deleted after merging an older remote copy", ()
   local.responses[0].updatedAt = "2026-01-01T00:03:00.000Z";
   local.responses[0].deletedAt = "2026-01-01T00:03:00.000Z";
 
-  const merged = model.mergeRequests([local], [remote])[0];
+  const merged = prepareState({ requests: [local, remote] }).requests[0];
 
-  assert.equal(model.activeResponses(merged).length, 0);
+  assert.equal(activeResponses(merged).length, 0);
   assert.equal(merged.status, "open");
   assert.equal(merged.responses[0].deletedAt, "2026-01-01T00:03:00.000Z");
 });
@@ -565,7 +545,7 @@ test("ration sync preserves an arbitrary number of meals and their products", ()
     order: index,
   }));
 
-  const result = model.buildSyncPackage({
+  const result = prepareState({
     products: [],
     requests: [],
     rationDays: {
@@ -585,7 +565,7 @@ test("ration sync preserves an arbitrary number of meals and their products", ()
 });
 
 test("ration days are namespaced by user while products remain shared", () => {
-  const result = model.buildSyncPackage({
+  const result = prepareState({
     user: { email: "Owner@Example.com" },
     products: [{ ...baseProduct }],
     requests: [],
@@ -614,7 +594,7 @@ test("ration request includes only selected positions and rounds portions to pac
     },
   };
 
-  const items = model.plannedRationRequestItems(
+  const items = plannedRationRequestItems(
     source,
     ["2026-08-03"],
     new Set(chickenItems.map((item) => item.id))
