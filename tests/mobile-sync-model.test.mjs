@@ -42,7 +42,9 @@ test("app opens locally without Google Sheets or a sign-in flow", () => {
   assert.doesNotMatch(appSource, /authorizeGoogle|__onNativeGoogleAuth|onboarding-google|google-auth/);
   assert.doesNotMatch(appSource, /sheets\.googleapis\.com|configureBackgroundSync|googleFetch/);
   assert.doesNotMatch(activitySource, /public void authorize\(\)/);
-  assert.doesNotMatch(activitySource, /SheetsSyncWorker|configureBackgroundSync|play-services-auth/);
+  assert.doesNotMatch(activitySource, /SheetsSyncWorker|configureBackgroundSync|play-services-auth|NativeGoogle/);
+  assert.match(activitySource, /NativeCookish/);
+  assert.match(activitySource, /ru\.listok\.purchases\.update\.AppUpdate/);
   assert.doesNotMatch(gradleSource, /play-services-auth|work-runtime|google-services/);
   assert.doesNotMatch(manifestSource, /GOOGLE_ANDROID_CLIENT_ID|POST_NOTIFICATIONS|WAKE_LOCK/);
 });

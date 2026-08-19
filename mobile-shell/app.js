@@ -58,7 +58,7 @@ import {
   let routeSubId = null;
   let draftItems = [];
   let appUpdate = {
-    status: window.NativeGoogle?.checkForAppUpdate ? "idle" : "unsupported",
+    status: window.NativeCookish?.checkForAppUpdate ? "idle" : "unsupported",
     installedVersion: "5.3.0",
   };
   let appUpdateNoticeShown = false;
@@ -706,9 +706,9 @@ import {
     `;
     document.getElementById("lookup-barcode").addEventListener("click", lookupProductBarcode);
     document.getElementById("scan-barcode").addEventListener("click", () => {
-      if (!window.NativeGoogle?.scanBarcode) return setBarcodeStatus("Сканирование доступно в Android-приложении.", true);
+      if (!window.NativeCookish?.scanBarcode) return setBarcodeStatus("Сканирование доступно в Android-приложении.", true);
       barcodeScanTarget = "product";
-      window.NativeGoogle.scanBarcode();
+      window.NativeCookish.scanBarcode();
     });
     document.getElementById("product-form").addEventListener("submit", (event) => {
       event.preventDefault();
@@ -1933,9 +1933,9 @@ import {
     };
     document.getElementById("save-purchase-item").onclick = () => savePurchaseDraftItem(false);
     document.getElementById("scan-purchase-barcode").onclick = () => {
-      if (!window.NativeGoogle?.scanBarcode) return setPurchaseStatus("Сканирование доступно в Android-приложении.", true);
+      if (!window.NativeCookish?.scanBarcode) return setPurchaseStatus("Сканирование доступно в Android-приложении.", true);
       barcodeScanTarget = "purchase";
-      window.NativeGoogle.scanBarcode();
+      window.NativeCookish.scanBarcode();
     };
   }
 
@@ -3169,14 +3169,14 @@ import {
   }
 
   function requestAppUpdateCheck(force = false) {
-    if (!window.NativeGoogle?.checkForAppUpdate) {
+    if (!window.NativeCookish?.checkForAppUpdate) {
       appUpdate = { ...appUpdate, status: "unsupported" };
       return;
     }
     if (!force && appUpdate.status !== "idle" && appUpdate.status !== "error") return;
     appUpdate = { ...appUpdate, status: "checking", message: "" };
     if (route === "profile") renderProfile();
-    window.NativeGoogle.checkForAppUpdate();
+    window.NativeCookish.checkForAppUpdate();
   }
 
   function renderProfile() {
@@ -3209,10 +3209,10 @@ import {
     document.getElementById("manage-products")?.addEventListener("click", () => navigate("products"));
     document.getElementById("check-app-update")?.addEventListener("click", () => requestAppUpdateCheck(true));
     document.getElementById("install-app-update")?.addEventListener("click", () => {
-      window.NativeGoogle?.installLatestUpdate?.();
+      window.NativeCookish?.installLatestUpdate?.();
     });
     document.getElementById("open-app-release")?.addEventListener("click", () => {
-      if (appUpdate.releaseUrl) window.NativeGoogle?.openUrl?.(appUpdate.releaseUrl);
+      if (appUpdate.releaseUrl) window.NativeCookish?.openUrl?.(appUpdate.releaseUrl);
     });
     document.getElementById("clear-data")?.addEventListener("click", async () => {
       if (!await askConfirm("Удалить продукты, запросы и настройки с этого устройства?")) return;
