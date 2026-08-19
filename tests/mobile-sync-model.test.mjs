@@ -47,6 +47,8 @@ test("app opens locally without Google Sheets or a sign-in flow", () => {
   assert.match(activitySource, /ru\.listok\.purchases\.update\.AppUpdate/);
   assert.doesNotMatch(gradleSource, /play-services-auth|work-runtime|google-services/);
   assert.doesNotMatch(manifestSource, /GOOGLE_ANDROID_CLIENT_ID|POST_NOTIFICATIONS|WAKE_LOCK/);
+  assert.doesNotMatch(appSource, /5\.3\.0/);
+  assert.doesNotMatch(gradleSource, /5\.3\.0|5003000/);
 });
 
 const baseProduct = {

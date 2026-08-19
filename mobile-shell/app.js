@@ -59,7 +59,7 @@ import {
   let draftItems = [];
   let appUpdate = {
     status: window.NativeCookish?.checkForAppUpdate ? "idle" : "unsupported",
-    installedVersion: "5.3.0",
+    installedVersion: "",
   };
   let appUpdateNoticeShown = false;
   let toastTimer = null;
@@ -3129,7 +3129,7 @@ import {
   }
 
   function renderAppUpdateSection() {
-    const currentVersion = escapeHtml(appUpdate.installedVersion || "5.3.0");
+    const currentVersion = escapeHtml(appUpdate.installedVersion || "—");
     const latestVersion = escapeHtml(appUpdate.latestVersion || "");
     let content = "";
 

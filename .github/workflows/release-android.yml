@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version without v, for example 5.4.0"
-        required: true
+        description: "Version without v, for example 5.4.0. Empty means the next patch."
+        required: false
         type: string
       notes:
         description: "Optional release notes"
         required: false
         type: string
 
-run-name: Release v${{ inputs.version }}
+run-name: ${{ inputs.version && format('Release v{0}', inputs.version) || 'Release next Android' }}
 
 permissions:
   contents: write
@@ -31,45 +31,27 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Validate version
-        id: version
-        shell: bash
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          version="${INPUT_VERSION#v}"
-          if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            echo "Version must use MAJOR.MINOR.PATCH, for example 5.4.0." >&2
-            exit 1
-          fi
-          major="${BASH_REMATCH[1]}"
-          minor="${BASH_REMATCH[2]}"
-          patch="${BASH_REMATCH[3]}"
-          if (( minor > 999 || patch > 999 )); then
-            echo "MINOR and PATCH must be between 0 and 999." >&2
-            exit 1
-          fi
-          code=$((10#$major * 1000000 + 10#$minor * 1000 + 10#$patch))
-          if (( code <= 5003000 || code > 2100000000 )); then
-            echo "Version code $code must be newer than 5.3.0 and fit Android's limit." >&2
-            exit 1
-          fi
-          tag="v$version"
-          if git rev-parse "$tag" >/dev/null 2>&1; then
-            echo "Tag $tag already exists." >&2
-            exit 1
-          fi
-          echo "name=$version" >> "$GITHUB_OUTPUT"
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fetch-tags: true
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
+
+      - name: Plan release version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_NOTES: ${{ inputs.notes }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LATEST_TAG="$(gh release view --json tagName --jq .tagName || true)"
+          EXISTING_GIT_TAGS="$(git tag --list)"
+          EXISTING_RELEASE_TAGS="$(gh release list --limit 100 --json tagName --jq '.[].tagName')"
+          export LATEST_TAG EXISTING_GIT_TAGS EXISTING_RELEASE_TAGS
+          node scripts/release-policy.mjs --from-env --github-output
 
       - name: Set up Java
         uses: actions/setup-java@v5

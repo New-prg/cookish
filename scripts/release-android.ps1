@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 $repository = "New-prg/cookish"
 $workflow = "release-android.yml"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$policyScript = Join-Path $PSScriptRoot "release-policy.mjs"
 
 function Invoke-CapturedCommand {
   param(
@@ -26,13 +27,38 @@ function Invoke-CapturedCommand {
   return $output
 }
 
-function Normalize-Version {
-  param([Parameter(Mandatory = $true)][string]$Value)
+function Convert-CommandOutput {
+  param($Output)
+  return (@($Output | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine)
+}
 
-  if ($Value -notmatch '^v?([0-9]+)\.([0-9]+)\.([0-9]+)$') {
-    throw "Version must use MAJOR.MINOR.PATCH, for example 5.4.0."
+function Invoke-ReleasePolicy {
+  param(
+    [string[]]$Arguments = @(),
+    [string]$InputText
+  )
+
+  $temp = [System.IO.Path]::GetTempFileName()
+  try {
+    [System.IO.File]::WriteAllText(
+      $temp,
+      $InputText,
+      (New-Object System.Text.UTF8Encoding $false)
+    )
+    $output = @(& node $policyScript @Arguments $temp 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      throw ((@($output | ForEach-Object { $_.ToString() }) | Where-Object { $_ }) -join [Environment]::NewLine)
+    }
+    return $output
+  } finally {
+    Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
   }
-  return "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+}
+
+function Read-LastNonEmptyLine {
+  param($Output)
+  $result = @(Invoke-ReleasePolicy -Arguments @("--last-line") -InputText (Convert-CommandOutput $Output))
+  return $result[-1].ToString().Trim()
 }
 
 Push-Location $projectRoot
@@ -40,46 +66,24 @@ try {
   if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     throw "GitHub CLI (gh) is required."
   }
+  if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    throw "Node.js is required to compute the release version."
+  }
   Invoke-CapturedCommand -Program "gh" -Arguments @("auth", "status") `
     -FailureMessage "GitHub CLI is not authenticated." | Out-Null
 
   $actualRepositoryOutput = @(Invoke-CapturedCommand -Program "gh" -Arguments @(
     "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"
   ) -FailureMessage "Could not identify the GitHub repository.")
-  $actualRepository = $actualRepositoryOutput[-1].ToString().Trim()
-  if ($actualRepository -ne $repository) {
-    throw "Expected $repository, found $actualRepository."
-  }
-
   $branchOutput = @(Invoke-CapturedCommand -Program "git" -Arguments @(
     "branch", "--show-current"
   ) -FailureMessage "Could not read the current branch.")
-  $branch = $branchOutput[-1].ToString().Trim()
-  if ($branch -ne "master") {
-    throw "Releases must run from master; current branch is $branch."
-  }
-
-  $trackedChanges = @(Invoke-CapturedCommand -Program "git" -Arguments @(
+  $trackedChangesOutput = @(Invoke-CapturedCommand -Program "git" -Arguments @(
     "status", "--porcelain", "--untracked-files=no"
   ) -FailureMessage "Could not inspect tracked changes.")
-  if ($trackedChanges.Count -gt 0) {
-    throw "Tracked changes are not committed. Finish, test, commit, and push them before releasing."
-  }
-
-  $untrackedFiles = @(Invoke-CapturedCommand -Program "git" -Arguments @(
+  $untrackedFilesOutput = @(Invoke-CapturedCommand -Program "git" -Arguments @(
     "ls-files", "--others", "--exclude-standard"
-  ) -FailureMessage "Could not inspect untracked files." | ForEach-Object {
-    $_.ToString().Trim()
-  } | Where-Object { $_ })
-  $releaseRelevantUntracked = @($untrackedFiles | Where-Object {
-    $_ -notmatch '^reports/.*\.html$' -and $_ -notmatch '^output/'
-  })
-  if ($releaseRelevantUntracked.Count -gt 0) {
-    throw "Untracked source files may be missing from the release: $($releaseRelevantUntracked -join ', ')"
-  }
-  if ($untrackedFiles.Count -gt 0) {
-    Write-Warning "Ignoring untracked report/output artifacts: $($untrackedFiles -join ', ')"
-  }
+  ) -FailureMessage "Could not inspect untracked files.")
 
   Invoke-CapturedCommand -Program "git" -Arguments @(
     "fetch", "origin", "master", "--tags", "--quiet"
@@ -87,68 +91,67 @@ try {
   $localHeadOutput = @(Invoke-CapturedCommand -Program "git" -Arguments @(
     "rev-parse", "HEAD"
   ) -FailureMessage "Could not read local HEAD.")
-  $localHead = $localHeadOutput[-1].ToString().Trim()
   $remoteHeadOutput = @(Invoke-CapturedCommand -Program "git" -Arguments @(
     "rev-parse", "origin/master"
   ) -FailureMessage "Could not read origin/master.")
-  $remoteHead = $remoteHeadOutput[-1].ToString().Trim()
-  if ($localHead -ne $remoteHead) {
-    throw "Local HEAD does not match origin/master. Push or synchronize master first."
-  }
-
-  $latestTagOutput = @(Invoke-CapturedCommand -Program "gh" -Arguments @(
-    "release", "view", "--repo", $repository, "--json", "tagName", "--jq", ".tagName"
-  ) -FailureMessage "Could not read the latest GitHub Release.")
-  $latestTag = $latestTagOutput[-1].ToString().Trim()
-  $latestVersion = Normalize-Version $latestTag
-
-  if ([string]::IsNullOrWhiteSpace($Version)) {
-    $latestParts = $latestVersion.Split('.')
-    $Version = "$($latestParts[0]).$($latestParts[1]).$([int]$latestParts[2] + 1)"
-  } else {
-    $Version = Normalize-Version $Version
-  }
-
-  if ([version]$Version -le [version]$latestVersion) {
-    throw "Version $Version must be newer than the latest release $latestVersion."
-  }
 
   $previousErrorActionPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = "Continue"
-    & gh release view "v$Version" --repo $repository 2>$null | Out-Null
-    $releaseLookupExitCode = $LASTEXITCODE
+    $latestTagOutput = @(& gh release view --repo $repository --json tagName --jq .tagName 2>&1)
+    $latestReleaseExitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousErrorActionPreference
   }
-  if ($releaseLookupExitCode -eq 0) {
-    throw "Release v$Version already exists."
-  }
-  if ($releaseLookupExitCode -ne 1) {
-    throw "Could not confirm whether release v$Version already exists."
-  }
 
-  if ([string]::IsNullOrWhiteSpace($Notes)) {
-    $subjects = @(Invoke-CapturedCommand -Program "git" -Arguments @(
+  $existingGitTagsOutput = @(Invoke-CapturedCommand -Program "git" -Arguments @(
+    "tag", "--list"
+  ) -FailureMessage "Could not list git tags.")
+  $existingReleaseTagsOutput = @(Invoke-CapturedCommand -Program "gh" -Arguments @(
+    "release", "list", "--repo", $repository, "--limit", "100", "--json", "tagName", "--jq", ".[].tagName"
+  ) -FailureMessage "Could not list GitHub Releases.")
+
+  $commitSubjectsOutput = @()
+  if ($latestReleaseExitCode -eq 0) {
+    $latestTag = Read-LastNonEmptyLine $latestTagOutput
+    $commitSubjectsOutput = @(Invoke-CapturedCommand -Program "git" -Arguments @(
       "log", "$latestTag..origin/master", "--pretty=format:- %s"
-    ) -FailureMessage "Could not build release notes." | ForEach-Object {
-      $_.ToString().TrimEnd()
-    } | Where-Object { $_ })
-    $Notes = if ($subjects.Count -gt 0) {
-      $subjects -join [Environment]::NewLine
-    } else {
-      "Technical Cookish $Version release."
-    }
+    ) -FailureMessage "Could not build release notes.")
   }
 
-  Write-Host "Repository: $repository"
-  Write-Host "Source: master@$($localHead.Substring(0, 7))"
-  Write-Host "Latest release: $latestTag"
-  Write-Host "Next release: v$Version"
-  Write-Host "Notes:"
-  Write-Host $Notes
+  $facts = @{
+    expectedRepository = $repository
+    actualRepositoryOutput = (Convert-CommandOutput $actualRepositoryOutput)
+    branchOutput = (Convert-CommandOutput $branchOutput)
+    trackedChangesOutput = (Convert-CommandOutput $trackedChangesOutput)
+    untrackedFilesOutput = (Convert-CommandOutput $untrackedFilesOutput)
+    localHeadOutput = (Convert-CommandOutput $localHeadOutput)
+    remoteHeadOutput = (Convert-CommandOutput $remoteHeadOutput)
+    latestReleaseTagOutput = (Convert-CommandOutput $latestTagOutput)
+    latestReleaseExitCode = $latestReleaseExitCode
+    requestedVersion = $Version
+    existingGitTagsOutput = (Convert-CommandOutput $existingGitTagsOutput)
+    existingReleaseTagsOutput = (Convert-CommandOutput $existingReleaseTagsOutput)
+    commitSubjectsOutput = (Convert-CommandOutput $commitSubjectsOutput)
+    notes = $Notes
+    dryRun = [bool]$DryRun
+  }
+  $planJson = @(Invoke-ReleasePolicy -InputText ($facts | ConvertTo-Json -Compress -Depth 6))
+  $plan = $planJson[-1].ToString() | ConvertFrom-Json
+  $localHead = Read-LastNonEmptyLine $localHeadOutput
 
-  if ($DryRun) {
+  if ($plan.ignoredUntracked -and @($plan.ignoredUntracked).Count -gt 0) {
+    Write-Warning ("Ignoring untracked report/output artifacts: " + ((@($plan.ignoredUntracked) | ForEach-Object { $_.ToString() }) -join ", "))
+  }
+
+  Write-Host "Repository: $($plan.repository)"
+  Write-Host "Source: master@$($localHead.Substring(0, 7))"
+  Write-Host "Latest release: $($plan.latestTag)"
+  Write-Host "Next release: $($plan.tag)"
+  Write-Host "Notes:"
+  Write-Host $plan.notes
+
+  if ($plan.action -eq "dry-run") {
     Write-Host "Dry run complete; no release was started."
     return
   }
@@ -157,8 +160,8 @@ try {
     "workflow", "run", $workflow,
     "--repo", $repository,
     "--ref", "master",
-    "-f", "version=$Version",
-    "-f", "notes=$Notes"
+    "-f", "version=$($plan.version)",
+    "-f", "notes=$($plan.notes)"
   ) -FailureMessage "Could not start the Android release workflow.")
   $runUrl = ($dispatchOutput | ForEach-Object { $_.ToString().Trim() } |
     Where-Object { $_ -match '^https://github\.com/.+/actions/runs/[0-9]+$' } |
@@ -180,17 +183,17 @@ try {
   }
 
   $releaseJson = (Invoke-CapturedCommand -Program "gh" -Arguments @(
-    "release", "view", "v$Version", "--repo", $repository, "--json", "tagName,url,assets"
+    "release", "view", $plan.tag, "--repo", $repository, "--json", "tagName,url,assets"
   ) -FailureMessage "Workflow succeeded, but the release could not be read.") -join ""
   $release = $releaseJson | ConvertFrom-Json
   $assetNames = @($release.assets | ForEach-Object { $_.name })
   $requiredAssets = @("Cookish.apk", "Cookish.apk.sha256", "update.json")
   $missingAssets = @($requiredAssets | Where-Object { $_ -notin $assetNames })
   if ($missingAssets.Count -gt 0) {
-    throw "Release v$Version is missing assets: $($missingAssets -join ', ')"
+    throw "Release $($plan.tag) is missing assets: $($missingAssets -join ', ')"
   }
 
-  $apkUrl = "https://github.com/$repository/releases/download/v$Version/Cookish.apk"
+  $apkUrl = "https://github.com/$repository/releases/download/$($plan.tag)/Cookish.apk"
   Write-Host "Release complete: $($release.url)"
   Write-Host "APK: $apkUrl"
 } finally {

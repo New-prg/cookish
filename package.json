@@ -1,13 +1,13 @@
 {
   "name": "cookish-android",
-  "version": "5.3.0",
+  "version": "0.0.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
     "build": "npm run android:apk",
-    "test": "node --test tests/mobile-sync-model.test.mjs",
+    "test": "node --test tests/mobile-sync-model.test.mjs tests/release-policy.test.mjs",
     "android:sync": "cap sync android",
     "android:apk": "powershell -ExecutionPolicy Bypass -File scripts/build-android.ps1",
     "run": "powershell -ExecutionPolicy Bypass -File run.ps1",
