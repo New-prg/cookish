@@ -1,7 +1,24 @@
-(() => {
-  "use strict";
+import {
+  activeResponses,
+  browserStorage,
+  formatRationDate,
+  isProductConfirmed,
+  isRequestFulfilled,
+  normalizeProductName,
+  openFoodFactsSuggestion,
+  openLocalData,
+  parseRationDate,
+  productPurchasedTotal,
+  rationDayFor,
+  rationMeasure,
+  rationTemplatesForUser,
+  receiptLine,
+  remainingRequestQuantity,
+  responseItemTotal,
+  timestamp,
+  todayDateKey,
+} from "./local-data.js";
 
-  const STORAGE_KEY = "cookish.android.data.v1";
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
   // на 100 г (для напитков — на 100 мл) и могут отличаться у конкретных марок.
   const FOOD_CATALOG = [
@@ -34,33 +51,15 @@
       catalogSource: "Встроенный справочник",
       nutrition: { calories, protein, fat, carbs, fiber, vitamins, minerals, basis: "100 г/мл", source: "Встроенный справочник" } };
   }
-  const defaultState = {
-    schemaVersion: 11,
-    products: [],
-    requests: [],
-    rationDays: {},
-    rationTemplates: [],
-    rationView: "week",
-    rationAnchor: "",
-    spreadsheetId: "",
-    spreadsheetTitle: "",
-    user: null,
-    onboardingCompleted: true,
-    backgroundAccessSkipped: false,
-    seenRemoteRequestIds: [],
-    remoteTrackingInitialized: false,
-  };
-
-  let state = loadState();
+  const localData = openLocalData(browserStorage(window.localStorage));
+  let state = localData.load();
   let route = "summary";
   let routeId = null;
   let routeSubId = null;
   let draftItems = [];
-  let accessToken = null;
-  let backgroundAccess = null;
   let appUpdate = {
-    status: window.NativeGoogle?.checkForAppUpdate ? "idle" : "unsupported",
-    installedVersion: "5.3.0",
+    status: window.NativeCookish?.checkForAppUpdate ? "idle" : "unsupported",
+    installedVersion: "",
   };
   let appUpdateNoticeShown = false;
   let toastTimer = null;
@@ -165,17 +164,6 @@
     lookupProductBarcode();
   };
 
-  window.__onNativeBackgroundAccess = (payload) => {
-    const next = JSON.parse(payload);
-    const changed = JSON.stringify(next) !== JSON.stringify(backgroundAccess);
-    backgroundAccess = next;
-    if (next?.fullyGranted && state.backgroundAccessSkipped) {
-      state.backgroundAccessSkipped = false;
-      saveState(false);
-    }
-    if (changed && route === "profile") renderProfile();
-  };
-
   window.__onNativeAppUpdate = (payload) => {
     try {
       appUpdate = JSON.parse(payload);
@@ -189,36 +177,13 @@
     if (route === "profile") renderProfile();
   };
 
-  function loadState() {
-    try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-      const loaded = { ...defaultState, ...stored };
-      loaded.onboardingCompleted = true;
-      loaded.products = loaded.products.map((product) => normalizeProductRecord({
-        ...product,
-        updatedAt: product.updatedAt || new Date(0).toISOString(),
-        updatedBy: product.updatedBy || "local",
-      }));
-      loaded.requests = loaded.requests.map((request) => migrateRequest(request, loaded.products));
-      loaded.rationDays = loaded.rationDays && typeof loaded.rationDays === "object" ? loaded.rationDays : {};
-      loaded.rationTemplates = Array.isArray(loaded.rationTemplates) ? loaded.rationTemplates : [];
-      loaded.rationView = ["day", "week", "month"].includes(loaded.rationView) ? loaded.rationView : "week";
-      loaded.rationAnchor = /^\d{4}-\d{2}-\d{2}$/.test(loaded.rationAnchor || "") ? loaded.rationAnchor : todayDateKey();
-      return buildSyncPackage(loaded);
-    } catch {
-      return structuredClone(defaultState);
+  function applyLocal(result, reasonFallback) {
+    if (!result?.ok) {
+      if (result?.reason || reasonFallback) showToast(result?.reason || reasonFallback);
+      return false;
     }
-  }
-
-  function saveState(sync = true) {
-    commitState(state, sync);
-  }
-
-  function commitState(nextState, sync = true) {
-    const normalized = buildSyncPackage(nextState);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-    state = normalized;
-    mirrorStateForBackgroundSync();
+    state = localData.snapshot();
+    return true;
   }
 
   function navigate(next, id = null, subId = null, options = {}) {
@@ -246,23 +211,6 @@
     if (document.getElementById("request-items") && !persistRequestDraft({ silent: false })) return;
     draftItems = [];
     navigate("requests", null, null, { skipRequestPersist: true });
-  }
-
-  function isInteractiveEditing() {
-    if (document.querySelector("dialog[open]")) return true;
-    if (formDirty) return true;
-    if (route === "ration" && routeSubId) return true;
-    if (["product-new", "product-edit", "request-edit", "request-answer"].includes(route)) return true;
-    const active = document.activeElement;
-    return Boolean(
-      active
-      && app.contains(active)
-      && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)
-      && active.type !== "checkbox"
-      && active.type !== "radio"
-      && active.type !== "button"
-      && active.type !== "submit"
-    );
   }
 
   function attemptBackNavigation() {
@@ -465,10 +413,6 @@
     return productSuggestions().find((product) => normalizeProductName(product.name) === key) || null;
   }
 
-  function normalizeProductName(name) {
-    return String(name || "").trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " ");
-  }
-
   function isRealProductId(productId) {
     return Boolean(productId && state.products.some((product) => product.id === productId && !product.deletedAt));
   }
@@ -480,76 +424,8 @@
     if (previous && normalizeProductName(previous.name) === key) return previousId;
     const existing = state.products.find((product) => !product.deletedAt && normalizeProductName(product.name) === key);
     if (existing) return existing.id;
-    // Catalog/OFF ids are not real products until resolveOrCreateProduct runs.
+    // Catalog/OFF ids are not real products until they are saved into local data.
     return "";
-  }
-
-  function normalizeGenericKey(value) {
-    return normalizeProductName(value).replace(/[^a-zа-яё0-9]+/gi, "_").replace(/^_|_$/g, "");
-  }
-
-  function genericKeyFromParts(category, name, fallback = "") {
-    if (category) return normalizeGenericKey(category);
-    const first = String(name || "").trim().split(/\s+/)[0] || fallback;
-    return normalizeGenericKey(first);
-  }
-
-  function inferProductKind(product) {
-    if (product?.kind === "generic" || product?.kind === "sku") return product.kind;
-    if (product?.barcode || product?.brand) return "sku";
-    return "generic";
-  }
-
-  function isProductConfirmed(product) {
-    if (!product) return false;
-    if (product.confirmed === true) return true;
-    if (product.confirmed === false) return false;
-    // Legacy rows without the flag: barcode-backed cards are treated as confirmed SKUs.
-    return Boolean(product.barcode);
-  }
-
-  function normalizeProductRecord(product) {
-    if (!product) return product;
-    const category = product.category || "";
-    const name = product.name || "";
-    return {
-      ...product,
-      category,
-      brand: product.brand || "",
-      kind: inferProductKind(product),
-      genericKey: product.genericKey || genericKeyFromParts(category, name),
-      confirmed: isProductConfirmed(product),
-      catalogSource: product.catalogSource || "",
-    };
-  }
-
-  function resolveOrCreateProduct(draft, products, changedAt) {
-    const key = normalizeProductName(draft.query);
-    const existing = products.find((product) => !product.deletedAt && normalizeProductName(product.name) === key);
-    if (existing) return existing;
-    const catalog = [...remoteProductSuggestions, ...FOOD_CATALOG]
-      .find((product) => normalizeProductName(product.name) === key);
-    const category = catalog?.category || "";
-    const name = draft.query.trim();
-    const product = {
-      id: id("product"),
-      name,
-      category,
-      unit: catalog?.unit || "шт.",
-      brand: catalog?.brand || "",
-      kind: catalog?.kind || (catalog?.barcode ? "sku" : "generic"),
-      genericKey: catalog?.genericKey || genericKeyFromParts(category, name),
-      confirmed: false,
-      updatedAt: changedAt,
-      updatedBy: state.user?.email || "local",
-      nutrition: catalog ? structuredClone(catalog.nutrition) : null,
-      barcode: catalog?.barcode || "",
-      ingredients: catalog?.ingredients || "",
-      catalogSource: catalog?.catalogSource || (catalog ? "Встроенный справочник" : ""),
-      nutritionSource: catalog?.catalogSource || (catalog ? "Справочник" : ""),
-    };
-    products.push(product);
-    return product;
   }
 
   function suggestionLabel(product) {
@@ -582,71 +458,6 @@
       minerals: data.get("minerals").trim(),
       basis: "100 г/мл",
       source,
-    };
-  }
-
-  function openFoodFactsNutrition(product) {
-    const nutriments = product.nutriments || {};
-    const water = (product.categories_tags || []).some((tag) => /water/i.test(tag));
-    const calories = finiteNutrient(nutriments["energy-kcal_100g"])
-      ?? (finiteNutrient(nutriments.energy_100g) == null ? null : finiteNutrient(nutriments.energy_100g) / 4.184);
-    const values = {
-      calories: calories ?? (water ? 0 : null),
-      protein: finiteNutrient(nutriments.proteins_100g) ?? (water ? 0 : null),
-      fat: finiteNutrient(nutriments.fat_100g) ?? (water ? 0 : null),
-      carbs: finiteNutrient(nutriments.carbohydrates_100g) ?? (water ? 0 : null),
-      fiber: finiteNutrient(nutriments.fiber_100g) ?? (water ? 0 : null),
-    };
-    const vitamins = openFoodFactsNutrientText(nutriments, {
-      "vitamin-a_100g": ["A", 1_000_000, "мкг"], "vitamin-d_100g": ["D", 1_000_000, "мкг"],
-      "vitamin-e_100g": ["E", 1_000, "мг"], "vitamin-c_100g": ["C", 1_000, "мг"],
-      "vitamin-b1_100g": ["B1", 1_000, "мг"], "vitamin-b2_100g": ["B2", 1_000, "мг"],
-      "vitamin-b6_100g": ["B6", 1_000, "мг"], "vitamin-b9_100g": ["B9", 1_000_000, "мкг"],
-      "vitamin-b12_100g": ["B12", 1_000_000, "мкг"],
-    });
-    const minerals = openFoodFactsNutrientText(nutriments, {
-      calcium_100g: ["Кальций", 1_000, "мг"], iron_100g: ["Железо", 1_000, "мг"],
-      magnesium_100g: ["Магний", 1_000, "мг"], potassium_100g: ["Калий", 1_000, "мг"],
-      zinc_100g: ["Цинк", 1_000, "мг"], sodium_100g: ["Натрий", 1_000, "мг"],
-    });
-    if (!Object.values(values).some((value) => value != null) && !vitamins && !minerals) return null;
-    return {
-      ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value == null ? null : Number(value.toFixed(2))])),
-      vitamins,
-      minerals,
-      basis: "100 г/мл",
-      source: "Open Food Facts",
-    };
-  }
-
-  function openFoodFactsUnit(product) {
-    const water = (product.categories_tags || []).some((tag) => /water/i.test(tag));
-    const quantity = String(product.quantity || "").toLowerCase();
-    if (water || /\b(ml|мл|l|л)\b/.test(quantity)) return "л";
-    if (/\b(kg|кг)\b/.test(quantity)) return "кг";
-    if (/\b(g|г)\b/.test(quantity)) return "г";
-    return "шт.";
-  }
-
-  function openFoodFactsSuggestion(product) {
-    const name = String(product.product_name_ru || product.product_name || product.generic_name_ru || "").trim();
-    if (!name) return null;
-    const brand = Array.isArray(product.brands) ? product.brands.join(", ") : String(product.brands || "").trim();
-    const category = openFoodFactsCategory(product);
-    const genericName = String(product.generic_name_ru || product.generic_name || "").trim();
-    return {
-      id: `off_${product.code || normalizeProductName(name)}`,
-      name,
-      brand,
-      category,
-      genericKey: genericKeyFromParts(category, genericName || name),
-      kind: product.code ? "sku" : "generic",
-      unit: openFoodFactsUnit(product),
-      barcode: String(product.code || ""),
-      ingredients: String(product.ingredients_text_ru || product.ingredients_text || "").trim(),
-      nutrition: openFoodFactsNutrition(product),
-      catalogSource: "Open Food Facts",
-      confirmed: false,
     };
   }
 
@@ -833,29 +644,17 @@
     document.getElementById("products-empty-add")?.addEventListener("click", () => navigate("product-new"));
     document.querySelectorAll(".delete-product").forEach((button) => {
       button.addEventListener("click", async () => {
-        const used = activeRequests().some((request) =>
-          request.items.some((item) => item.productId === button.dataset.id)
-          || request.responses.some((response) => response.items.some((item) =>
-            (item.purchasedProductId || item.productId) === button.dataset.id
-          ))
-        );
-        if (used) return showToast("Продукт используется в запросе.");
         const product = state.products.find((item) => item.id === button.dataset.id);
         if (!product) return;
         if (!await askConfirm(`Удалить продукт «${product.name}»?`)) return;
-        const changedAt = new Date().toISOString();
-        product.deletedAt = changedAt;
-        product.updatedAt = changedAt;
-        product.updatedBy = state.user?.email || "local";
-        saveState();
+        const removed = localData.removeProduct(product.id);
+        if (!removed.ok) return showToast(removed.reason);
+        state = localData.snapshot();
         renderProducts();
         showToast(`Продукт «${product.name}» удалён.`, "Отменить", () => {
-          const deletedProduct = state.products.find((item) => item.id === product.id);
-          if (!deletedProduct) return;
-          deletedProduct.deletedAt = "";
-          deletedProduct.updatedAt = new Date().toISOString();
-          deletedProduct.updatedBy = state.user?.email || "local";
-          saveState();
+          const restored = localData.restoreProduct(product.id);
+          if (!restored.ok) return;
+          state = localData.snapshot();
           renderProducts();
           showToast(`Продукт «${product.name}» восстановлен.`);
         });
@@ -907,35 +706,28 @@
     `;
     document.getElementById("lookup-barcode").addEventListener("click", lookupProductBarcode);
     document.getElementById("scan-barcode").addEventListener("click", () => {
-      if (!window.NativeGoogle?.scanBarcode) return setBarcodeStatus("Сканирование доступно в Android-приложении.", true);
+      if (!window.NativeCookish?.scanBarcode) return setBarcodeStatus("Сканирование доступно в Android-приложении.", true);
       barcodeScanTarget = "product";
-      window.NativeGoogle.scanBarcode();
+      window.NativeCookish.scanBarcode();
     });
     document.getElementById("product-form").addEventListener("submit", (event) => {
       event.preventDefault();
       const data = new FormData(event.currentTarget);
-      const changedAt = new Date().toISOString();
-      const name = data.get("name").trim();
-      const category = data.get("category").trim();
-      const barcode = data.get("barcode").trim();
-      const values = {
-        name,
-        barcode,
-        category,
+      const saved = localData.saveProduct({
+        id: product?.id,
+        name: data.get("name").trim(),
+        barcode: data.get("barcode").trim(),
+        category: data.get("category").trim(),
         unit: data.get("unit"),
         brand: product?.brand || "",
-        kind: barcode ? "sku" : (product?.kind || "generic"),
-        genericKey: product?.genericKey || genericKeyFromParts(category, name),
-        confirmed: true,
-        updatedAt: changedAt,
-        updatedBy: state.user?.email || "local",
+        kind: product?.kind || "generic",
+        genericKey: product?.genericKey || "",
         nutrition: nutritionFromForm(data, event.currentTarget.dataset.nutritionSource || product?.nutrition?.source || "Введено пользователем"),
         ingredients: data.get("ingredients").trim(),
         catalogSource: event.currentTarget.dataset.nutritionSource || product?.catalogSource || "",
-      };
-      if (product) Object.assign(product, values);
-      else state.products.push({ id: id("product"), ...values });
-      saveState();
+      });
+      if (!saved.ok) return showToast(saved.reason);
+      state = localData.snapshot();
       const ret = productEditReturn;
       productEditReturn = null;
       if (ret?.route) navigate(ret.route, ret.id || null);
@@ -958,24 +750,11 @@
   }
 
   function createEmptyRequestAndOpen() {
-    const changedAt = new Date().toISOString();
-    const nextRequest = {
-      id: id("request"),
-      createdAt: changedAt,
-      status: "open",
-      items: [],
-      responses: [],
-      createdBy: state.user?.email || "local",
-      updatedBy: state.user?.email || "local",
-      updatedAt: changedAt,
-      history: [],
-    };
-    appendRequestVersion(nextRequest, "Запрос создан", changedAt, nextRequest.createdBy);
-    const nextState = structuredClone(state);
-    nextState.requests.push(nextRequest);
-    commitState(nextState);
+    const created = localData.createRequest();
+    if (!created.ok) return showToast(created.reason || "Не удалось создать запрос.");
+    state = localData.snapshot();
     draftItems = [];
-    navigate("request-edit", nextRequest.id);
+    navigate("request-edit", created.requestId);
   }
 
   function ensureRequestDraftRows(request) {
@@ -1227,7 +1006,7 @@
     const product = getProduct(item.productId);
     const nutrition = product?.nutrition;
     const latestPrice = latestProductPrice(item.productId);
-    const purchased = productPurchasedTotal(item.productId);
+    const purchased = productPurchasedTotal(item.productId, state);
     const unit = product?.unit || item.unit || "";
     const nutrient = (value) => value == null || value === "" ? "—" : number(value);
     return `
@@ -1772,73 +1551,6 @@
     return "";
   }
 
-  function requestReceipt(request) {
-    return activeResponses(request)
-      .slice()
-      .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))[0] || null;
-  }
-
-  function receiptLine(request, productId) {
-    return requestReceipt(request)?.items.find((item) => item.productId === productId) || null;
-  }
-
-  function ensureSingleReceipt(nextRequest, changedAt) {
-    // One request = one receipt: merge historical multi-response data into a single active response.
-    const active = activeResponses(nextRequest)
-      .slice()
-      .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
-    if (!active.length) {
-      const reusable = (nextRequest.responses || [])
-        .slice()
-        .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))[0];
-      if (reusable) {
-        reusable.items = [];
-        reusable.deletedAt = "";
-        reusable.updatedAt = changedAt;
-        reusable.updatedBy = state.user?.email || "local";
-        return reusable;
-      }
-      const receipt = {
-        id: `response_${nextRequest.id}`,
-        requestId: nextRequest.id,
-        items: [],
-        createdAt: changedAt,
-        createdBy: state.user?.email || "local",
-        updatedAt: changedAt,
-        updatedBy: state.user?.email || "local",
-      };
-      nextRequest.responses.push(receipt);
-      return receipt;
-    }
-    const primary = nextRequest.responses.find((item) => item.id === active[0].id);
-    if (active.length > 1) {
-      const merged = new Map();
-      active.forEach((response) => {
-        response.items.forEach((item) => {
-          const previous = merged.get(item.productId);
-          if (!previous) {
-            merged.set(item.productId, structuredClone(item));
-            return;
-          }
-          previous.quantity = (Number(previous.quantity) || 0) + (Number(item.quantity) || 0);
-          previous.price = (Number(previous.price) || 0) + (Number(item.price) || 0);
-          if (item.purchasedProductId) previous.purchasedProductId = item.purchasedProductId;
-          if (item.completionMode === "filled") previous.completionMode = "filled";
-        });
-        if (response.id !== primary.id) {
-          response.deletedAt = changedAt;
-          response.updatedAt = changedAt;
-          response.updatedBy = state.user?.email || "local";
-        }
-      });
-      primary.items = [...merged.values()];
-      primary.updatedAt = changedAt;
-      primary.updatedBy = state.user?.email || "local";
-      primary.deletedAt = "";
-    }
-    return primary;
-  }
-
   function openInlinePurchaseDetails(request, productId) {
     const line = receiptLine(request, productId);
     const remaining = remainingRequestQuantity(request, productId);
@@ -1880,118 +1592,24 @@
   }
 
   function applyInlinePurchase(requestId, productId, draftItem) {
-    const request = getRequest(requestId);
-    if (!request || !productId) return;
-    const changedAt = new Date().toISOString();
-    const nextState = structuredClone(state);
-    const nextRequest = nextState.requests.find((item) => item.id === requestId);
-    if (!nextRequest) return;
-    // Guard against catalog-only ids: purchases must use real product ids from the request.
-    const requestItem = nextRequest.items.find((item) => item.productId === productId)
-      || nextRequest.items.find((item) =>
-        normalizeProductName(getProduct(item.productId)?.name || "")
-        === normalizeProductName(getProduct(productId)?.name || draftItem?.query || "")
-      );
-    const resolvedProductId = requestItem?.productId || (isRealProductId(productId) ? productId : "");
-    if (!resolvedProductId) return;
-    const requested = Number(requestItem?.quantity || nextRequest.items.find((item) => item.productId === resolvedProductId)?.quantity || 0);
-    let quantity = Number(draftItem.quantity);
-    if (!Number.isFinite(quantity) || quantity <= 0) quantity = requested || 1;
-    quantity = Math.min(quantity, requested || quantity);
-    const price = Number(draftItem.price);
-    const safePrice = Number.isFinite(price) && price >= 0 ? price : 0;
-    const currentLine = receiptLine(request, resolvedProductId);
-    const expectedPurchasedProductId = draftItem.purchasedProductId || resolvedProductId;
-    const expectedFilled = safePrice > 0
-      || Boolean(draftItem.purchasedProduct)
-      || expectedPurchasedProductId !== resolvedProductId
-      || draftItem.completionMode === "filled";
-    const expectedCompletionMode = expectedFilled ? "filled" : (draftItem.completionMode || "closed");
-    if (!draftItem.purchasedProduct && purchaseLineMatches(currentLine, {
-      productId: resolvedProductId,
-      purchasedProductId: expectedPurchasedProductId,
-      quantity,
-      price: safePrice,
-      completionMode: expectedCompletionMode,
-    })) {
-      patchRequestItemRow(requestId, resolvedProductId);
-      return;
-    }
-    const purchasedProductId = materializePurchasedProduct(nextState, { ...draftItem, productId: resolvedProductId }, changedAt) || resolvedProductId;
-    const receipt = ensureSingleReceipt(nextRequest, changedAt);
-    let line = receipt.items.find((item) => item.productId === resolvedProductId);
-    const isNewLine = !line;
-    const filled = safePrice > 0
-      || Boolean(draftItem.purchasedProduct)
-      || (purchasedProductId && purchasedProductId !== resolvedProductId)
-      || draftItem.completionMode === "filled";
-    if (!line) {
-      line = {
-        productId: resolvedProductId,
-        purchasedProductId,
-        quantity,
-        price: safePrice,
-        completionMode: filled ? "filled" : (draftItem.completionMode || "closed"),
-      };
-      receipt.items.push(line);
-    } else {
-      line.quantity = quantity;
-      line.price = safePrice;
-      line.purchasedProductId = purchasedProductId;
-      line.completionMode = filled ? "filled" : (draftItem.completionMode || line.completionMode || "closed");
-    }
-    receipt.updatedAt = changedAt;
-    receipt.updatedBy = state.user?.email || "local";
-    receipt.deletedAt = "";
-    nextRequest.updatedAt = changedAt;
-    nextRequest.updatedBy = state.user?.email || "local";
-    updateRequestStatus(nextRequest, changedAt);
-    appendRequestVersion(
-      nextRequest,
-      isNewLine ? "Покупка отмечена" : "Детали покупки обновлены",
-      changedAt,
-      nextRequest.updatedBy
-    );
-    commitState(nextState);
+    const marked = localData.markBought(requestId, productId, {
+      quantity: draftItem.quantity,
+      price: draftItem.price,
+      purchasedProductId: draftItem.purchasedProductId,
+      purchasedProduct: draftItem.purchasedProduct,
+      completionMode: draftItem.completionMode,
+      query: draftItem.query,
+    });
+    if (!marked.ok) return;
+    state = localData.snapshot();
     formDirty = false;
-    patchRequestItemRow(requestId, resolvedProductId);
-  }
-
-  function purchaseLineMatches(line, expected) {
-    if (!line || !expected) return false;
-    return line.productId === expected.productId
-      && String(line.purchasedProductId || line.productId) === String(expected.purchasedProductId || expected.productId)
-      && Number(line.quantity) === Number(expected.quantity)
-      && Number(line.price || 0) === Number(expected.price || 0)
-      && String(line.completionMode || "closed") === String(expected.completionMode || "closed");
+    patchRequestItemRow(requestId, marked.productId || productId);
   }
 
   function undoLatestPurchaseForProduct(requestId, productId) {
-    const request = getRequest(requestId);
-    if (!request) return;
-    if (!receiptLine(request, productId)) {
-      patchRequestItemRow(requestId, productId);
-      return;
-    }
-    const nextState = structuredClone(state);
-    const nextRequest = nextState.requests.find((item) => item.id === requestId);
-    if (!nextRequest) return;
-    const changedAt = new Date().toISOString();
-    const receipt = ensureSingleReceipt(nextRequest, changedAt);
-    const before = receipt.items.length;
-    receipt.items = receipt.items.filter((item) => item.productId !== productId);
-    if (receipt.items.length === before) {
-      patchRequestItemRow(requestId, productId);
-      return;
-    }
-    receipt.updatedAt = changedAt;
-    receipt.updatedBy = state.user?.email || "local";
-    if (!receipt.items.length) receipt.deletedAt = changedAt;
-    nextRequest.updatedAt = changedAt;
-    nextRequest.updatedBy = state.user?.email || "local";
-    updateRequestStatus(nextRequest, changedAt);
-    appendRequestVersion(nextRequest, "Отметка покупки снята", changedAt, nextRequest.updatedBy);
-    commitState(nextState);
+    const unmarked = localData.unmarkBought(requestId, productId);
+    if (!unmarked.ok) return;
+    state = localData.snapshot();
     formDirty = false;
     patchRequestItemRow(requestId, productId);
   }
@@ -2113,61 +1731,20 @@
     if (!editedRequest) return false;
     syncDraftFromForm();
     const filledDraftItems = draftItems.filter((item) => item.confirmed && item.query.trim());
-    const nextState = structuredClone(state);
-    const nextRequest = nextState.requests.find((request) => request.id === editedRequest.id);
-    if (!nextRequest) return false;
-
-    const items = [];
-    for (const draft of filledDraftItems) {
-      const product = resolveOrCreateProduct(draft, nextState.products, new Date().toISOString());
-      const previous = editedRequest.items.find((item) => item.productId === product.id) || {};
-      // Unit comes from the product card (not a free-text field on the line).
-      const unit = String(previous.unit || product.unit || draft.unit || "шт.").trim() || "шт.";
-      items.push({
-        ...previous,
-        productId: product.id,
-        quantity: Number(draft.quantity) || 1,
-        unit,
-        note: String(draft.note || "").trim(),
-      });
-    }
-
-    if (new Set(items.map((item) => item.productId)).size !== items.length) {
-      if (!silent) showToast("Один продукт нельзя добавлять в запрос дважды.");
+    const saved = localData.saveRequestItems(editedRequest.id, filledDraftItems.map((draft) => ({
+      productId: draft.productId,
+      name: draft.query.trim(),
+      quantity: draft.quantity,
+      unit: draft.unit,
+      note: draft.note,
+      hint: suggestionByName(draft.query),
+    })));
+    if (!saved.ok) {
+      if (!silent) showToast(saved.reason);
       return false;
     }
-    const answeredProductIds = new Set(
-      activeResponses(editedRequest).flatMap((response) =>
-        response.items.filter((item) => item.quantity || item.price).map((item) => item.productId)
-      )
-    );
-    if ([...answeredProductIds].some((productId) => !items.some((item) => item.productId === productId))) {
-      if (!silent) showToast("Нельзя удалить товар, который уже указан в ответе.");
-      return false;
-    }
-    if (items.some((item) => responseItemTotal(editedRequest, item.productId).quantity > Number(item.quantity))) {
-      if (!silent) showToast("Количество нельзя уменьшить ниже уже купленного.");
-      return false;
-    }
-
-    const sameItems = items.length === editedRequest.items.length
-      && items.every((item, index) => {
-        const previous = editedRequest.items[index];
-        return previous
-          && previous.productId === item.productId
-           && Number(previous.quantity) === Number(item.quantity)
-           && String(previous.unit || "") === String(item.unit || "")
-           && String(previous.note || "") === String(item.note || "");
-      });
-    if (sameItems) return true;
-
-    const changedAt = new Date().toISOString();
-    nextRequest.items = items;
-    nextRequest.updatedAt = changedAt;
-    nextRequest.updatedBy = state.user?.email || "local";
-    updateRequestStatus(nextRequest);
-    appendRequestVersion(nextRequest, items.length ? "Запрос изменён" : "Запрос очищен", changedAt, nextRequest.updatedBy);
-    commitState(nextState);
+    state = localData.snapshot();
+    const items = getRequest(editedRequest.id)?.items || [];
 
     // Keep only draft rows that still exist in the DOM (filled + current blank line).
     const keysInDom = new Set([...document.querySelectorAll(".request-item")].map((row) => row.dataset.key));
@@ -2214,20 +1791,9 @@
 
   async function deleteRequestWithTransactions(request) {
     if (!await askConfirm("Удалить запрос и все данные о покупках?")) return;
-    const changedAt = new Date().toISOString();
-    const actor = state.user?.email || "local";
-    const nextState = structuredClone(state);
-    const nextRequest = nextState.requests.find((item) => item.id === request.id);
-    if (!nextRequest) return;
-    nextRequest.deletedAt = changedAt;
-    nextRequest.updatedAt = changedAt;
-    nextRequest.updatedBy = actor;
-    nextRequest.responses.forEach((response) => {
-      response.deletedAt = changedAt;
-      response.updatedAt = changedAt;
-      response.updatedBy = actor;
-    });
-    commitState(nextState);
+    const removed = localData.removeRequest(request.id);
+    if (!removed.ok) return showToast(removed.reason);
+    state = localData.snapshot();
     navigate("requests");
     showToast("Запрос удалён.");
   }
@@ -2342,14 +1908,6 @@
     };
   }
 
-  function remainingRequestQuantity(request, productId, excludedResponseId = "") {
-    const requested = Number(request.items.find((item) => item.productId === productId)?.quantity || 0);
-    const bought = activeResponses(request)
-      .filter((response) => response.id !== excludedResponseId)
-      .reduce((sum, response) => sum + Number(response.items.find((item) => item.productId === productId)?.quantity || 0), 0);
-    return Math.max(0, requested - bought);
-  }
-
   function commitInlinePurchaseDraft(productId) {
     if (route !== "request-edit" || !productId) return;
     const draft = answerDraftItems.get(productId);
@@ -2375,9 +1933,9 @@
     };
     document.getElementById("save-purchase-item").onclick = () => savePurchaseDraftItem(false);
     document.getElementById("scan-purchase-barcode").onclick = () => {
-      if (!window.NativeGoogle?.scanBarcode) return setPurchaseStatus("Сканирование доступно в Android-приложении.", true);
+      if (!window.NativeCookish?.scanBarcode) return setPurchaseStatus("Сканирование доступно в Android-приложении.", true);
       barcodeScanTarget = "purchase";
-      window.NativeGoogle.scanBarcode();
+      window.NativeCookish.scanBarcode();
     };
   }
 
@@ -2645,97 +2203,11 @@
     summary.hidden = !item;
   }
 
-  function materializePurchasedProduct(nextState, item, changedAt) {
-    if (!item.purchasedProduct) return item.purchasedProductId || item.productId;
-    const suggestion = item.purchasedProduct;
-    const requestedProduct = nextState.products.find((product) => product.id === item.productId && !product.deletedAt);
-    // Only unconfirmed cards may be rewritten in place (e.g. free-text "Молоко" + scan).
-    if (requestedProduct && !isProductConfirmed(requestedProduct)) {
-      const category = suggestion.category || requestedProduct.category || "";
-      Object.assign(requestedProduct, {
-        name: suggestion.name,
-        category,
-        brand: suggestion.brand || requestedProduct.brand || "",
-        unit: suggestion.unit || requestedProduct.unit || "шт.",
-        barcode: suggestion.barcode || requestedProduct.barcode || "",
-        ingredients: suggestion.ingredients || requestedProduct.ingredients || "",
-        nutrition: suggestion.nutrition ? structuredClone(suggestion.nutrition) : requestedProduct.nutrition,
-        catalogSource: suggestion.catalogSource || requestedProduct.catalogSource || "Open Food Facts",
-        kind: suggestion.kind || (suggestion.barcode ? "sku" : inferProductKind(requestedProduct)),
-        genericKey: suggestion.genericKey
-          || requestedProduct.genericKey
-          || genericKeyFromParts(category, suggestion.name || requestedProduct.name),
-        confirmed: Boolean(suggestion.barcode),
-        updatedAt: changedAt,
-        updatedBy: state.user?.email || "local",
-      });
-      return requestedProduct.id;
-    }
-    const existing = nextState.products.find((product) =>
-      !product.deletedAt && (
-        (suggestion.barcode && product.barcode === suggestion.barcode)
-        || normalizeProductName(product.name) === normalizeProductName(suggestion.name)
-      )
-    );
-    if (existing) return existing.id;
-    const category = suggestion.category || "";
-    const product = {
-      id: id("product"),
-      name: suggestion.name,
-      category,
-      brand: suggestion.brand || "",
-      unit: suggestion.unit || "шт.",
-      barcode: suggestion.barcode || "",
-      ingredients: suggestion.ingredients || "",
-      catalogSource: suggestion.catalogSource || "Open Food Facts",
-      nutrition: suggestion.nutrition ? structuredClone(suggestion.nutrition) : null,
-      kind: suggestion.kind || (suggestion.barcode ? "sku" : "generic"),
-      genericKey: suggestion.genericKey || genericKeyFromParts(category, suggestion.name),
-      confirmed: Boolean(suggestion.barcode),
-      updatedAt: changedAt,
-      updatedBy: state.user?.email || "local",
-    };
-    nextState.products.push(product);
-    return product.id;
-  }
-
-  function isCatalogIdentifiedProduct(product) {
-    // Kept for callers/tests; confirmed SKUs and barcode-backed cards are "identified".
-    return isProductConfirmed(product);
-  }
-
   function saveAnswerTransaction(event, request, editedResponse) {
     event.preventDefault();
-    if (!answerDraftItems.size) return showToast("Отметьте хотя бы одну купленную позицию.");
-    const changedAt = new Date().toISOString();
-    const nextState = structuredClone(state);
-    const responseItems = [...answerDraftItems.values()].map((item) => ({
-      productId: item.productId,
-      purchasedProductId: materializePurchasedProduct(nextState, item, changedAt),
-      quantity: Number(item.quantity),
-      price: Number(item.price) || 0,
-      completionMode: item.completionMode || "filled",
-    }));
-    const nextRequest = nextState.requests.find((item) => item.id === request.id);
-    const nextEditedResponse = editedResponse
-      ? nextRequest.responses.find((response) => response.id === editedResponse.id)
-      : null;
-    if (nextEditedResponse) {
-      nextEditedResponse.items = responseItems;
-      nextEditedResponse.updatedAt = changedAt;
-      nextEditedResponse.updatedBy = state.user?.email || "local";
-    } else {
-      nextRequest.responses.push({
-        id: id("response"), requestId: nextRequest.id, items: responseItems,
-        createdAt: changedAt, createdBy: state.user?.email || "local",
-        updatedAt: changedAt, updatedBy: state.user?.email || "local",
-      });
-    }
-    nextRequest.updatedAt = changedAt;
-    nextRequest.updatedBy = state.user?.email || "local";
-    updateRequestStatus(nextRequest, changedAt);
-    appendRequestVersion(nextRequest, nextEditedResponse ? "Транзакция изменена" : "Транзакция добавлена", changedAt, nextRequest.updatedBy);
-    commitState(nextState);
+    const saved = localData.saveReceipt(request.id, [...answerDraftItems.values()], editedResponse?.id || "");
+    if (!saved.ok) return showToast(saved.reason);
+    state = localData.snapshot();
     draftItems = [];
     navigate("request-edit", request.id);
     showToast("Покупки сохранены.");
@@ -2980,15 +2452,6 @@
     return latest?.price || 0;
   }
 
-  function productPurchasedTotal(productId, source = state) {
-    return (source.requests || []).filter((request) => !request.deletedAt).reduce((total, request) => total + activeResponses(request).reduce(
-      (requestTotal, response) => requestTotal + response.items.reduce((responseTotal, item) => {
-        return responseTotal + ((item.purchasedProductId || item.productId) === productId ? Number(item.quantity) || 0 : 0);
-      }, 0),
-      0
-    ), 0);
-  }
-
   function rationSelectionToolbar() {
     if (!rationSelectionActive()) return "";
     const dateCount = rationSelectedDates.size;
@@ -3013,7 +2476,7 @@
   }
 
   function rationTemplateControls() {
-    const templates = rationTemplatesForUser();
+    const templates = rationTemplatesForUser(state);
     return `<section class="ration-template-actions">
       <button id="create-ration-template" class="button secondary" type="button" ${rationSelectedDates.size !== 1 ? "disabled" : ""}>Создать шаблон дня</button>
       <div class="ration-template-apply">
@@ -3143,10 +2606,7 @@
     };
     document.querySelectorAll(".ration-view-option").forEach((button) => {
       button.onclick = () => {
-        const nextState = structuredClone(state);
-        nextState.rationView = button.dataset.view;
-        nextState.rationAnchor = anchor;
-        commitState(nextState);
+        applyLocal(localData.setRationCalendar({ view: button.dataset.view, anchor }));
         renderRation();
       };
     });
@@ -3166,11 +2626,8 @@
     };
     document.querySelectorAll(".ration-month-day").forEach((button) => {
       button.onclick = () => {
-        const nextState = structuredClone(state);
-        nextState.rationAnchor = button.dataset.date;
-        nextState.rationView = "day";
         routeSubId = null;
-        commitState(nextState);
+        applyLocal(localData.setRationCalendar({ view: "day", anchor: button.dataset.date }));
         renderRation();
       };
     });
@@ -3184,9 +2641,7 @@
           toggleRationMealSelection(button);
           return;
         }
-        const nextState = structuredClone(state);
-        nextState.rationAnchor = button.dataset.date;
-        commitState(nextState);
+        applyLocal(localData.setRationCalendar({ anchor: button.dataset.date }));
         routeSubId = button.dataset.mealId;
         renderRation();
       };
@@ -3197,13 +2652,9 @@
       });
     });
     document.getElementById("ration-add-meal").onclick = () => {
-      const nextState = structuredClone(state);
-      const day = mutableRationDay(nextState, anchor);
-      const nextMeal = { id: id("meal"), name: `Приём пищи ${day.meals.length + 1}`, time: rationMealTime(null, day.meals.length), items: [] };
-      day.meals.push(nextMeal);
-      touchRationDay(day);
-      commitState(nextState);
-      routeSubId = nextMeal.id;
+      const added = localData.addRationMeal(anchor);
+      if (!applyLocal(added)) return;
+      routeSubId = added.mealId;
       renderRation();
     };
     document.querySelectorAll(".ration-select-day:not(.ration-month-day)").forEach((selector) => {
@@ -3214,10 +2665,7 @@
         }
         if (rationSelectionMode) return toggleRationDaySelection(selector.dataset.date);
         if (view === "week") {
-          const nextState = structuredClone(state);
-          nextState.rationAnchor = selector.dataset.date;
-          nextState.rationView = "day";
-          commitState(nextState);
+          applyLocal(localData.setRationCalendar({ view: "day", anchor: selector.dataset.date }));
           renderRation();
         }
       };
@@ -3239,12 +2687,7 @@
     document.getElementById("delete-ration-template")?.addEventListener("click", deleteRationTemplate);
     document.querySelectorAll(".add-ration-meal").forEach((button) => {
       button.onclick = () => {
-        const nextState = structuredClone(state);
-        const day = mutableRationDay(nextState, button.dataset.date);
-        nextState.rationAnchor = button.dataset.date;
-        day.meals.push({ id: id("meal"), name: `Приём пищи ${day.meals.length + 1}`, time: rationMealTime(null, day.meals.length), items: [] });
-        touchRationDay(day);
-        commitState(nextState);
+        applyLocal(localData.addRationMeal(button.dataset.date));
         renderRation();
       };
     });
@@ -3338,9 +2781,7 @@
     else rationSelectedMealIds.add(mealId);
     itemIds.forEach((itemId) => allSelected ? rationSelectedItemIds.delete(itemId) : rationSelectedItemIds.add(itemId));
     refreshRationSelectedDate(dateKey);
-    const nextState = structuredClone(state);
-    nextState.rationAnchor = dateKey;
-    commitState(nextState, false);
+    applyLocal(localData.setRationCalendar({ anchor: dateKey }));
     if (navigator.vibrate) navigator.vibrate(20);
     renderRation();
   }
@@ -3359,9 +2800,7 @@
       itemIds.forEach((itemId) => rationSelectedItemIds.add(itemId));
       mealIds.forEach((mealId) => rationSelectedMealIds.add(mealId));
     }
-    const nextState = structuredClone(state);
-    nextState.rationAnchor = dateKey;
-    commitState(nextState, false);
+    applyLocal(localData.setRationCalendar({ anchor: dateKey }));
     if (navigator.vibrate) navigator.vibrate(20);
     renderRation();
   }
@@ -3381,13 +2820,6 @@
     const hasSelectedMeals = rationMealIdsForDate(dateKey).some((mealId) => rationSelectedMealIds.has(mealId));
     if (hasSelectedItems || hasSelectedMeals) rationSelectedDates.add(dateKey);
     else rationSelectedDates.delete(dateKey);
-  }
-
-  function rationMeasure(product) {
-    const unit = String(product?.unit || "г").toLowerCase();
-    if (unit.includes("шт")) return { unit: "шт.", defaultPortion: 1, defaultPackage: 1 };
-    if (unit === "л" || unit.includes("мл")) return { unit: "мл", defaultPortion: 250, defaultPackage: 1000 };
-    return { unit: "г", defaultPortion: 100, defaultPackage: 1000 };
   }
 
   function openRationPortionDialog(button) {
@@ -3420,16 +2852,16 @@
     document.getElementById("ration-portion-form")?.addEventListener("submit", (event) => {
       event.preventDefault();
       if (!rationPortionTarget) return;
-      const nextState = structuredClone(state);
-      const day = mutableRationDay(nextState, rationPortionTarget.dateKey);
-      const meal = day.meals.find((value) => value.id === rationPortionTarget.mealId);
-      const item = meal?.items.find((value) => value.id === rationPortionTarget.itemId);
-      if (!item) return;
-      item.portionSize = Number(document.getElementById("ration-portion-size").value) || 1;
-      item.packageSize = Number(document.getElementById("ration-package-size").value) || 1;
-      item.measureUnit = document.getElementById("ration-portion-unit").textContent;
-      touchRationDay(day);
-      commitState(nextState);
+      applyLocal(localData.setRationPortion(
+        rationPortionTarget.dateKey,
+        rationPortionTarget.mealId,
+        rationPortionTarget.itemId,
+        {
+          portionSize: document.getElementById("ration-portion-size").value,
+          packageSize: document.getElementById("ration-package-size").value,
+          measureUnit: document.getElementById("ration-portion-unit").textContent,
+        }
+      ));
       rationPortionTarget = null;
       renderRation();
     });
@@ -3444,28 +2876,6 @@
     if (preview) preview.textContent = packageSize ? `Одной упаковки хватит примерно на ${number(count)} порц. по ${number(portion)} ${unit}.` : "";
   }
 
-  function rationTemplatesForUser(source = state) {
-    const owner = rationOwner(source);
-    return (source.rationTemplates || [])
-      .filter((template) => String(template.owner || "local").trim().toLowerCase() === owner)
-      .sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
-  }
-
-  function cloneTemplateMeals(meals) {
-    return (meals || []).map((meal, mealIndex) => ({
-      id: id("meal"),
-      name: meal.name || `Приём пищи ${mealIndex + 1}`,
-      time: rationMealTime(meal, mealIndex),
-      items: (meal.items || []).map((item) => ({
-        id: id("ration_item"),
-        productId: item.productId || "",
-        name: item.name || "",
-        portionSize: Number(item.portionSize) || 0,
-        packageSize: Number(item.packageSize) || 0,
-      })),
-    }));
-  }
-
   function createRationTemplate() {
     const dates = [...rationSelectedDates];
     if (dates.length !== 1) return showToast("Для шаблона выберите один день.");
@@ -3476,7 +2886,7 @@
 
   function renameRationTemplate() {
     const templateId = document.getElementById("ration-template-select")?.value;
-    const template = rationTemplatesForUser().find((item) => item.id === templateId);
+    const template = rationTemplatesForUser(state).find((item) => item.id === templateId);
     if (template) openRationTemplateDialog("rename", template.name, "", template.id);
   }
 
@@ -3507,90 +2917,55 @@
   }
 
   function saveNewRationTemplate(dateKey, name) {
-    const day = rationDayFor(state, dateKey);
-    if (!day?.meals?.length) return showToast("День больше не содержит приёмов пищи.");
-    const changedAt = new Date().toISOString();
-    const nextState = structuredClone(state);
-    nextState.rationTemplates = nextState.rationTemplates || [];
-    nextState.rationTemplates.push({
-      id: id("ration_template"),
-      name,
-      owner: rationOwner(nextState),
-      meals: cloneTemplateMeals(day.meals),
-      createdAt: changedAt,
-      updatedAt: changedAt,
-    });
-    commitState(nextState);
+    if (!applyLocal(localData.saveRationTemplateFromDay(dateKey, name))) return;
     renderRation();
     showToast("Шаблон дня сохранён.");
   }
 
   function saveRenamedRationTemplate(templateId, name) {
-    const nextState = structuredClone(state);
-    const template = (nextState.rationTemplates || []).find((item) => item.id === templateId);
-    if (!template) return;
-    template.name = name;
-    template.updatedAt = new Date().toISOString();
-    commitState(nextState);
+    if (!applyLocal(localData.renameRationTemplate(templateId, name))) return;
     renderRation();
     showToast("Шаблон переименован.");
   }
 
   async function deleteRationTemplate() {
     const templateId = document.getElementById("ration-template-select")?.value;
-    const template = rationTemplatesForUser().find((item) => item.id === templateId);
+    const template = rationTemplatesForUser(state).find((item) => item.id === templateId);
     if (!template || !await askConfirm(`Удалить шаблон «${template.name}»?`)) return;
-    const previousState = structuredClone(state);
-    const nextState = structuredClone(state);
-    nextState.rationTemplates = (nextState.rationTemplates || []).filter((item) => item.id !== templateId);
-    commitState(nextState);
+    const previous = localData.snapshot();
+    if (!applyLocal(localData.removeRationTemplate(templateId))) return;
     renderRation();
     showToast(`Шаблон «${template.name}» удалён.`, "Отменить", () => {
-      commitState(previousState);
+      state = localData.commit(previous);
       renderRation();
     });
   }
 
   async function applyRationTemplate() {
     const templateId = document.getElementById("ration-template-select")?.value;
-    const template = rationTemplatesForUser().find((item) => item.id === templateId);
+    const template = rationTemplatesForUser(state).find((item) => item.id === templateId);
     const dates = [...rationSelectedDates];
     if (!template || !dates.length) return;
     const filledDates = dates.filter((dateKey) => (rationDayFor(state, dateKey)?.meals || []).some((meal) => meal.items?.length || meal.name));
     if (filledDates.length && !await askConfirm(`Шаблон заменит существующий рацион в ${filledDates.length} ${filledDates.length === 1 ? "дне" : "днях"}. Продолжить?`)) return;
-    const previousState = structuredClone(state);
-    const nextState = structuredClone(state);
-    dates.forEach((dateKey) => {
-      const day = mutableRationDay(nextState, dateKey);
-      day.meals = cloneTemplateMeals(template.meals);
-      touchRationDay(day);
-    });
-    commitState(nextState);
+    const previous = localData.snapshot();
+    if (!applyLocal(localData.applyRationTemplate(templateId, dates))) return;
     renderRation();
     showToast(`Шаблон применён к ${dates.length} дн.`, "Отменить", () => {
-      commitState(previousState);
+      state = localData.commit(previous);
       renderRation();
     });
   }
 
   function createRequestFromRationSelection() {
-    const dates = [...rationSelectedDates].sort();
-    const requestItems = plannedRationRequestItems(state, dates, rationSelectedItemIds);
-    if (!requestItems.length) return showToast("Выберите хотя бы одну позицию рациона.");
-    const changedAt = new Date().toISOString();
-    const nextState = structuredClone(state);
-    const nextRequest = {
-      id: id("request"), createdAt: changedAt, status: "open",
-      items: requestItems,
-      responses: [], createdBy: state.user?.email || "local", updatedBy: state.user?.email || "local",
-      updatedAt: changedAt, history: [],
-    };
-    appendRequestVersion(nextRequest, "Запрос создан из рациона", changedAt, nextRequest.createdBy);
-    nextState.requests.push(nextRequest);
-    commitState(nextState);
+    const created = localData.createRequestFromRation({
+      dates: [...rationSelectedDates],
+      itemIds: [...rationSelectedItemIds],
+    });
+    if (!applyLocal(created)) return;
     clearRationSelection();
     draftItems = [];
-    navigate("request-edit", nextRequest.id);
+    navigate("request-edit", created.requestId);
     showToast("Продукты рациона добавлены в запрос.");
   }
 
@@ -3618,89 +2993,29 @@
     }
     if (!await askConfirm(confirmText)) return;
 
-    const previousState = structuredClone(state);
-    const nextState = structuredClone(state);
-    const datesToEdit = new Set(selectedDates);
-    Object.values(state.rationDays || {}).forEach((day) => {
-      if (!day?.date) return;
-      const hasMeal = (day.meals || []).some((meal) => selectedMealIds.has(meal.id));
-      const hasItem = (day.meals || []).some((meal) =>
-        (meal.items || []).some((item) => selectedItemIds.has(item.id))
-      );
-      if (hasMeal || hasItem) datesToEdit.add(day.date);
+    const previous = localData.snapshot();
+    const deleted = localData.deleteRationSelection({
+      mealIds: [...selectedMealIds],
+      itemIds: [...selectedItemIds],
+      dates: [...selectedDates],
     });
-
-    let changed = false;
-    datesToEdit.forEach((dateKey) => {
-      const day = mutableRationDay(nextState, dateKey);
-      let dayChanged = false;
-
-      if (selectedMealIds.size) {
-        const before = day.meals.length;
-        day.meals = day.meals.filter((meal) => !selectedMealIds.has(meal.id));
-        dayChanged = day.meals.length !== before;
-      } else if (selectedItemIds.size) {
-        day.meals.forEach((meal) => {
-          const before = (meal.items || []).length;
-          meal.items = (meal.items || []).filter((item) => !selectedItemIds.has(item.id));
-          if (meal.items.length !== before) dayChanged = true;
-        });
-      } else if (selectedDates.has(dateKey)) {
-        if (day.meals.length) {
-          day.meals = [];
-          dayChanged = true;
-        }
-      }
-
-      if (dayChanged) {
-        touchRationDay(day);
-        changed = true;
-      }
-    });
-
-    if (!changed) {
+    if (!applyLocal(deleted)) {
       clearRationSelection();
       renderRation();
-      return showToast("В сохранённом рационе нечего удалять.");
+      return;
     }
-
-    commitState(nextState);
     clearRationSelection();
     routeSubId = null;
     renderRation();
     showToast("Выбранное удалено из рациона.", "Отменить", () => {
-      commitState(previousState);
+      state = localData.commit(previous);
       renderRation();
     });
   }
 
-  function plannedRationRequestItems(source, dates, selectedItemIds) {
-    const portions = new Map();
-    dates.forEach((dateKey) => (rationDayFor(source, dateKey)?.meals || []).forEach((meal) =>
-      (meal.items || []).forEach((item) => {
-        if (!item.productId || !selectedItemIds.has(item.id)) return;
-        const product = (source.products || []).find((value) => value.id === item.productId);
-        const measure = rationMeasure(product);
-        const portionSize = Number(item.portionSize) || measure.defaultPortion;
-        const packageSize = Number(item.packageSize) || measure.defaultPackage;
-        const current = portions.get(item.productId) || { productId: item.productId, plannedAmount: 0, packageSize, measureUnit: item.measureUnit || measure.unit };
-        current.plannedAmount += portionSize;
-        current.packageSize = packageSize;
-        portions.set(item.productId, current);
-      })
-    ));
-    return [...portions.values()].map((item) => ({
-        ...item,
-        quantity: Math.max(1, Math.ceil(item.plannedAmount / item.packageSize)),
-        unit: "уп.",
-      }));
-  }
-
   function setRationAnchor(dateKey) {
-    const nextState = structuredClone(state);
-    nextState.rationAnchor = dateKey;
     routeSubId = null;
-    commitState(nextState);
+    applyLocal(localData.setRationCalendar({ anchor: dateKey }));
     renderRation();
   }
 
@@ -3713,27 +3028,14 @@
 
   function updateRationMealName(input) {
     const card = input.closest(".ration-meal");
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    nextState.rationAnchor = card.dataset.date;
-    const meal = day.meals.find((item) => item.id === card.dataset.mealId);
-    if (!meal) return;
-    meal.name = input.value.trim() || "Приём пищи";
-    touchRationDay(day);
-    commitState(nextState);
+    applyLocal(localData.updateRationMeal(card.dataset.date, card.dataset.mealId, { name: input.value }));
     renderRation();
   }
 
   function updateRationMealTime(input) {
     const card = input.closest(".ration-meal");
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    const meal = day.meals.find((item) => item.id === card.dataset.mealId);
-    if (!meal) return;
-    meal.time = /^\d{2}:\d{2}$/.test(input.value) ? input.value : "12:00";
-    touchRationDay(day);
-    commitState(nextState);
-    routeSubId = meal.id;
+    applyLocal(localData.updateRationMeal(card.dataset.date, card.dataset.mealId, { time: input.value }));
+    routeSubId = card.dataset.mealId;
     renderRation();
   }
 
@@ -3742,17 +3044,12 @@
     const currentDay = rationDayFor(state, card.dataset.date);
     const currentMeal = currentDay?.meals.find((meal) => meal.id === card.dataset.mealId);
     if (!currentMeal || !await askConfirm(`Удалить приём пищи «${currentMeal.name}» и все его продукты?`)) return;
-    const previousState = structuredClone(state);
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    nextState.rationAnchor = card.dataset.date;
-    day.meals = day.meals.filter((meal) => meal.id !== card.dataset.mealId);
-    touchRationDay(day);
-    commitState(nextState);
+    const previous = localData.snapshot();
+    if (!applyLocal(localData.removeRationMeal(card.dataset.date, card.dataset.mealId))) return;
     routeSubId = null;
     renderRation();
     showToast(`Приём пищи «${currentMeal.name}» удалён.`, "Отменить", () => {
-      commitState(previousState);
+      state = localData.commit(previous);
       routeSubId = currentMeal.id;
       renderRation();
     });
@@ -3760,112 +3057,42 @@
 
   function addRationFood(button) {
     const card = button.closest(".ration-meal");
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    nextState.rationAnchor = card.dataset.date;
-    const meal = day.meals.find((item) => item.id === card.dataset.mealId);
-    if (!meal) return;
-    const item = { id: id("ration_item"), productId: "", name: "" };
-    meal.items.push(item);
-    touchRationDay(day);
-    commitState(nextState);
-    renderRation(item.id);
+    const added = localData.addRationFood(card.dataset.date, card.dataset.mealId);
+    if (!applyLocal(added)) return;
+    renderRation(added.itemId);
   }
 
   function removeRationFood(button) {
     const card = button.closest(".ration-meal");
     const row = button.closest(".ration-food-row");
-    const previousState = structuredClone(state);
     const removedItem = rationDayFor(state, card.dataset.date)?.meals
       .find((meal) => meal.id === card.dataset.mealId)?.items
       .find((item) => item.id === row.dataset.itemId);
     const removedName = getProduct(removedItem?.productId)?.name || removedItem?.name || "Продукт";
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    nextState.rationAnchor = card.dataset.date;
-    const meal = day.meals.find((item) => item.id === card.dataset.mealId);
-    if (!meal) return;
-    meal.items = meal.items.filter((item) => item.id !== row.dataset.itemId);
-    touchRationDay(day);
-    commitState(nextState);
+    const previous = localData.snapshot();
+    if (!applyLocal(localData.removeRationFood(card.dataset.date, card.dataset.mealId, row.dataset.itemId))) return;
     renderRation();
     showToast(`«${removedName}» удалён из рациона.`, "Отменить", () => {
-      commitState(previousState);
+      state = localData.commit(previous);
       routeSubId = card.dataset.mealId;
       renderRation();
     });
   }
 
   function saveRationFood(input, addNext) {
-    const value = input.value.trim();
-    if (!value) return showToast("Введите название продукта.");
     const card = input.closest(".ration-meal");
     const row = input.closest(".ration-food-row");
-    const nextState = structuredClone(state);
-    const day = mutableRationDay(nextState, card.dataset.date);
-    nextState.rationAnchor = card.dataset.date;
-    const meal = day.meals.find((item) => item.id === card.dataset.mealId);
-    const item = meal?.items.find((value) => value.id === row.dataset.itemId);
-    if (!item) return;
-    const product = resolveOrCreateProduct({ query: value }, nextState.products, new Date().toISOString());
-    item.productId = product.id;
-    item.name = product.name;
-    let focusId = "";
-    if (addNext) {
-      const nextItem = { id: id("ration_item"), productId: "", name: "" };
-      meal.items.push(nextItem);
-      focusId = nextItem.id;
-    }
-    touchRationDay(day);
-    commitState(nextState);
-    renderRation(focusId);
-  }
-
-  function mutableRationDay(nextState, dateKey) {
-    if (!nextState.rationDays) nextState.rationDays = {};
-    const key = rationDayKey(dateKey, nextState);
-    if (!nextState.rationDays[key]) {
-      nextState.rationDays[key] = { date: dateKey, owner: rationOwner(nextState), meals: defaultRationMeals(dateKey), updatedAt: "", updatedBy: "" };
-    }
-    return nextState.rationDays[key];
-  }
-
-  function rationOwner(source = state) {
-    return String(source.user?.email || "local").trim().toLowerCase() || "local";
-  }
-
-  function rationDayKey(dateKey, source = state) {
-    return `${rationOwner(source)}|${dateKey}`;
-  }
-
-  function rationDayFor(source, dateKey) {
-    const owner = rationOwner(source);
-    return source.rationDays?.[`${owner}|${dateKey}`]
-      || (owner === "local" ? source.rationDays?.[dateKey] : null);
+    const saved = localData.saveRationFood(card.dataset.date, card.dataset.mealId, row.dataset.itemId, {
+      name: input.value,
+      hint: suggestionByName(input.value),
+      addNext,
+    });
+    if (!applyLocal(saved)) return;
+    renderRation(saved.nextItemId || "");
   }
 
   function defaultRationMeals(dateKey) {
     return [];
-  }
-
-  function touchRationDay(day) {
-    day.updatedAt = new Date().toISOString();
-    day.updatedBy = state.user?.email || "local";
-    day.owner = rationOwner(state);
-  }
-
-  function todayDateKey() {
-    return formatRationDate(new Date());
-  }
-
-  function parseRationDate(value) {
-    const [year, month, day] = String(value).split("-").map(Number);
-    return new Date(year, month - 1, day, 12);
-  }
-
-  function formatRationDate(value) {
-    const date = value instanceof Date ? value : parseRationDate(value);
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   }
 
   function addRationDays(value, count) {
@@ -3902,7 +3129,7 @@
   }
 
   function renderAppUpdateSection() {
-    const currentVersion = escapeHtml(appUpdate.installedVersion || "5.3.0");
+    const currentVersion = escapeHtml(appUpdate.installedVersion || "—");
     const latestVersion = escapeHtml(appUpdate.latestVersion || "");
     let content = "";
 
@@ -3942,21 +3169,20 @@
   }
 
   function requestAppUpdateCheck(force = false) {
-    if (!window.NativeGoogle?.checkForAppUpdate) {
+    if (!window.NativeCookish?.checkForAppUpdate) {
       appUpdate = { ...appUpdate, status: "unsupported" };
       return;
     }
     if (!force && appUpdate.status !== "idle" && appUpdate.status !== "error") return;
     appUpdate = { ...appUpdate, status: "checking", message: "" };
     if (route === "profile") renderProfile();
-    window.NativeGoogle.checkForAppUpdate();
+    window.NativeCookish.checkForAppUpdate();
   }
 
   function renderProfile() {
     const completed = activeRequests().filter((item) => item.status === "done");
     const responseCount = activeRequests().reduce((sum, item) => sum + activeResponses(item).length, 0);
     const spent = completed.reduce((sum, item) => sum + requestTotal(item), 0);
-    const backgroundSupported = Boolean(window.NativeGoogle?.requestBackgroundAccess);
     app.innerHTML = `
       <div class="metrics">
         ${metric("Всего запросов", activeRequests().length)}
@@ -3968,21 +3194,6 @@
         <div class="section-heading"><div><span class="eyebrow">Данные</span><h2 class="profile-section-title">Продукты</h2></div><strong>${state.products.filter((item) => !item.deletedAt).length}</strong></div>
         <p class="muted">Каталог, единицы измерения, штрихкоды и пищевая ценность продуктов.</p>
         <button id="manage-products" class="button secondary full" type="button">Открыть продукты</button>
-      </section>
-      <section class="section profile-settings-section">
-        <span class="eyebrow">Система</span>
-        <h2 class="profile-section-title">Фоновая синхронизация</h2>
-        <p class="muted">Для проверки общей таблицы при закрытом приложении Android должен разрешить уведомления и не ограничивать «Cookish» экономией батареи.</p>
-        ${state.backgroundAccessSkipped && !backgroundAccess?.fullyGranted ? `<p class="warning">Фоновая синхронизация отключена. Приложение продолжает работать, пока оно открыто.</p>` : ""}
-        ${backgroundSupported ? `
-          <div class="compact-line"><span>Уведомления</span><strong>${backgroundAccess?.notificationsGranted ? "Разрешены" : "Не разрешены"}</strong></div>
-          <div class="compact-line"><span>Работа без ограничения батареи</span><strong>${backgroundAccess?.batteryOptimizationDisabled ? "Разрешена" : "Не разрешена"}</strong></div>
-          ${backgroundAccess?.lastBackgroundSyncAt ? `<p class="muted">Последняя фоновая синхронизация: ${dateTime(new Date(backgroundAccess.lastBackgroundSyncAt).toISOString())}</p>` : `<p class="muted">Фоновая синхронизация ещё не выполнялась.</p>`}
-          ${backgroundAccess?.lastBackgroundSyncError ? `<p class="error">${escapeHtml(backgroundAccess.lastBackgroundSyncError)}</p>` : ""}
-          <button id="request-background-access" class="button ${backgroundAccess?.fullyGranted ? "secondary" : ""} full" type="button" ${backgroundAccess?.fullyGranted ? "disabled" : ""}>
-            ${backgroundAccess?.fullyGranted ? "Фоновый доступ предоставлен" : "Разрешить фоновую работу"}
-          </button>
-        ` : `<p class="error">Системный доступ недоступен в этой сборке.</p>`}
       </section>
       ${renderAppUpdateSection()}
       <section class="section danger-zone">
@@ -3996,324 +3207,18 @@
 
   function bindProfileActions() {
     document.getElementById("manage-products")?.addEventListener("click", () => navigate("products"));
-    document.getElementById("request-background-access")?.addEventListener("click", () => {
-      window.NativeGoogle.requestBackgroundAccess();
-      showToast("Подтвердите системные запросы Android.");
-    });
-    window.NativeGoogle?.getBackgroundAccessStatus?.();
     document.getElementById("check-app-update")?.addEventListener("click", () => requestAppUpdateCheck(true));
     document.getElementById("install-app-update")?.addEventListener("click", () => {
-      window.NativeGoogle?.installLatestUpdate?.();
+      window.NativeCookish?.installLatestUpdate?.();
     });
     document.getElementById("open-app-release")?.addEventListener("click", () => {
-      if (appUpdate.releaseUrl) window.NativeGoogle?.openUrl?.(appUpdate.releaseUrl);
+      if (appUpdate.releaseUrl) window.NativeCookish?.openUrl?.(appUpdate.releaseUrl);
     });
     document.getElementById("clear-data")?.addEventListener("click", async () => {
       if (!await askConfirm("Удалить продукты, запросы и настройки с этого устройства?")) return;
-      state = structuredClone(defaultState);
-      accessToken = null;
-      saveState();
+      state = localData.clear();
       navigate("summary");
     });
-  }
-
-  function mirrorStateForBackgroundSync() {
-    if (!window.NativeGoogle?.configureBackgroundSync) return;
-    const syncPackage = buildSyncPackage(state);
-    window.NativeGoogle.configureBackgroundSync(
-      JSON.stringify(syncPackage),
-      syncPackage.spreadsheetId || "",
-      syncPackage.user?.email || ""
-    );
-  }
-
-
-  async function setupSpreadsheet(token, spreadsheetId) {
-    let metadata = await googleFetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties(sheetId,title)`,
-      token
-    );
-    const required = ["Продукты", "Запросы", "Покупки", "Рацион"];
-    const existing = new Set(metadata.sheets.map((sheet) => sheet.properties.title));
-    const requests = [];
-    if (metadata.sheets.length === 1 && !existing.has("Продукты")) {
-      requests.push({
-        updateSheetProperties: {
-          properties: { sheetId: metadata.sheets[0].properties.sheetId, title: "Продукты" },
-          fields: "title",
-        },
-      });
-      existing.add("Продукты");
-    }
-    required.forEach((name) => {
-      if (!existing.has(name)) requests.push({ addSheet: { properties: { title: name } } });
-    });
-    if (requests.length) {
-      await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, token, {
-        method: "POST",
-        body: JSON.stringify({ requests }),
-      });
-      metadata = await googleFetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties(sheetId,title)`,
-        token
-      );
-    }
-    await readAndMergeSpreadsheetData(token, spreadsheetId);
-    await writeSpreadsheetData(token, spreadsheetId);
-    state.spreadsheetTitle = metadata.properties.title;
-    state.lastSyncAt = new Date().toISOString();
-    saveState(false);
-    return metadata.properties.title;
-  }
-
-  async function readAndMergeSpreadsheetData(token, spreadsheetId) {
-    const url = new URL(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet`);
-    url.searchParams.append("ranges", "Продукты!A2:P");
-    url.searchParams.append("ranges", "Запросы!A2:N");
-    url.searchParams.append("ranges", "Покупки!A2:L");
-    url.searchParams.append("ranges", "Рацион!A2:N");
-    const response = await googleFetch(url.toString(), token);
-    const productRows = response.valueRanges?.[0]?.values || [];
-    const requestRows = response.valueRanges?.[1]?.values || [];
-    const responseRows = response.valueRanges?.[2]?.values || [];
-    const rationRows = response.valueRanges?.[3]?.values || [];
-
-    const remoteProducts = productRows
-      .filter((row) => row[0])
-      .map(parseProductRow);
-    state.products = mergeVersioned(state.products, remoteProducts);
-
-    const remoteById = new Map();
-    requestRows.forEach((row) => {
-      if (!row[0] || !row[1]) return;
-      const legacyStockSchema = isLegacyRequestRow(row);
-      const offset = legacyStockSchema ? 1 : 0;
-      const requestId = String(row[0]);
-      const request = remoteById.get(requestId) || {
-        id: requestId,
-        status: String(row[3 + offset]) === "Выполнен" ? "done" : "open",
-        createdAt: String(row[4 + offset] || new Date().toISOString()),
-        completedAt: String(row[5 + offset] || ""),
-        createdBy: String(row[6 + offset] || "remote"),
-        updatedAt: String(row[7 + offset] || row[5 + offset] || row[4 + offset] || new Date(0).toISOString()),
-        updatedBy: String(row[8 + offset] || row[6 + offset] || "remote"),
-        deletedAt: String(row[9 + offset] || ""),
-        items: [],
-        responses: [],
-      };
-      const plannedAmount = Number(row[10 + offset]) || 0;
-      const measureOrUnit = String(row[12 + offset] || "");
-      const item = {
-        productId: String(row[1]),
-        quantity: Number(row[2]) || 0,
-        plannedAmount,
-        packageSize: Number(row[11 + offset]) || 0,
-        measureUnit: plannedAmount ? measureOrUnit : "",
-        // Shopping unit is request-local; defaults from product only when missing.
-        unit: plannedAmount ? "уп." : measureOrUnit,
-        note: legacyStockSchema ? "" : String(row[13] || ""),
-      };
-      const existingIndex = request.items.findIndex((value) => value.productId === item.productId);
-      if (existingIndex === -1) request.items.push(item);
-      else request.items[existingIndex] = item;
-      remoteById.set(requestId, request);
-    });
-
-    const parsedResponses = new Map();
-    responseRows.forEach((row) => {
-      const normalized = parseResponseRow(row, remoteById);
-      if (!normalized) return;
-      const existing = parsedResponses.get(normalized.id);
-      if (!existing || timestamp(normalized.updatedAt) > timestamp(existing.updatedAt)) {
-        parsedResponses.set(normalized.id, normalized);
-      } else if (timestamp(normalized.updatedAt) === timestamp(existing.updatedAt)) {
-        existing.items = dedupeByProduct([...existing.items, ...normalized.items]);
-      }
-    });
-    parsedResponses.forEach((responseValue) => {
-      remoteById.get(responseValue.requestId)?.responses.push(responseValue);
-    });
-    const remoteRequests = [...remoteById.values()].map(normalizeRequest);
-
-    const knownIds = new Set(state.requests.map((request) => request.id));
-    const seenIds = new Set(state.seenRemoteRequestIds || []);
-    const trackingWasInitialized = Boolean(state.remoteTrackingInitialized);
-    remoteRequests.forEach((request) => {
-      if (
-        trackingWasInitialized &&
-        !knownIds.has(request.id) &&
-        !seenIds.has(request.id) &&
-        !request.deletedAt &&
-        request.status === "open" &&
-        isRemoteRequest(request)
-      ) {
-        notifyRemoteRequest(request);
-      }
-      if (isRemoteRequest(request)) seenIds.add(request.id);
-    });
-    state.requests = mergeRequests(state.requests, remoteRequests);
-    const remoteRationDays = {};
-    rationRows.forEach((row) => {
-      const dateKey = String(row[0] || "");
-      const mealId = String(row[1] || "");
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey) || !mealId) return;
-      const owner = String(row[10] || state.user?.email || "local").trim().toLowerCase();
-      const storageKey = `${owner}|${dateKey}`;
-      const day = remoteRationDays[storageKey] || {
-        date: dateKey, owner, meals: [], updatedAt: String(row[8] || ""), updatedBy: String(row[9] || "remote"),
-      };
-      if (timestamp(row[8]) > timestamp(day.updatedAt)) {
-        day.updatedAt = String(row[8]);
-        day.updatedBy = String(row[9] || "remote");
-      }
-      if (mealId === "__empty__") {
-        remoteRationDays[storageKey] = day;
-        return;
-      }
-      let meal = day.meals.find((item) => item.id === mealId);
-      if (!meal) {
-        meal = { id: mealId, name: String(row[2] || "Приём пищи"), time: String(row[13] || ""), items: [], order: Number(row[6]) || 0 };
-        day.meals.push(meal);
-      }
-      if (row[3]) {
-        meal.items.push({
-          id: String(row[3]), productId: String(row[4] || ""), name: String(row[5] || ""), order: Number(row[7]) || 0,
-          portionSize: Number(row[11]) || 0, packageSize: Number(row[12]) || 0,
-        });
-      }
-      remoteRationDays[storageKey] = day;
-    });
-    Object.values(remoteRationDays).forEach((day) => {
-      day.meals.sort((a, b) => a.order - b.order).forEach((meal) => {
-        delete meal.order;
-        meal.items.sort((a, b) => a.order - b.order).forEach((item) => delete item.order);
-      });
-    });
-    state.rationDays = mergeRationDays(state.rationDays || {}, remoteRationDays);
-    state.seenRemoteRequestIds = [...seenIds];
-    state.remoteTrackingInitialized = true;
-    saveState(false);
-
-    if (["summary", "products", "requests", "ration"].includes(route) && !isInteractiveEditing()) render();
-  }
-
-  async function writeSpreadsheetData(token, spreadsheetId) {
-    const syncPackage = buildSyncPackage(state);
-    const requestRows = syncPackage.requests.flatMap((request) =>
-      request.items.map((item) => [
-        request.id,
-        item.productId,
-        item.quantity,
-        request.status === "open" ? "Активен" : "Выполнен",
-        request.createdAt,
-        request.completedAt || "",
-        request.createdBy || "local",
-        request.updatedAt || request.createdAt,
-        request.updatedBy || request.createdBy || "local",
-        request.deletedAt || "",
-        item.plannedAmount || "",
-        item.packageSize || "",
-        item.plannedAmount ? (item.measureUnit || "") : (item.unit || item.measureUnit || ""),
-        item.note || "",
-      ])
-    );
-    const responseRows = syncPackage.requests.flatMap((request) =>
-      request.responses.flatMap((response) =>
-        response.items.map((item) => [
-          response.id,
-          request.id,
-          item.productId,
-          item.purchasedProductId || item.productId,
-          item.quantity,
-          item.price,
-          response.createdAt,
-          response.createdBy || "local",
-          response.updatedAt || response.createdAt,
-          response.updatedBy || response.createdBy || "local",
-          response.deletedAt || "",
-          item.completionMode || "filled",
-        ])
-      )
-    );
-    const rationRows = Object.values(syncPackage.rationDays || {}).flatMap((day) => {
-      if (!(day.meals || []).length) {
-        return [[day.date, "__empty__", "", "", "", "", 0, 0, day.updatedAt || "", day.updatedBy || "local", day.owner || "local", "", "", ""]];
-      }
-      return (day.meals || []).flatMap((meal, mealIndex) => {
-        const items = meal.items?.length ? meal.items : [{ id: "", productId: "", name: "" }];
-        return items.map((item, itemIndex) => [
-          day.date, meal.id, meal.name, item.id || "", item.productId || "", item.name || "",
-          mealIndex, itemIndex, day.updatedAt || "", day.updatedBy || "local", day.owner || "local",
-          item.portionSize || "", item.packageSize || "", meal.time || rationMealTime(meal, mealIndex),
-        ]);
-      });
-    });
-    await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`, token, {
-      method: "POST",
-      body: JSON.stringify({ ranges: ["Продукты!A:P", "Запросы!A:N", "Покупки!A:L", "Рацион!A:N"] }),
-    });
-    await googleFetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, token, {
-      method: "POST",
-      body: JSON.stringify({
-        valueInputOption: "USER_ENTERED",
-        data: [
-          {
-            range: "Продукты!A1:P",
-            values: [["id", "Наименование", "Категория", "Единица", "Обновлён", "Кем обновлён", "Пищевая ценность JSON", "Источник данных", "Штрихкод", "Состав", "Удалён", "Подтверждён", "Тип", "generic_key", "Бренд", "catalog_source"], ...syncPackage.products.map((item) =>
-              [
-                item.id,
-                item.name,
-                item.category,
-                item.unit,
-                item.updatedAt || "",
-                item.updatedBy || "",
-                item.nutrition ? JSON.stringify(item.nutrition) : "",
-                item.nutrition?.source || "",
-                item.barcode || "",
-                item.ingredients || "",
-                item.deletedAt || "",
-                item.confirmed ? "true" : "false",
-                item.kind || "",
-                item.genericKey || "",
-                item.brand || "",
-                item.catalogSource || "",
-              ]
-            )],
-          },
-          {
-            range: "Запросы!A1:N",
-            values: [["request_id", "product_id", "Запрошено", "Статус", "Создан", "Закрыт", "Автор", "Обновлён", "Кем обновлён", "Удалён", "Объём рациона", "Размер упаковки", "Единица объёма", "Текст строки"], ...requestRows],
-          },
-          {
-            range: "Покупки!A1:L",
-            values: [["response_id", "request_id", "product_id", "purchased_product_id", "Куплено", "Цена позиции", "Ответ создан", "Автор ответа", "Ответ обновлён", "Кем обновлён", "Удалён", "Режим"], ...responseRows],
-          },
-          {
-            range: "Рацион!A1:N",
-            values: [["Дата", "meal_id", "Приём пищи", "item_id", "product_id", "Продукт", "Порядок приёма", "Порядок продукта", "Обновлён", "Кем обновлён", "Владелец рациона", "Размер порции", "Размер упаковки", "Плановое время"], ...rationRows],
-          },
-        ],
-      }),
-    });
-  }
-
-  async function googleFetch(url, token, options = {}) {
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-      },
-    });
-    if (response.ok) return response.status === 204 ? {} : response.json();
-    let message = `Google API: ${response.status}`;
-    try {
-      const body = await response.json();
-      message = body.error?.message || message;
-    } catch {}
-    if (response.status === 401) accessToken = null;
-    throw new Error(message);
   }
 
   function bindRequestRows() {
@@ -4351,97 +3256,8 @@
     );
   }
 
-  function isRequestFulfilled(request) {
-    return request.items.length > 0 && request.items.every((item) =>
-      responseItemTotal(request, item.productId).quantity >= Number(item.quantity)
-    );
-  }
-
-  function activeResponses(request) {
-    return (request.responses || []).filter((response) => !response.deletedAt);
-  }
-
   function activeRequests() {
     return (state.requests || []).filter((request) => !request.deletedAt);
-  }
-
-  function updateRequestStatus(request, changedAt = request.updatedAt) {
-    if (isRequestFulfilled(request)) {
-      request.status = "done";
-      request.completedAt = request.completedAt || changedAt || new Date().toISOString();
-    } else {
-      request.status = "open";
-      request.completedAt = "";
-    }
-    return request;
-  }
-
-  function requestSnapshot(request) {
-    return structuredClone({
-      id: request.id,
-      createdAt: request.createdAt,
-      completedAt: request.completedAt || "",
-      createdBy: request.createdBy || "local",
-      updatedAt: request.updatedAt,
-      updatedBy: request.updatedBy || request.createdBy || "local",
-      status: request.status,
-      items: request.items,
-      responses: request.responses,
-    });
-  }
-
-  function appendRequestVersion(request, action, createdAt, actor, transactionId = id("transaction")) {
-    request.history = request.history || [];
-    request.history.push({
-      id: transactionId,
-      action,
-      createdAt,
-      updatedAt: createdAt,
-      createdBy: actor || "local",
-      snapshot: requestSnapshot(request),
-    });
-  }
-
-  function restoreRequestVersion(request, transaction, changedAt, actor) {
-    const history = structuredClone(request.history || []);
-    const currentResponses = new Map((request.responses || []).map((response) => [response.id, response]));
-    const restored = normalizeRequestSnapshot(transaction.snapshot, request.id);
-    restored.responses = restored.responses.map((response) => ({
-      ...response,
-      deletedAt: response.deletedAt ? changedAt : "",
-      updatedAt: changedAt,
-      updatedBy: actor || "local",
-    }));
-    const restoredIds = new Set(restored.responses.map((response) => response.id));
-    currentResponses.forEach((response, responseId) => {
-      if (restoredIds.has(responseId)) return;
-      restored.responses.push({
-        ...structuredClone(response),
-        deletedAt: changedAt,
-        updatedAt: changedAt,
-        updatedBy: actor || "local",
-      });
-    });
-    Object.keys(request).forEach((key) => delete request[key]);
-    Object.assign(request, restored, {
-      history,
-      updatedAt: changedAt,
-      updatedBy: actor || "local",
-    });
-    updateRequestStatus(request, changedAt);
-    appendRequestVersion(request, `Откат: ${transaction.action}`, changedAt, actor);
-    return request;
-  }
-
-  function responseItemTotal(request, productId) {
-    return activeResponses(request).reduce((total, response) => {
-      const item = response.items.find((value) => value.productId === productId);
-      if (item) {
-        total.quantity += Number(item.quantity) || 0;
-        total.price += Number(item.price) || 0;
-      }
-      return total;
-    }, { quantity: 0, price: 0 });
   }
 
   function requestSummary(request) {
@@ -4473,302 +3289,12 @@
     return Boolean(currentEmail && creator && creator !== "local" && creator !== currentEmail);
   }
 
-  function notifyRemoteRequest(request) {
-    const summary = requestSummary(request);
-    if (window.NativeGoogle?.notifyRequest) {
-      window.NativeGoogle.notifyRequest(request.id, summary, request.createdBy || "");
-    } else {
-      showToast(`Новый запрос: ${summary}`);
-    }
-  }
-
-  function mergeVersioned(localValues, remoteValues) {
-    const merged = new Map(localValues.map((value) => [value.id, value]));
-    remoteValues.forEach((remote) => {
-      const local = merged.get(remote.id);
-      if (!local || timestamp(remote.updatedAt) > timestamp(local.updatedAt)) {
-        merged.set(remote.id, remote);
-      }
-    });
-    return [...merged.values()];
-  }
-
-  function mergeRationDays(localValues, remoteValues) {
-    const merged = structuredClone(localValues || {});
-    Object.entries(remoteValues || {}).forEach(([dateKey, remote]) => {
-      const local = merged[dateKey];
-      if (!local || timestamp(remote.updatedAt) > timestamp(local.updatedAt)) {
-        merged[dateKey] = structuredClone(remote);
-      }
-    });
-    return merged;
-  }
-
-  function mergeRequests(localValues, remoteValues) {
-    const merged = new Map(localValues.map((request) => {
-      const normalized = normalizeRequest(request);
-      return [normalized.id, normalized];
-    }));
-    remoteValues.forEach((remoteValue) => {
-      const remote = normalizeRequest(remoteValue);
-      const local = merged.get(remote.id);
-      if (!local) {
-        merged.set(remote.id, remote);
-        return;
-      }
-      const metadata = timestamp(remote.updatedAt) > timestamp(local.updatedAt) ? remote : local;
-      merged.set(remote.id, normalizeRequest({
-        ...metadata,
-        responses: mergeVersioned(local.responses, remote.responses),
-        history: mergeVersioned(local.history || [], remote.history || []),
-      }));
-    });
-    return [...merged.values()];
-  }
-
-  function dedupeByProduct(values) {
-    const unique = new Map();
-    values.forEach((value) => {
-      if (value?.productId) unique.set(value.productId, value);
-    });
-    return [...unique.values()];
-  }
-
-  function normalizeRequest(request) {
-    const responses = mergeVersioned([], (request.responses || []).map((response) =>
-      normalizeResponse(response, request.id)
-    ));
-    const normalized = {
-      ...request,
-      items: dedupeByProduct(request.items || []).map(withoutLegacyStock),
-      responses,
-      deletedAt: request.deletedAt || "",
-    };
-    updateRequestStatus(normalized, request.completedAt || request.updatedAt);
-    normalized.history = mergeVersioned([], (request.history || []).map((transaction) => ({
-      ...transaction,
-      id: transaction.id || `transaction_${request.id}_${transaction.createdAt || request.updatedAt}`,
-      action: transaction.action || "Изменение запроса",
-      createdAt: transaction.createdAt || transaction.updatedAt || request.updatedAt,
-      updatedAt: transaction.updatedAt || transaction.createdAt || request.updatedAt,
-      createdBy: transaction.createdBy || request.updatedBy || request.createdBy || "local",
-      snapshot: normalizeRequestSnapshot(transaction.snapshot || request, request.id),
-    })));
-    if (!normalized.history.length) {
-      appendRequestVersion(
-        normalized,
-        "Исходная версия",
-        normalized.updatedAt || normalized.createdAt,
-        normalized.updatedBy || normalized.createdBy,
-        `transaction_initial_${normalized.id}`
-      );
-    }
-    return normalized;
-  }
-
-  function normalizeRequestSnapshot(snapshot, requestId) {
-    const responses = mergeVersioned([], (snapshot?.responses || []).map((response) =>
-      normalizeResponse(response, requestId)
-    ));
-    const normalized = {
-      ...structuredClone(snapshot || {}),
-      id: requestId,
-      items: dedupeByProduct(snapshot?.items || []).map(withoutLegacyStock),
-      responses,
-    };
-    updateRequestStatus(normalized, normalized.completedAt || normalized.updatedAt);
-    delete normalized.history;
-    return normalized;
-  }
-
-  function normalizeResponse(response, requestId) {
-    return {
-      ...response,
-      id: response.id || `response_legacy_${requestId}`,
-      requestId,
-      items: dedupeByProduct(response.items || []).map((item) => ({
-        ...withoutLegacyStock(item),
-        purchasedProductId: item.purchasedProductId || item.productId,
-        completionMode: item.completionMode || "filled",
-      })),
-      createdAt: response.createdAt || response.updatedAt || new Date(0).toISOString(),
-      createdBy: response.createdBy || "remote",
-      updatedAt: response.updatedAt || response.createdAt || new Date(0).toISOString(),
-      updatedBy: response.updatedBy || response.createdBy || "remote",
-      deletedAt: response.deletedAt || "",
-    };
-  }
-
-  function withoutLegacyStock(item) {
-    const normalized = { ...item, note: String(item?.note || "") };
-    delete normalized.stockAtRequest;
-    return normalized;
-  }
-
-  function migrateRequest(request, products) {
-    const updatedAt = request.updatedAt || request.completedAt || request.createdAt || new Date(0).toISOString();
-    const legacyResponses = !request.responses?.length && request.purchases?.length
-      ? [{
-          id: `response_legacy_${request.id}`,
-          requestId: request.id,
-          items: request.purchases,
-          createdAt: request.completedAt || updatedAt,
-          createdBy: request.updatedBy || request.createdBy || "local",
-          updatedAt,
-          updatedBy: request.updatedBy || request.createdBy || "local",
-        }]
-      : [];
-    return normalizeRequest({
-      ...request,
-      createdBy: request.createdBy || "local",
-      updatedAt,
-      updatedBy: request.updatedBy || request.createdBy || "local",
-      items: dedupeByProduct(request.items || []).map(withoutLegacyStock),
-      responses: request.responses?.length ? request.responses : legacyResponses,
-    });
-  }
-
-  function buildSyncPackage(source) {
-    const result = structuredClone(source);
-    result.schemaVersion = 11;
-    const legacyRationDays = result.rationDays && typeof result.rationDays === "object" ? result.rationDays : {};
-    result.rationDays = {};
-    Object.values(legacyRationDays).forEach((day) => {
-      if (!day?.date) return;
-      const owner = String(day.owner || result.user?.email || "local").trim().toLowerCase() || "local";
-      const meals = (day.meals || []).filter((meal) => {
-        const legacyNames = ["Завтрак", "Обед", "Ужин"];
-        const legacyTimes = ["08:00", "13:00", "19:00"];
-        const legacyIndex = Number(String(meal.id || "").match(new RegExp(`^meal_${day.date}_(\\d+)$`))?.[1]) - 1;
-        return !(
-          legacyIndex >= 0
-          && meal.name === legacyNames[legacyIndex]
-          && meal.time === legacyTimes[legacyIndex]
-          && !(meal.items || []).length
-        );
-      });
-      result.rationDays[`${owner}|${day.date}`] = { ...day, meals, owner };
-    });
-    result.rationView = ["day", "week", "month"].includes(result.rationView) ? result.rationView : "week";
-    result.rationAnchor = /^\d{4}-\d{2}-\d{2}$/.test(result.rationAnchor || "") ? result.rationAnchor : todayDateKey();
-    result.rationTemplates = Array.isArray(result.rationTemplates) ? result.rationTemplates : [];
-    result.products = mergeVersioned([], (result.products || []).map((product) => {
-      const normalized = normalizeProductRecord({
-        ...product,
-        updatedAt: product.updatedAt || new Date(0).toISOString(),
-        updatedBy: product.updatedBy || "local",
-      });
-      delete normalized.baseQuantity;
-      delete normalized.baseUpdatedAt;
-      delete normalized.quantity;
-      return normalized;
-    }));
-    result.requests = mergeRequests([], result.requests || []);
-    return result;
-  }
-
-  function isLegacyProductRow(row) {
-    if (!row || row.length < 8) return false;
-    const maybeStock = String(row[4] ?? "").trim();
-    // Modern rows store ISO updatedAt at index 4; legacy stock quantity is a plain number.
-    if (/^\d{4}-\d{2}-\d{2}/.test(maybeStock)) return false;
-    const looksLikeStock = maybeStock !== "" && Number.isFinite(Number(maybeStock));
-    return looksLikeStock && Boolean(row[7]);
-  }
-
-  function parseProductRow(row) {
-    const legacyStockSchema = isLegacyProductRow(row);
-    const updatedAt = String((legacyStockSchema ? row[7] : row[4]) || new Date(0).toISOString());
-    let nutrition = null;
-    const nutritionIndex = legacyStockSchema ? 9 : 6;
-    try { nutrition = row[nutritionIndex] ? JSON.parse(String(row[nutritionIndex])) : null; } catch { nutrition = null; }
-    const confirmedRaw = String(row[legacyStockSchema ? 14 : 11] || "").toLowerCase();
-    const product = {
-      id: String(row[0]),
-      name: String(row[1] || ""),
-      category: String(row[2] || ""),
-      unit: String(row[3] || "шт."),
-      updatedAt,
-      updatedBy: String((legacyStockSchema ? row[8] : row[5]) || "remote"),
-      nutrition,
-      barcode: String(row[legacyStockSchema ? 11 : 8] || ""),
-      ingredients: String(row[legacyStockSchema ? 12 : 9] || ""),
-      deletedAt: String(row[legacyStockSchema ? 13 : 10] || ""),
-      confirmed: confirmedRaw === "1" || confirmedRaw === "true" || confirmedRaw === "да",
-      kind: String(row[legacyStockSchema ? 15 : 12] || ""),
-      genericKey: String(row[legacyStockSchema ? 16 : 13] || ""),
-      brand: String(row[legacyStockSchema ? 17 : 14] || ""),
-      catalogSource: String(row[legacyStockSchema ? 18 : 15] || ""),
-    };
-    if (!confirmedRaw) delete product.confirmed;
-    return normalizeProductRecord(product);
-  }
-
-  function isLegacyRequestRow(row) {
-    const statuses = new Set(["Активен", "Выполнен"]);
-    return !statuses.has(String(row[3] || "")) && statuses.has(String(row[4] || ""));
-  }
-
-  function parseResponseRow(row, requestsById) {
-    if (!row[0] || !row[1]) return null;
-    const modern = row.length >= 5 && requestsById.has(String(row[1]));
-    const requestId = String(modern ? row[1] : row[0]);
-    const request = requestsById.get(requestId);
-    if (!request) return null;
-    const extended = modern && row.length >= 11;
-    const createdAt = String(
-      (modern ? row[extended ? 6 : 5] : request.completedAt || request.updatedAt) ||
-      request.updatedAt ||
-      request.createdAt ||
-      new Date(0).toISOString()
-    );
-    return normalizeResponse({
-      id: modern ? String(row[0]) : `response_legacy_${requestId}`,
-      requestId,
-      items: [{
-        productId: String(modern ? row[2] : row[1]),
-        purchasedProductId: String(extended ? row[3] || row[2] : modern ? row[2] : row[1]),
-        quantity: Number(modern ? row[extended ? 4 : 3] : row[2]) || 0,
-        price: Number(modern ? row[extended ? 5 : 4] : row[3]) || 0,
-        completionMode: String(extended ? row[11] || "filled" : "filled"),
-      }],
-      createdAt,
-      createdBy: String((modern ? row[extended ? 7 : 6] : request.updatedBy || request.createdBy) || "remote"),
-      updatedAt: String((modern ? row[extended ? 8 : 7] : request.updatedAt) || createdAt),
-      updatedBy: String((modern ? row[extended ? 9 : 8] : request.updatedBy || request.createdBy) || "remote"),
-      deletedAt: String(modern ? row[extended ? 10 : 9] || "" : ""),
-    }, requestId);
-  }
-
-  function timestamp(value) {
-    const result = Date.parse(value || "");
-    return Number.isFinite(result) ? result : 0;
-  }
-
   function getProduct(productId) {
     return state.products.find((product) => product.id === productId && !product.deletedAt);
   }
 
   function getRequest(requestId) {
     return state.requests.find((request) => request.id === requestId && !request.deletedAt);
-  }
-
-  function extractSpreadsheetId(value) {
-    const trimmed = value.trim();
-    const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-    if (match) return match[1];
-    return /^[a-zA-Z0-9_-]{20,}$/.test(trimmed) ? trimmed : null;
-  }
-
-  function spreadsheetUrl() {
-    return `https://docs.google.com/spreadsheets/d/${state.spreadsheetId}/edit`;
-  }
-
-  function setSyncStatus(message, error = false) {
-    const element = document.getElementById("sync-status");
-    if (!element) return showToast(message);
-    element.textContent = message;
-    element.className = error ? "error" : "muted";
   }
 
   function showToast(message, actionLabel = "", action = null) {
@@ -4814,15 +3340,6 @@
       .format(new Date(value));
   }
 
-  function dateTime(value) {
-    return new Intl.DateTimeFormat("ru-RU", {
-      day: "2-digit",
-      month: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(new Date(value));
-  }
-
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -4845,9 +3362,7 @@
   }
 
   render();
-  mirrorStateForBackgroundSync();
   requestAppUpdateCheck(false);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "hidden" && appUpdate.status === "installing") requestAppUpdateCheck(true);
   });
-})();

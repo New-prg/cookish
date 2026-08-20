@@ -1,0 +1,1336 @@
+export const STORAGE_KEY = "cookish.android.data.v1";
+export const SCHEMA_VERSION = 11;
+
+export function emptyState() {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    products: [],
+    requests: [],
+    rationDays: {},
+    rationTemplates: [],
+    rationView: "week",
+    rationAnchor: "",
+    user: null,
+    onboardingCompleted: true,
+  };
+}
+
+export function memoryStorage(initial = null) {
+  let value = initial == null ? null : structuredClone(initial);
+  return {
+    read() {
+      return value == null ? null : structuredClone(value);
+    },
+    write(state) {
+      value = structuredClone(state);
+    },
+  };
+}
+
+export function browserStorage(localStorage, key = STORAGE_KEY) {
+  return {
+    read() {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : null;
+      } catch {
+        return null;
+      }
+    },
+    write(state) {
+      localStorage.setItem(key, JSON.stringify(state));
+    },
+  };
+}
+
+export function openLocalData(storage) {
+  let current = emptyState();
+
+  function snapshot() {
+    return structuredClone(current);
+  }
+
+  function apply(mutator) {
+    const next = structuredClone(current);
+    const context = {
+      now: new Date().toISOString(),
+      actor: String(next.user?.email || "local"),
+    };
+    const result = mutator(next, context) || { ok: false };
+    if (result.ok === false) return result;
+    if (result.changed === false) {
+      result.request = result.requestId
+        ? snapshot().requests.find((item) => item.id === result.requestId)
+        : undefined;
+      result.product = result.productId
+        ? snapshot().products.find((item) => item.id === result.productId)
+        : undefined;
+      return result;
+    }
+    current = prepareState(next);
+    storage.write(current);
+    const view = snapshot();
+    if (result.requestId) result.request = view.requests.find((item) => item.id === result.requestId);
+    if (result.productId) result.product = view.products.find((item) => item.id === result.productId);
+    result.state = view;
+    return result;
+  }
+
+  return {
+    load() {
+      const stored = storage.read();
+      current = prepareState(stored && typeof stored === "object" ? stored : emptyState());
+      return snapshot();
+    },
+    commit(nextState) {
+      current = prepareState(nextState);
+      storage.write(current);
+      return snapshot();
+    },
+    snapshot,
+    clear() {
+      current = prepareState(emptyState());
+      storage.write(current);
+      return snapshot();
+    },
+
+    saveProduct(fields) {
+      return apply((next, { now, actor }) => {
+        const name = String(fields.name || "").trim();
+        if (!name) return { ok: false, reason: "Название продукта не заполнено." };
+        const category = String(fields.category || "").trim();
+        const barcode = String(fields.barcode || "").trim();
+        const values = {
+          name,
+          barcode,
+          category,
+          unit: fields.unit || "шт.",
+          brand: fields.brand || "",
+          kind: barcode ? "sku" : (fields.kind || "generic"),
+          genericKey: fields.genericKey || genericKeyFromParts(category, name),
+          confirmed: true,
+          updatedAt: now,
+          updatedBy: actor,
+          nutrition: fields.nutrition || null,
+          ingredients: String(fields.ingredients || "").trim(),
+          catalogSource: fields.catalogSource || "",
+        };
+        if (fields.id) {
+          const product = next.products.find((item) => item.id === fields.id);
+          if (!product || product.deletedAt) return { ok: false, reason: "Продукт не найден." };
+          Object.assign(product, values);
+          return { ok: true, productId: product.id };
+        }
+        const product = { id: createId("product"), ...values };
+        next.products.push(product);
+        return { ok: true, productId: product.id };
+      });
+    },
+
+    removeProduct(productId) {
+      return apply((next, { now, actor }) => {
+        const used = (next.requests || []).some((request) =>
+          !request.deletedAt && (
+            (request.items || []).some((item) => item.productId === productId)
+            || (request.responses || []).some((response) => !response.deletedAt && (response.items || []).some((item) =>
+              (item.purchasedProductId || item.productId) === productId
+            ))
+          )
+        );
+        if (used) return { ok: false, reason: "Продукт используется в запросе." };
+        const product = next.products.find((item) => item.id === productId);
+        if (!product || product.deletedAt) return { ok: false, reason: "Продукт не найден." };
+        product.deletedAt = now;
+        product.updatedAt = now;
+        product.updatedBy = actor;
+        return { ok: true, productId, name: product.name };
+      });
+    },
+
+    restoreProduct(productId) {
+      return apply((next, { now, actor }) => {
+        const product = next.products.find((item) => item.id === productId);
+        if (!product) return { ok: false, reason: "Продукт не найден." };
+        if (!product.deletedAt) return { ok: true, changed: false, productId };
+        product.deletedAt = "";
+        product.updatedAt = now;
+        product.updatedBy = actor;
+        return { ok: true, productId, name: product.name };
+      });
+    },
+
+    createRequest() {
+      return apply((next, { now, actor }) => {
+        const request = {
+          id: createId("request"),
+          createdAt: now,
+          status: "open",
+          items: [],
+          responses: [],
+          createdBy: actor,
+          updatedBy: actor,
+          updatedAt: now,
+          history: [],
+        };
+        appendRequestVersion(request, "Запрос создан", now, actor);
+        next.requests.push(request);
+        return { ok: true, requestId: request.id };
+      });
+    },
+
+    saveRequestItems(requestId, lines) {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
+        if (!request) return { ok: false, reason: "Запрос не найден." };
+        const items = [];
+        for (const line of lines || []) {
+          const product = resolveOrCreateProduct(next, line, now, actor);
+          if (!product) continue;
+          const previous = (request.items || []).find((item) => item.productId === product.id) || {};
+          const unit = String(previous.unit || product.unit || line.unit || "шт.").trim() || "шт.";
+          items.push({
+            ...previous,
+            productId: product.id,
+            quantity: Number(line.quantity) || 1,
+            unit,
+            note: String(line.note || "").trim(),
+          });
+        }
+        if (new Set(items.map((item) => item.productId)).size !== items.length) {
+          return { ok: false, reason: "Один продукт нельзя добавлять в запрос дважды." };
+        }
+        const answeredProductIds = new Set(
+          activeResponses(request).flatMap((response) =>
+            response.items.filter((item) => item.quantity || item.price).map((item) => item.productId)
+          )
+        );
+        if ([...answeredProductIds].some((productId) => !items.some((item) => item.productId === productId))) {
+          return { ok: false, reason: "Нельзя удалить товар, который уже указан в ответе." };
+        }
+        if (items.some((item) => responseItemTotal(request, item.productId).quantity > Number(item.quantity))) {
+          return { ok: false, reason: "Количество нельзя уменьшить ниже уже купленного." };
+        }
+        const sameItems = items.length === (request.items || []).length
+          && items.every((item, index) => {
+            const previous = request.items[index];
+            return previous
+              && previous.productId === item.productId
+              && Number(previous.quantity) === Number(item.quantity)
+              && String(previous.unit || "") === String(item.unit || "")
+              && String(previous.note || "") === String(item.note || "");
+          });
+        if (sameItems) return { ok: true, changed: false, requestId };
+        request.items = items;
+        request.updatedAt = now;
+        request.updatedBy = actor;
+        updateRequestStatus(request);
+        appendRequestVersion(request, items.length ? "Запрос изменён" : "Запрос очищен", now, actor);
+        return { ok: true, requestId };
+      });
+    },
+
+    removeRequest(requestId) {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId);
+        if (!request || request.deletedAt) return { ok: false, reason: "Запрос не найден." };
+        request.deletedAt = now;
+        request.updatedAt = now;
+        request.updatedBy = actor;
+        (request.responses || []).forEach((response) => {
+          response.deletedAt = now;
+          response.updatedAt = now;
+          response.updatedBy = actor;
+        });
+        return { ok: true, requestId };
+      });
+    },
+
+    markBought(requestId, productId, details = {}) {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
+        if (!request) return { ok: false, reason: "Запрос не найден." };
+        const requestItem = (request.items || []).find((item) => item.productId === productId)
+          || (request.items || []).find((item) =>
+            normalizeProductName(liveProduct(next, item.productId)?.name || "")
+            === normalizeProductName(liveProduct(next, productId)?.name || details.query || "")
+          );
+        const resolvedProductId = requestItem?.productId || (liveProduct(next, productId) ? productId : "");
+        if (!resolvedProductId) return { ok: false, reason: "Товар не найден в запросе." };
+        const requested = Number(requestItem?.quantity || 0);
+        let quantity = Number(details.quantity);
+        if (!Number.isFinite(quantity) || quantity <= 0) quantity = requested || 1;
+        quantity = Math.min(quantity, requested || quantity);
+        const price = Number(details.price);
+        const safePrice = Number.isFinite(price) && price >= 0 ? price : 0;
+        const currentLine = receiptLine(request, resolvedProductId);
+        const expectedPurchasedProductId = details.purchasedProductId || resolvedProductId;
+        const expectedFilled = safePrice > 0
+          || Boolean(details.purchasedProduct)
+          || expectedPurchasedProductId !== resolvedProductId
+          || details.completionMode === "filled";
+        const expectedCompletionMode = expectedFilled ? "filled" : (details.completionMode || "closed");
+        if (!details.purchasedProduct && purchaseLineMatches(currentLine, {
+          productId: resolvedProductId,
+          purchasedProductId: expectedPurchasedProductId,
+          quantity,
+          price: safePrice,
+          completionMode: expectedCompletionMode,
+        })) {
+          return { ok: true, changed: false, requestId };
+        }
+        const purchasedProductId = materializePurchasedProduct(next, {
+          ...details,
+          productId: resolvedProductId,
+        }, now, actor) || resolvedProductId;
+        const receipt = ensureSingleReceipt(request, now, actor);
+        let line = receipt.items.find((item) => item.productId === resolvedProductId);
+        const isNewLine = !line;
+        const filled = safePrice > 0
+          || Boolean(details.purchasedProduct)
+          || (purchasedProductId && purchasedProductId !== resolvedProductId)
+          || details.completionMode === "filled";
+        if (!line) {
+          line = {
+            productId: resolvedProductId,
+            purchasedProductId,
+            quantity,
+            price: safePrice,
+            completionMode: filled ? "filled" : (details.completionMode || "closed"),
+          };
+          receipt.items.push(line);
+        } else {
+          line.quantity = quantity;
+          line.price = safePrice;
+          line.purchasedProductId = purchasedProductId;
+          line.completionMode = filled ? "filled" : (details.completionMode || line.completionMode || "closed");
+        }
+        receipt.updatedAt = now;
+        receipt.updatedBy = actor;
+        receipt.deletedAt = "";
+        request.updatedAt = now;
+        request.updatedBy = actor;
+        updateRequestStatus(request, now);
+        appendRequestVersion(
+          request,
+          isNewLine ? "Покупка отмечена" : "Детали покупки обновлены",
+          now,
+          actor
+        );
+        return { ok: true, requestId, productId: resolvedProductId };
+      });
+    },
+
+    unmarkBought(requestId, productId) {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
+        if (!request) return { ok: false, reason: "Запрос не найден." };
+        if (!receiptLine(request, productId)) return { ok: true, changed: false, requestId };
+        const receipt = ensureSingleReceipt(request, now, actor);
+        const before = receipt.items.length;
+        receipt.items = receipt.items.filter((item) => item.productId !== productId);
+        if (receipt.items.length === before) return { ok: true, changed: false, requestId };
+        receipt.updatedAt = now;
+        receipt.updatedBy = actor;
+        if (!receipt.items.length) receipt.deletedAt = now;
+        request.updatedAt = now;
+        request.updatedBy = actor;
+        updateRequestStatus(request, now);
+        appendRequestVersion(request, "Отметка покупки снята", now, actor);
+        return { ok: true, requestId, productId };
+      });
+    },
+
+    saveReceipt(requestId, items, responseId = "") {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
+        if (!request) return { ok: false, reason: "Запрос не найден." };
+        const sourceItems = (items || []).filter((item) => item.productId);
+        if (!sourceItems.length) return { ok: false, reason: "Отметьте хотя бы одну купленную позицию." };
+        const responseItems = sourceItems.map((item) => ({
+          productId: item.productId,
+          purchasedProductId: materializePurchasedProduct(next, item, now, actor),
+          quantity: Number(item.quantity),
+          price: Number(item.price) || 0,
+          completionMode: item.completionMode || "filled",
+        }));
+        const edited = responseId
+          ? (request.responses || []).find((response) => response.id === responseId)
+          : null;
+        if (edited) {
+          edited.items = responseItems;
+          edited.updatedAt = now;
+          edited.updatedBy = actor;
+          edited.deletedAt = "";
+        } else {
+          const receipt = ensureSingleReceipt(request, now, actor);
+          receipt.items = responseItems;
+          receipt.updatedAt = now;
+          receipt.updatedBy = actor;
+          receipt.deletedAt = "";
+        }
+        request.updatedAt = now;
+        request.updatedBy = actor;
+        updateRequestStatus(request, now);
+        appendRequestVersion(request, edited ? "Транзакция изменена" : "Транзакция добавлена", now, actor);
+        return { ok: true, requestId };
+      });
+    },
+
+    restoreVersion(requestId, historyId) {
+      return apply((next, { now, actor }) => {
+        const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
+        if (!request) return { ok: false, reason: "Запрос не найден." };
+        const transaction = (request.history || []).find((item) => item.id === historyId);
+        if (!transaction) return { ok: false, reason: "Версия не найдена." };
+        restoreRequestVersion(request, transaction, now, actor);
+        return { ok: true, requestId };
+      });
+    },
+
+    setRationCalendar({ view, anchor } = {}) {
+      return apply((next) => {
+        if (view) next.rationView = view;
+        if (anchor) next.rationAnchor = anchor;
+        return { ok: true };
+      });
+    },
+
+    addRationMeal(dateKey) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const meal = {
+          id: createId("meal"),
+          name: `Приём пищи ${day.meals.length + 1}`,
+          time: defaultRationMealTime(null, day.meals.length),
+          items: [],
+        };
+        day.meals.push(meal);
+        touchRationDayRecord(day, now, actor, next);
+        next.rationAnchor = dateKey;
+        return { ok: true, mealId: meal.id };
+      });
+    },
+
+    updateRationMeal(dateKey, mealId, fields) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const meal = day.meals.find((item) => item.id === mealId);
+        if (!meal) return { ok: false, reason: "Приём пищи не найден." };
+        if (fields.name != null) meal.name = String(fields.name).trim() || "Приём пищи";
+        if (fields.time != null) meal.time = /^\d{2}:\d{2}$/.test(fields.time) ? fields.time : "12:00";
+        next.rationAnchor = dateKey;
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true, mealId };
+      });
+    },
+
+    removeRationMeal(dateKey, mealId) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const before = day.meals.length;
+        day.meals = day.meals.filter((meal) => meal.id !== mealId);
+        if (day.meals.length === before) return { ok: false, reason: "Приём пищи не найден." };
+        next.rationAnchor = dateKey;
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true };
+      });
+    },
+
+    addRationFood(dateKey, mealId) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const meal = day.meals.find((item) => item.id === mealId);
+        if (!meal) return { ok: false, reason: "Приём пищи не найден." };
+        const item = { id: createId("ration_item"), productId: "", name: "" };
+        meal.items = meal.items || [];
+        meal.items.push(item);
+        next.rationAnchor = dateKey;
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true, itemId: item.id, mealId };
+      });
+    },
+
+    saveRationFood(dateKey, mealId, itemId, { name, hint, addNext } = {}) {
+      return apply((next, { now, actor }) => {
+        const value = String(name || "").trim();
+        if (!value) return { ok: false, reason: "Введите название продукта." };
+        const day = ensureRationDay(next, dateKey);
+        const meal = day.meals.find((item) => item.id === mealId);
+        const item = meal?.items.find((entry) => entry.id === itemId);
+        if (!item) return { ok: false, reason: "Позиция рациона не найдена." };
+        const product = resolveOrCreateProduct(next, { name: value, hint }, now, actor);
+        item.productId = product.id;
+        item.name = product.name;
+        let nextItemId = "";
+        if (addNext) {
+          const nextItem = { id: createId("ration_item"), productId: "", name: "" };
+          meal.items.push(nextItem);
+          nextItemId = nextItem.id;
+        }
+        next.rationAnchor = dateKey;
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true, itemId, nextItemId, mealId };
+      });
+    },
+
+    removeRationFood(dateKey, mealId, itemId) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const meal = day.meals.find((item) => item.id === mealId);
+        if (!meal) return { ok: false, reason: "Приём пищи не найден." };
+        const before = (meal.items || []).length;
+        meal.items = (meal.items || []).filter((item) => item.id !== itemId);
+        if (meal.items.length === before) return { ok: false, reason: "Позиция рациона не найдена." };
+        next.rationAnchor = dateKey;
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true, mealId };
+      });
+    },
+
+    setRationPortion(dateKey, mealId, itemId, { portionSize, packageSize, measureUnit } = {}) {
+      return apply((next, { now, actor }) => {
+        const day = ensureRationDay(next, dateKey);
+        const meal = day.meals.find((item) => item.id === mealId);
+        const item = meal?.items.find((entry) => entry.id === itemId);
+        if (!item) return { ok: false, reason: "Позиция рациона не найдена." };
+        item.portionSize = Number(portionSize) || 1;
+        item.packageSize = Number(packageSize) || 1;
+        item.measureUnit = measureUnit || item.measureUnit || "г";
+        touchRationDayRecord(day, now, actor, next);
+        return { ok: true, itemId };
+      });
+    },
+
+    saveRationTemplateFromDay(dateKey, name) {
+      return apply((next, { now, actor }) => {
+        const title = String(name || "").trim();
+        if (!title) return { ok: false, reason: "Название шаблона не заполнено." };
+        const day = rationDayFor(next, dateKey);
+        if (!day?.meals?.length) return { ok: false, reason: "День больше не содержит приёмов пищи." };
+        next.rationTemplates = next.rationTemplates || [];
+        const template = {
+          id: createId("ration_template"),
+          name: title,
+          owner: rationOwner(next),
+          meals: cloneRationTemplateMeals(day.meals),
+          createdAt: now,
+          updatedAt: now,
+          updatedBy: actor,
+        };
+        next.rationTemplates.push(template);
+        return { ok: true, templateId: template.id };
+      });
+    },
+
+    renameRationTemplate(templateId, name) {
+      return apply((next, { now }) => {
+        const title = String(name || "").trim();
+        if (!title) return { ok: false, reason: "Название шаблона не заполнено." };
+        const template = (next.rationTemplates || []).find((item) => item.id === templateId);
+        if (!template) return { ok: false, reason: "Шаблон не найден." };
+        template.name = title;
+        template.updatedAt = now;
+        return { ok: true, templateId };
+      });
+    },
+
+    removeRationTemplate(templateId) {
+      return apply((next) => {
+        const before = (next.rationTemplates || []).length;
+        next.rationTemplates = (next.rationTemplates || []).filter((item) => item.id !== templateId);
+        if (next.rationTemplates.length === before) return { ok: false, reason: "Шаблон не найден." };
+        return { ok: true };
+      });
+    },
+
+    applyRationTemplate(templateId, dates) {
+      return apply((next, { now, actor }) => {
+        const template = (next.rationTemplates || []).find((item) => item.id === templateId);
+        if (!template) return { ok: false, reason: "Шаблон не найден." };
+        const keys = [...new Set(dates || [])];
+        if (!keys.length) return { ok: false, reason: "Выберите дни для шаблона." };
+        keys.forEach((dateKey) => {
+          const day = ensureRationDay(next, dateKey);
+          day.meals = cloneRationTemplateMeals(template.meals);
+          touchRationDayRecord(day, now, actor, next);
+        });
+        return { ok: true, dates: keys };
+      });
+    },
+
+    deleteRationSelection({ mealIds, itemIds, dates } = {}) {
+      return apply((next, { now, actor }) => {
+        const selectedMealIds = new Set(mealIds || []);
+        const selectedItemIds = new Set(itemIds || []);
+        const selectedDates = new Set(dates || []);
+        if (!selectedMealIds.size && !selectedItemIds.size && !selectedDates.size) {
+          return { ok: false, reason: "Ничего не выбрано." };
+        }
+        const datesToEdit = new Set(selectedDates);
+        Object.values(next.rationDays || {}).forEach((day) => {
+          if (!day?.date) return;
+          const hasMeal = (day.meals || []).some((meal) => selectedMealIds.has(meal.id));
+          const hasItem = (day.meals || []).some((meal) =>
+            (meal.items || []).some((item) => selectedItemIds.has(item.id))
+          );
+          if (hasMeal || hasItem) datesToEdit.add(day.date);
+        });
+        let changed = false;
+        datesToEdit.forEach((dateKey) => {
+          const day = ensureRationDay(next, dateKey);
+          let dayChanged = false;
+          if (selectedMealIds.size) {
+            const before = day.meals.length;
+            day.meals = day.meals.filter((meal) => !selectedMealIds.has(meal.id));
+            dayChanged = day.meals.length !== before;
+          } else if (selectedItemIds.size) {
+            day.meals.forEach((meal) => {
+              const before = (meal.items || []).length;
+              meal.items = (meal.items || []).filter((item) => !selectedItemIds.has(item.id));
+              if (meal.items.length !== before) dayChanged = true;
+            });
+          } else if (selectedDates.has(dateKey) && day.meals.length) {
+            day.meals = [];
+            dayChanged = true;
+          }
+          if (dayChanged) {
+            touchRationDayRecord(day, now, actor, next);
+            changed = true;
+          }
+        });
+        if (!changed) return { ok: false, reason: "В сохранённом рационе нечего удалять." };
+        return { ok: true };
+      });
+    },
+
+    createRequestFromRation({ dates, itemIds } = {}) {
+      return apply((next, { now, actor }) => {
+        const requestItems = plannedRationRequestItems(next, [...dates || []].sort(), new Set(itemIds || []));
+        if (!requestItems.length) return { ok: false, reason: "Выберите хотя бы одну позицию рациона." };
+        const request = {
+          id: createId("request"),
+          createdAt: now,
+          status: "open",
+          items: requestItems,
+          responses: [],
+          createdBy: actor,
+          updatedBy: actor,
+          updatedAt: now,
+          history: [],
+        };
+        appendRequestVersion(request, "Запрос создан из рациона", now, actor);
+        next.requests.push(request);
+        return { ok: true, requestId: request.id };
+      });
+    },
+  };
+}
+
+export function prepareState(source) {
+  const result = { ...emptyState(), ...structuredClone(source && typeof source === "object" ? source : {}) };
+  result.schemaVersion = SCHEMA_VERSION;
+  result.onboardingCompleted = true;
+  const legacyRationDays = result.rationDays && typeof result.rationDays === "object" ? result.rationDays : {};
+  result.rationDays = {};
+  Object.values(legacyRationDays).forEach((day) => {
+    if (!day?.date) return;
+    const owner = String(day.owner || result.user?.email || "local").trim().toLowerCase() || "local";
+    const meals = (day.meals || []).filter((meal) => {
+      const legacyNames = ["Завтрак", "Обед", "Ужин"];
+      const legacyTimes = ["08:00", "13:00", "19:00"];
+      const legacyIndex = Number(String(meal.id || "").match(new RegExp(`^meal_${day.date}_(\\d+)$`))?.[1]) - 1;
+      return !(
+        legacyIndex >= 0
+        && meal.name === legacyNames[legacyIndex]
+        && meal.time === legacyTimes[legacyIndex]
+        && !(meal.items || []).length
+      );
+    });
+    result.rationDays[`${owner}|${day.date}`] = { ...day, meals, owner };
+  });
+  result.rationView = ["day", "week", "month"].includes(result.rationView) ? result.rationView : "week";
+  result.rationAnchor = /^\d{4}-\d{2}-\d{2}$/.test(result.rationAnchor || "") ? result.rationAnchor : todayDateKey();
+  result.rationTemplates = Array.isArray(result.rationTemplates) ? result.rationTemplates : [];
+  result.products = mergeVersioned([], (result.products || []).map((product) => {
+    const normalized = normalizeProductRecord({
+      ...product,
+      updatedAt: product.updatedAt || new Date(0).toISOString(),
+      updatedBy: product.updatedBy || "local",
+    });
+    delete normalized.baseQuantity;
+    delete normalized.baseUpdatedAt;
+    delete normalized.quantity;
+    return normalized;
+  }));
+  result.requests = mergeRequests([], (result.requests || []).map((request) => migrateRequest(request)));
+  return result;
+}
+
+export function createId(prefix) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+export function normalizeProductName(name) {
+  return String(name || "").trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " ");
+}
+
+export function genericKeyFromParts(category, name, fallback = "") {
+  if (category) return normalizeGenericKey(category);
+  const first = String(name || "").trim().split(/\s+/)[0] || fallback;
+  return normalizeGenericKey(first);
+}
+
+export function isProductConfirmed(product) {
+  if (!product) return false;
+  if (product.confirmed === true) return true;
+  if (product.confirmed === false) return false;
+  return Boolean(product.barcode);
+}
+
+export function normalizeProductRecord(product) {
+  if (!product) return product;
+  const category = product.category || "";
+  const name = product.name || "";
+  return {
+    ...product,
+    category,
+    brand: product.brand || "",
+    kind: inferProductKind(product),
+    genericKey: product.genericKey || genericKeyFromParts(category, name),
+    confirmed: isProductConfirmed(product),
+    catalogSource: product.catalogSource || "",
+  };
+}
+
+export function openFoodFactsSuggestion(product) {
+  const name = String(product.product_name_ru || product.product_name || product.generic_name_ru || "").trim();
+  if (!name) return null;
+  const brand = Array.isArray(product.brands) ? product.brands.join(", ") : String(product.brands || "").trim();
+  const category = openFoodFactsCategory(product);
+  const genericName = String(product.generic_name_ru || product.generic_name || "").trim();
+  return {
+    id: `off_${product.code || normalizeProductName(name)}`,
+    name,
+    brand,
+    category,
+    genericKey: genericKeyFromParts(category, genericName || name),
+    kind: product.code ? "sku" : "generic",
+    unit: openFoodFactsUnit(product),
+    barcode: String(product.code || ""),
+    ingredients: String(product.ingredients_text_ru || product.ingredients_text || "").trim(),
+    nutrition: openFoodFactsNutrition(product),
+    catalogSource: "Open Food Facts",
+    confirmed: false,
+  };
+}
+
+export function activeResponses(request) {
+  return (request.responses || []).filter((response) => !response.deletedAt);
+}
+
+export function isRequestFulfilled(request) {
+  return request.items.length > 0 && request.items.every((item) =>
+    responseItemTotal(request, item.productId).quantity >= Number(item.quantity)
+  );
+}
+
+export function ensureSingleReceipt(nextRequest, changedAt, actor = "local") {
+  const writer = actor || "local";
+  const active = activeResponses(nextRequest)
+    .slice()
+    .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+  if (!active.length) {
+    const reusable = (nextRequest.responses || [])
+      .slice()
+      .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))[0];
+    if (reusable) {
+      reusable.items = [];
+      reusable.deletedAt = "";
+      reusable.updatedAt = changedAt;
+      reusable.updatedBy = writer;
+      return reusable;
+    }
+    const receipt = {
+      id: `response_${nextRequest.id}`,
+      requestId: nextRequest.id,
+      items: [],
+      createdAt: changedAt,
+      createdBy: writer,
+      updatedAt: changedAt,
+      updatedBy: writer,
+    };
+    nextRequest.responses = nextRequest.responses || [];
+    nextRequest.responses.push(receipt);
+    return receipt;
+  }
+  const primary = nextRequest.responses.find((item) => item.id === active[0].id);
+  if (active.length > 1) {
+    const merged = new Map();
+    active.forEach((response) => {
+      response.items.forEach((item) => {
+        const previous = merged.get(item.productId);
+        if (!previous) {
+          merged.set(item.productId, structuredClone(item));
+          return;
+        }
+        previous.quantity = (Number(previous.quantity) || 0) + (Number(item.quantity) || 0);
+        previous.price = (Number(previous.price) || 0) + (Number(item.price) || 0);
+        if (item.purchasedProductId) previous.purchasedProductId = item.purchasedProductId;
+        if (item.completionMode === "filled") previous.completionMode = "filled";
+      });
+      if (response.id !== primary.id) {
+        response.deletedAt = changedAt;
+        response.updatedAt = changedAt;
+        response.updatedBy = writer;
+      }
+    });
+    primary.items = [...merged.values()];
+    primary.updatedAt = changedAt;
+    primary.updatedBy = writer;
+    primary.deletedAt = "";
+  }
+  return primary;
+}
+
+export function purchaseLineMatches(line, expected) {
+  if (!line || !expected) return false;
+  return line.productId === expected.productId
+    && String(line.purchasedProductId || line.productId) === String(expected.purchasedProductId || expected.productId)
+    && Number(line.quantity) === Number(expected.quantity)
+    && Number(line.price || 0) === Number(expected.price || 0)
+    && String(line.completionMode || "closed") === String(expected.completionMode || "closed");
+}
+
+export function materializePurchasedProduct(nextState, item, changedAt, actor = "local") {
+  if (!item.purchasedProduct) return item.purchasedProductId || item.productId;
+  const suggestion = item.purchasedProduct;
+  const writer = actor || "local";
+  const requestedProduct = nextState.products.find((product) => product.id === item.productId && !product.deletedAt);
+  if (requestedProduct && !isProductConfirmed(requestedProduct)) {
+    const category = suggestion.category || requestedProduct.category || "";
+    Object.assign(requestedProduct, {
+      name: suggestion.name,
+      category,
+      brand: suggestion.brand || requestedProduct.brand || "",
+      unit: suggestion.unit || requestedProduct.unit || "шт.",
+      barcode: suggestion.barcode || requestedProduct.barcode || "",
+      ingredients: suggestion.ingredients || requestedProduct.ingredients || "",
+      nutrition: suggestion.nutrition ? structuredClone(suggestion.nutrition) : requestedProduct.nutrition,
+      catalogSource: suggestion.catalogSource || requestedProduct.catalogSource || "Open Food Facts",
+      kind: suggestion.kind || (suggestion.barcode ? "sku" : inferProductKind(requestedProduct)),
+      genericKey: suggestion.genericKey
+        || requestedProduct.genericKey
+        || genericKeyFromParts(category, suggestion.name || requestedProduct.name),
+      confirmed: Boolean(suggestion.barcode),
+      updatedAt: changedAt,
+      updatedBy: writer,
+    });
+    return requestedProduct.id;
+  }
+  const existing = nextState.products.find((product) =>
+    !product.deletedAt && (
+      (suggestion.barcode && product.barcode === suggestion.barcode)
+      || normalizeProductName(product.name) === normalizeProductName(suggestion.name)
+    )
+  );
+  if (existing) return existing.id;
+  const category = suggestion.category || "";
+  const product = {
+    id: createId("product"),
+    name: suggestion.name,
+    category,
+    brand: suggestion.brand || "",
+    unit: suggestion.unit || "шт.",
+    barcode: suggestion.barcode || "",
+    ingredients: suggestion.ingredients || "",
+    catalogSource: suggestion.catalogSource || "Open Food Facts",
+    nutrition: suggestion.nutrition ? structuredClone(suggestion.nutrition) : null,
+    kind: suggestion.kind || (suggestion.barcode ? "sku" : "generic"),
+    genericKey: suggestion.genericKey || genericKeyFromParts(category, suggestion.name),
+    confirmed: Boolean(suggestion.barcode),
+    updatedAt: changedAt,
+    updatedBy: writer,
+  };
+  nextState.products.push(product);
+  return product.id;
+}
+
+export function productPurchasedTotal(productId, source) {
+  return (source.requests || []).filter((request) => !request.deletedAt).reduce((total, request) => total + activeResponses(request).reduce(
+    (requestTotal, response) => requestTotal + response.items.reduce((responseTotal, item) => {
+      return responseTotal + ((item.purchasedProductId || item.productId) === productId ? Number(item.quantity) || 0 : 0);
+    }, 0),
+    0
+  ), 0);
+}
+
+export function requestReceipt(request) {
+  return activeResponses(request)
+    .slice()
+    .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))[0] || null;
+}
+
+export function receiptLine(request, productId) {
+  return requestReceipt(request)?.items.find((item) => item.productId === productId) || null;
+}
+
+export function remainingRequestQuantity(request, productId, excludedResponseId = "") {
+  const requested = Number(request.items.find((item) => item.productId === productId)?.quantity || 0);
+  const bought = activeResponses(request)
+    .filter((response) => response.id !== excludedResponseId)
+    .reduce((sum, response) => sum + Number(response.items.find((item) => item.productId === productId)?.quantity || 0), 0);
+  return Math.max(0, requested - bought);
+}
+
+function liveProduct(source, productId) {
+  return (source.products || []).find((product) => product.id === productId && !product.deletedAt) || null;
+}
+
+function ensureRationDay(source, dateKey) {
+  if (!source.rationDays) source.rationDays = {};
+  const key = rationDayKey(dateKey, source);
+  if (!source.rationDays[key]) {
+    source.rationDays[key] = {
+      date: dateKey,
+      owner: rationOwner(source),
+      meals: [],
+      updatedAt: "",
+      updatedBy: "",
+    };
+  }
+  return source.rationDays[key];
+}
+
+function touchRationDayRecord(day, now, actor, source) {
+  day.updatedAt = now;
+  day.updatedBy = actor;
+  day.owner = rationOwner(source);
+}
+
+function defaultRationMealTime(meal, index = 0) {
+  return /^\d{2}:\d{2}$/.test(meal?.time || "")
+    ? meal.time
+    : ["08:00", "13:00", "19:00"][index] || `${String(Math.min(22, 8 + index * 3)).padStart(2, "0")}:00`;
+}
+
+function cloneRationTemplateMeals(meals) {
+  return (meals || []).map((meal, mealIndex) => ({
+    id: createId("meal"),
+    name: meal.name || `Приём пищи ${mealIndex + 1}`,
+    time: defaultRationMealTime(meal, mealIndex),
+    items: (meal.items || []).map((item) => ({
+      id: createId("ration_item"),
+      productId: item.productId || "",
+      name: item.name || "",
+      portionSize: Number(item.portionSize) || 0,
+      packageSize: Number(item.packageSize) || 0,
+    })),
+  }));
+}
+
+export function rationTemplatesForUser(source) {
+  const owner = rationOwner(source);
+  return (source.rationTemplates || [])
+    .filter((template) => String(template.owner || "local").trim().toLowerCase() === owner)
+    .sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
+}
+
+function resolveOrCreateProduct(source, draft, changedAt, actor) {
+  const name = String(draft.name || draft.query || "").trim();
+  const existingById = draft.productId ? liveProduct(source, draft.productId) : null;
+  if (existingById) return existingById;
+  const key = normalizeProductName(name);
+  if (key) {
+    const existing = (source.products || []).find((product) =>
+      !product.deletedAt && normalizeProductName(product.name) === key
+    );
+    if (existing) return existing;
+  }
+  if (!name) return null;
+  const catalog = draft.hint && typeof draft.hint === "object" ? draft.hint : null;
+  const category = catalog?.category || "";
+  const product = {
+    id: createId("product"),
+    name,
+    category,
+    unit: catalog?.unit || draft.unit || "шт.",
+    brand: catalog?.brand || "",
+    kind: catalog?.kind || (catalog?.barcode ? "sku" : "generic"),
+    genericKey: catalog?.genericKey || genericKeyFromParts(category, name),
+    confirmed: false,
+    updatedAt: changedAt,
+    updatedBy: actor,
+    nutrition: catalog?.nutrition ? structuredClone(catalog.nutrition) : null,
+    barcode: catalog?.barcode || "",
+    ingredients: catalog?.ingredients || "",
+    catalogSource: catalog?.catalogSource || (catalog ? "Встроенный справочник" : ""),
+    nutritionSource: catalog?.catalogSource || (catalog ? "Справочник" : ""),
+  };
+  source.products = source.products || [];
+  source.products.push(product);
+  return product;
+}
+
+export function plannedRationRequestItems(source, dates, selectedItemIds) {
+  const portions = new Map();
+  dates.forEach((dateKey) => (rationDayFor(source, dateKey)?.meals || []).forEach((meal) =>
+    (meal.items || []).forEach((item) => {
+      if (!item.productId || !selectedItemIds.has(item.id)) return;
+      const product = (source.products || []).find((value) => value.id === item.productId);
+      const measure = rationMeasure(product);
+      const portionSize = Number(item.portionSize) || measure.defaultPortion;
+      const packageSize = Number(item.packageSize) || measure.defaultPackage;
+      const current = portions.get(item.productId) || {
+        productId: item.productId,
+        plannedAmount: 0,
+        packageSize,
+        measureUnit: item.measureUnit || measure.unit,
+      };
+      current.plannedAmount += portionSize;
+      current.packageSize = packageSize;
+      portions.set(item.productId, current);
+    })
+  ));
+  return [...portions.values()].map((item) => ({
+    ...item,
+    quantity: Math.max(1, Math.ceil(item.plannedAmount / item.packageSize)),
+    unit: "уп.",
+  }));
+}
+
+export function rationMeasure(product) {
+  const unit = String(product?.unit || "г").toLowerCase();
+  if (unit.includes("шт")) return { unit: "шт.", defaultPortion: 1, defaultPackage: 1 };
+  if (unit === "л" || unit.includes("мл")) return { unit: "мл", defaultPortion: 250, defaultPackage: 1000 };
+  return { unit: "г", defaultPortion: 100, defaultPackage: 1000 };
+}
+
+export function rationOwner(source) {
+  return String(source?.user?.email || "local").trim().toLowerCase() || "local";
+}
+
+export function rationDayKey(dateKey, source) {
+  return `${rationOwner(source)}|${dateKey}`;
+}
+
+export function rationDayFor(source, dateKey) {
+  const owner = rationOwner(source);
+  return source.rationDays?.[`${owner}|${dateKey}`]
+    || (owner === "local" ? source.rationDays?.[dateKey] : null);
+}
+
+export function todayDateKey() {
+  return formatRationDate(new Date());
+}
+
+export function parseRationDate(value) {
+  const [year, month, day] = String(value).split("-").map(Number);
+  return new Date(year, month - 1, day, 12);
+}
+
+export function formatRationDate(value) {
+  const date = value instanceof Date ? value : parseRationDate(value);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+export function timestamp(value) {
+  const result = Date.parse(value || "");
+  return Number.isFinite(result) ? result : 0;
+}
+
+export function updateRequestStatus(request, changedAt = request.updatedAt) {
+  if (isRequestFulfilled(request)) {
+    request.status = "done";
+    request.completedAt = request.completedAt || changedAt || new Date().toISOString();
+  } else {
+    request.status = "open";
+    request.completedAt = "";
+  }
+  return request;
+}
+
+export function appendRequestVersion(request, action, createdAt, actor, transactionId = createId("transaction")) {
+  request.history = request.history || [];
+  request.history.push({
+    id: transactionId,
+    action,
+    createdAt,
+    updatedAt: createdAt,
+    createdBy: actor || "local",
+    snapshot: requestSnapshot(request),
+  });
+}
+
+export function restoreRequestVersion(request, transaction, changedAt, actor) {
+  const history = structuredClone(request.history || []);
+  const currentResponses = new Map((request.responses || []).map((response) => [response.id, response]));
+  const restored = normalizeRequestSnapshot(transaction.snapshot, request.id);
+  restored.responses = restored.responses.map((response) => ({
+    ...response,
+    deletedAt: response.deletedAt ? changedAt : "",
+    updatedAt: changedAt,
+    updatedBy: actor || "local",
+  }));
+  const restoredIds = new Set(restored.responses.map((response) => response.id));
+  currentResponses.forEach((response, responseId) => {
+    if (restoredIds.has(responseId)) return;
+    restored.responses.push({
+      ...structuredClone(response),
+      deletedAt: changedAt,
+      updatedAt: changedAt,
+      updatedBy: actor || "local",
+    });
+  });
+  Object.keys(request).forEach((key) => delete request[key]);
+  Object.assign(request, restored, {
+    history,
+    updatedAt: changedAt,
+    updatedBy: actor || "local",
+  });
+  updateRequestStatus(request, changedAt);
+  appendRequestVersion(request, `Откат: ${transaction.action}`, changedAt, actor);
+  return request;
+}
+
+function normalizeGenericKey(value) {
+  return normalizeProductName(value).replace(/[^a-zа-яё0-9]+/gi, "_").replace(/^_|_$/g, "");
+}
+
+function inferProductKind(product) {
+  if (product?.kind === "generic" || product?.kind === "sku") return product.kind;
+  if (product?.barcode || product?.brand) return "sku";
+  return "generic";
+}
+
+function formatAmount(value) {
+  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(value);
+}
+
+function finiteNutrient(value) {
+  const result = Number(value);
+  return value === "" || value == null || !Number.isFinite(result) ? null : result;
+}
+
+function openFoodFactsUnit(product) {
+  const water = (product.categories_tags || []).some((tag) => /water/i.test(tag));
+  const quantity = String(product.quantity || "").toLowerCase();
+  if (water || /\b(ml|мл|l|л)\b/.test(quantity)) return "л";
+  if (/\b(kg|кг)\b/.test(quantity)) return "кг";
+  if (/\b(g|г)\b/.test(quantity)) return "г";
+  return "шт.";
+}
+
+function openFoodFactsCategory(product) {
+  const tags = (product.categories_tags || []).join(" ").toLowerCase();
+  const categories = String(product.categories || "").toLowerCase();
+  const value = `${tags} ${categories}`;
+  if (/water|beverage|drink/.test(value)) return "Напитки";
+  if (/milk|dairy|cheese|yogurt|кефир|молоч/.test(value)) return "Молочные продукты";
+  if (/fruit/.test(value)) return "Фрукты";
+  if (/vegetable/.test(value)) return "Овощи";
+  if (/meat|poultry/.test(value)) return "Мясо и птица";
+  if (/fish|seafood/.test(value)) return "Рыба и морепродукты";
+  if (/bread|bakery/.test(value)) return "Хлеб и выпечка";
+  return product.categories ? String(product.categories).split(",")[0].trim() : "";
+}
+
+function openFoodFactsNutrientText(nutriments, definitions) {
+  return Object.entries(definitions).flatMap(([key, [label, multiplier, unit]]) => {
+    const value = finiteNutrient(nutriments[key]);
+    return value == null ? [] : [`${label}: ${formatAmount(value * multiplier)} ${unit}`];
+  }).join("; ");
+}
+
+function openFoodFactsNutrition(product) {
+  const nutriments = product.nutriments || {};
+  const water = (product.categories_tags || []).some((tag) => /water/i.test(tag));
+  const calories = finiteNutrient(nutriments["energy-kcal_100g"])
+    ?? (finiteNutrient(nutriments.energy_100g) == null ? null : finiteNutrient(nutriments.energy_100g) / 4.184);
+  const values = {
+    calories: calories ?? (water ? 0 : null),
+    protein: finiteNutrient(nutriments.proteins_100g) ?? (water ? 0 : null),
+    fat: finiteNutrient(nutriments.fat_100g) ?? (water ? 0 : null),
+    carbs: finiteNutrient(nutriments.carbohydrates_100g) ?? (water ? 0 : null),
+    fiber: finiteNutrient(nutriments.fiber_100g) ?? (water ? 0 : null),
+  };
+  const vitamins = openFoodFactsNutrientText(nutriments, {
+    "vitamin-a_100g": ["A", 1_000_000, "мкг"], "vitamin-d_100g": ["D", 1_000_000, "мкг"],
+    "vitamin-e_100g": ["E", 1_000, "мг"], "vitamin-c_100g": ["C", 1_000, "мг"],
+    "vitamin-b1_100g": ["B1", 1_000, "мг"], "vitamin-b2_100g": ["B2", 1_000, "мг"],
+    "vitamin-b6_100g": ["B6", 1_000, "мг"], "vitamin-b9_100g": ["B9", 1_000_000, "мкг"],
+    "vitamin-b12_100g": ["B12", 1_000_000, "мкг"],
+  });
+  const minerals = openFoodFactsNutrientText(nutriments, {
+    calcium_100g: ["Кальций", 1_000, "мг"], iron_100g: ["Железо", 1_000, "мг"],
+    magnesium_100g: ["Магний", 1_000, "мг"], potassium_100g: ["Калий", 1_000, "мг"],
+    zinc_100g: ["Цинк", 1_000, "мг"], sodium_100g: ["Натрий", 1_000, "мг"],
+  });
+  if (!Object.values(values).some((value) => value != null) && !vitamins && !minerals) return null;
+  return {
+    ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value == null ? null : Number(value.toFixed(2))])),
+    vitamins,
+    minerals,
+    basis: "100 г/мл",
+    source: "Open Food Facts",
+  };
+}
+
+function requestSnapshot(request) {
+  return structuredClone({
+    id: request.id,
+    createdAt: request.createdAt,
+    completedAt: request.completedAt || "",
+    createdBy: request.createdBy || "local",
+    updatedAt: request.updatedAt,
+    updatedBy: request.updatedBy || request.createdBy || "local",
+    status: request.status,
+    items: request.items,
+    responses: request.responses,
+  });
+}
+
+export function responseItemTotal(request, productId) {
+  return activeResponses(request).reduce((total, response) => {
+    const item = response.items.find((value) => value.productId === productId);
+    if (item) {
+      total.quantity += Number(item.quantity) || 0;
+      total.price += Number(item.price) || 0;
+    }
+    return total;
+  }, { quantity: 0, price: 0 });
+}
+
+function mergeVersioned(localValues, remoteValues) {
+  const merged = new Map(localValues.map((value) => [value.id, value]));
+  remoteValues.forEach((remote) => {
+    const local = merged.get(remote.id);
+    if (!local || timestamp(remote.updatedAt) > timestamp(local.updatedAt)) {
+      merged.set(remote.id, remote);
+    }
+  });
+  return [...merged.values()];
+}
+
+function mergeRequests(localValues, remoteValues) {
+  const merged = new Map(localValues.map((request) => {
+    const normalized = normalizeRequest(request);
+    return [normalized.id, normalized];
+  }));
+  remoteValues.forEach((remoteValue) => {
+    const remote = normalizeRequest(remoteValue);
+    const local = merged.get(remote.id);
+    if (!local) {
+      merged.set(remote.id, remote);
+      return;
+    }
+    const metadata = timestamp(remote.updatedAt) > timestamp(local.updatedAt) ? remote : local;
+    merged.set(remote.id, normalizeRequest({
+      ...metadata,
+      responses: mergeVersioned(local.responses, remote.responses),
+      history: mergeVersioned(local.history || [], remote.history || []),
+    }));
+  });
+  return [...merged.values()];
+}
+
+function dedupeByProduct(values) {
+  const unique = new Map();
+  values.forEach((value) => {
+    if (value?.productId) unique.set(value.productId, value);
+  });
+  return [...unique.values()];
+}
+
+function normalizeRequest(request) {
+  const responses = mergeVersioned([], (request.responses || []).map((response) =>
+    normalizeResponse(response, request.id)
+  ));
+  const normalized = {
+    ...request,
+    items: dedupeByProduct(request.items || []).map(withoutLegacyStock),
+    responses,
+    deletedAt: request.deletedAt || "",
+  };
+  updateRequestStatus(normalized, request.completedAt || request.updatedAt);
+  normalized.history = mergeVersioned([], (request.history || []).map((transaction) => ({
+    ...transaction,
+    id: transaction.id || `transaction_${request.id}_${transaction.createdAt || request.updatedAt}`,
+    action: transaction.action || "Изменение запроса",
+    createdAt: transaction.createdAt || transaction.updatedAt || request.updatedAt,
+    updatedAt: transaction.updatedAt || transaction.createdAt || request.updatedAt,
+    createdBy: transaction.createdBy || request.updatedBy || request.createdBy || "local",
+    snapshot: normalizeRequestSnapshot(transaction.snapshot || request, request.id),
+  })));
+  if (!normalized.history.length) {
+    appendRequestVersion(
+      normalized,
+      "Исходная версия",
+      normalized.updatedAt || normalized.createdAt,
+      normalized.updatedBy || normalized.createdBy,
+      `transaction_initial_${normalized.id}`
+    );
+  }
+  return normalized;
+}
+
+function normalizeRequestSnapshot(snapshot, requestId) {
+  const responses = mergeVersioned([], (snapshot?.responses || []).map((response) =>
+    normalizeResponse(response, requestId)
+  ));
+  const normalized = {
+    ...structuredClone(snapshot || {}),
+    id: requestId,
+    items: dedupeByProduct(snapshot?.items || []).map(withoutLegacyStock),
+    responses,
+  };
+  updateRequestStatus(normalized, normalized.completedAt || normalized.updatedAt);
+  delete normalized.history;
+  return normalized;
+}
+
+function normalizeResponse(response, requestId) {
+  return {
+    ...response,
+    id: response.id || `response_legacy_${requestId}`,
+    requestId,
+    items: dedupeByProduct(response.items || []).map((item) => ({
+      ...withoutLegacyStock(item),
+      purchasedProductId: item.purchasedProductId || item.productId,
+      completionMode: item.completionMode || "filled",
+    })),
+    createdAt: response.createdAt || response.updatedAt || new Date(0).toISOString(),
+    createdBy: response.createdBy || "remote",
+    updatedAt: response.updatedAt || response.createdAt || new Date(0).toISOString(),
+    updatedBy: response.updatedBy || response.createdBy || "remote",
+    deletedAt: response.deletedAt || "",
+  };
+}
+
+function withoutLegacyStock(item) {
+  const normalized = { ...item, note: String(item?.note || "") };
+  delete normalized.stockAtRequest;
+  return normalized;
+}
+
+function migrateRequest(request) {
+  const updatedAt = request.updatedAt || request.completedAt || request.createdAt || new Date(0).toISOString();
+  const legacyResponses = !request.responses?.length && request.purchases?.length
+    ? [{
+        id: `response_legacy_${request.id}`,
+        requestId: request.id,
+        items: request.purchases,
+        createdAt: request.completedAt || updatedAt,
+        createdBy: request.updatedBy || request.createdBy || "local",
+        updatedAt,
+        updatedBy: request.updatedBy || request.createdBy || "local",
+      }]
+    : [];
+  return normalizeRequest({
+    ...request,
+    createdBy: request.createdBy || "local",
+    updatedAt,
+    updatedBy: request.updatedBy || request.createdBy || "local",
+    items: dedupeByProduct(request.items || []).map(withoutLegacyStock),
+    responses: request.responses?.length ? request.responses : legacyResponses,
+  });
+}

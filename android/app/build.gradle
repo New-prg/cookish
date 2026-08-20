@@ -1,7 +1,13 @@
 apply plugin: 'com.android.application'
 
-def releaseVersionName = project.findProperty('releaseVersionName') ?: '5.3.0'
-def releaseVersionCode = (project.findProperty('releaseVersionCode') ?: '5003000') as Integer
+def releaseVersionNameProperty = project.findProperty('releaseVersionName')
+def releaseVersionCodeProperty = project.findProperty('releaseVersionCode')
+def hasReleaseVersion = releaseVersionNameProperty != null &&
+    !releaseVersionNameProperty.toString().isBlank() &&
+    releaseVersionCodeProperty != null &&
+    !releaseVersionCodeProperty.toString().isBlank()
+def releaseVersionName = hasReleaseVersion ? releaseVersionNameProperty.toString() : '0.0.0'
+def releaseVersionCode = hasReleaseVersion ? releaseVersionCodeProperty.toString() as Integer : 1
 def releaseKeystoreFile = System.getenv('COOKISH_KEYSTORE_FILE')
 def releaseKeystorePassword = System.getenv('COOKISH_KEYSTORE_PASSWORD')
 def releaseKeyAlias = System.getenv('COOKISH_KEY_ALIAS')
@@ -52,6 +58,9 @@ android {
 
 gradle.taskGraph.whenReady { graph ->
     def buildsRelease = graph.allTasks.any { it.name == 'assembleRelease' || it.name == 'bundleRelease' }
+    if (buildsRelease && !hasReleaseVersion) {
+        throw new GradleException('Release version is not configured. Pass -PreleaseVersionName and -PreleaseVersionCode.')
+    }
     if (buildsRelease && !releaseSigningConfigured) {
         throw new GradleException('Release signing is not configured. Set the COOKISH_KEYSTORE_* environment variables.')
     }
@@ -69,22 +78,12 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
-    implementation "com.google.android.gms:play-services-auth:21.6.0"
-    implementation "androidx.work:work-runtime:2.11.2"
     implementation "com.journeyapps:zxing-android-embedded:4.3.0"
     testImplementation "junit:junit:$junitVersion"
+    testImplementation "org.json:json:20240303"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
 }
 
 apply from: 'capacitor.build.gradle'
-
-try {
-    def servicesJSON = file('google-services.json')
-    if (servicesJSON.text) {
-        apply plugin: 'com.google.gms.google-services'
-    }
-} catch(Exception e) {
-    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
-}
