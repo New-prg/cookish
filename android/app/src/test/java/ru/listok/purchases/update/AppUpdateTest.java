@@ -71,7 +71,7 @@ public class AppUpdateTest {
         updates.check();
         UpdateStatus last = statuses.get(statuses.size() - 1);
         assertEquals("error", last.status);
-        assertTrue(last.message.contains("сеть"));
+        assertEquals("Нет сети.", last.message);
     }
 
     @Test
