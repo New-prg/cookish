@@ -9,12 +9,14 @@ import {
   isRequestFulfilled,
   materializePurchasedProduct,
   memoryStorage,
+  migrateRationState,
   openFoodFactsSuggestion,
   openLocalData,
   plannedRationRequestItems,
   prepareState,
   productPurchasedTotal,
   purchaseLineMatches,
+  rationDayFor,
   restoreRequestVersion,
   STORAGE_KEY,
 } from "../mobile-shell/local-data.js";
@@ -94,7 +96,7 @@ test("local data loads and commits through a memory adapter", () => {
     spreadsheetId: "legacy_sheet",
   });
   const loaded = openLocalData(storage).load();
-  assert.equal(loaded.schemaVersion, 11);
+  assert.equal(loaded.schemaVersion, 12);
   assert.equal(loaded.onboardingCompleted, true);
   assert.equal(loaded.products[0].id, baseProduct.id);
   assert.equal(loaded.spreadsheetId, "legacy_sheet");
@@ -109,7 +111,7 @@ test("prepared state preserves completed first-run setup", () => {
     user: { email: "a@example.com" },
   });
 
-  assert.equal(result.schemaVersion, 11);
+  assert.equal(result.schemaVersion, 12);
   assert.equal(result.onboardingCompleted, true);
 });
 
@@ -155,7 +157,10 @@ test("existing local blob keeps products, requests, purchases and ration", () =>
 
   assert.equal(result.products[0].id, "product_water");
   assert.equal(result.requests[0].responses[0].id, "response_keep");
-  assert.equal(result.rationDays["a@example.com|2026-08-03"].meals[0].items[0].productId, "product_water");
+  const rationDay = rationDayFor(result, "2026-08-03");
+  assert.equal(rationDay.meals[0].items[0].productId, "product_water");
+  assert.equal(rationDay.source, "special");
+  assert.equal(result.ration.specialDays["a@example.com|2026-08-03"].meals[0].id, "meal_1");
 });
 
 test("newer local product deletion survives an older remote merge", () => {
@@ -559,13 +564,19 @@ test("ration sync preserves an arbitrary number of meals and their products", ()
     rationAnchor: date,
   });
 
-  assert.equal(result.schemaVersion, 11);
+  assert.equal(result.schemaVersion, 12);
   assert.equal(result.rationView, "month");
   assert.equal(result.rationAnchor, date);
-  assert.equal(result.rationDays[`local|${date}`].meals.length, 4);
-  assert.equal(result.rationDays[`local|${date}`].meals[3].items[0].productId, "product_snack");
-  assert.equal(result.rationDays[`local|${date}`].meals[3].time, "21:30");
-  assert.equal(result.rationDays[`local|${date}`].owner, "local");
+  const day = rationDayFor(result, date);
+  assert.equal(day.meals.length, 4);
+  assert.equal(day.meals[3].items[0].productId, "product_snack");
+  assert.equal(day.meals[3].time, "21:30");
+  assert.equal(day.owner, "local");
+  assert.equal(day.meals[0].id, "breakfast");
+  assert.equal(result.ration.specialDays[`local|${date}`].owner, "local");
+  assert.equal(result.ration.versions.length, 1);
+  assert.equal(result.ration.versions[0].cycle.days.length, 1);
+  assert.equal(result.ration.versions[0].cycle.days[0].meals.length, 4);
 });
 
 test("ration days are namespaced by user while products remain shared", () => {
@@ -579,8 +590,9 @@ test("ration days are namespaced by user while products remain shared", () => {
     },
   });
 
-  assert.ok(result.rationDays["owner@example.com|2026-08-04"]);
-  assert.ok(result.rationDays["other@example.com|2026-08-04"]);
+  assert.ok(result.ration.specialDays["owner@example.com|2026-08-04"]);
+  assert.ok(result.ration.specialDays["other@example.com|2026-08-04"]);
+  assert.equal(rationDayFor(result, "2026-08-04").owner, "owner@example.com");
   assert.equal(result.products[0].id, baseProduct.id);
 });
 
@@ -599,7 +611,7 @@ test("ration request includes only selected positions and rounds portions to pac
   };
 
   const items = plannedRationRequestItems(
-    source,
+    migrateRationState(source),
     ["2026-08-03"],
     new Set(chickenItems.map((item) => item.id))
   );
@@ -690,15 +702,15 @@ test("product used in a request cannot be deleted", () => {
 test("ration template applies meals to several days", () => {
   const data = openLocalData(memoryStorage());
   data.addRationMeal("2026-08-03");
-  const mealId = data.snapshot().rationDays["local|2026-08-03"].meals[0].id;
+  const mealId = rationDayFor(data.snapshot(), "2026-08-03").meals[0].id;
   data.saveRationFood("2026-08-03", mealId, data.addRationFood("2026-08-03", mealId).itemId, { name: "Гречка" });
   const saved = data.saveRationTemplateFromDay("2026-08-03", "Будний день");
   assert.equal(saved.ok, true);
   data.applyRationTemplate(saved.templateId, ["2026-08-04", "2026-08-05"]);
   const state = data.snapshot();
-  assert.equal(state.rationDays["local|2026-08-04"].meals.length, 1);
-  assert.equal(state.rationDays["local|2026-08-05"].meals[0].items[0].name, "Гречка");
-  assert.notEqual(state.rationDays["local|2026-08-04"].meals[0].id, mealId);
+  assert.equal(rationDayFor(state, "2026-08-04").meals.length, 1);
+  assert.equal(rationDayFor(state, "2026-08-05").meals[0].items[0].name, "Гречка");
+  assert.notEqual(rationDayFor(state, "2026-08-04").meals[0].id, mealId);
 });
 
 test("ration request merges the same product across days and rounds packages", () => {
@@ -733,9 +745,10 @@ test("ration selection delete removes meals and items", () => {
   data.saveRationFood("2026-08-03", meal.mealId, gone.itemId, { name: "Огурцы" });
   const deleted = data.deleteRationSelection({ itemIds: [gone.itemId] });
   assert.equal(deleted.ok, true);
-  const day = data.snapshot().rationDays["local|2026-08-03"];
+  let day = rationDayFor(data.snapshot(), "2026-08-03");
   assert.equal(day.meals[0].items.length, 1);
   assert.equal(day.meals[0].items[0].name, "Рис");
   data.deleteRationSelection({ mealIds: [meal.mealId] });
-  assert.equal(data.snapshot().rationDays["local|2026-08-03"].meals.length, 0);
+  day = rationDayFor(data.snapshot(), "2026-08-03");
+  assert.equal(day.meals.length, 0);
 });

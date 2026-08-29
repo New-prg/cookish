@@ -1,12 +1,34 @@
+import {
+  RATION_SCHEMA_VERSION,
+  cloneMealsWithNewIds,
+  createId,
+  emptyRation,
+  executeRationCommand,
+  formatRationDate,
+  genericKeyFromParts,
+  migrateRationState,
+  normalizeProductName,
+  parseRationDate,
+  plannedRationRequestItems,
+  rationDayKey,
+  rationMeasure,
+  rationOwner,
+  readRationDay,
+  resolveOrCreateProduct,
+  todayDateKey,
+} from "./ration-domain.js";
+
+export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationDayKey, rationMeasure, rationOwner, todayDateKey };
+
 export const STORAGE_KEY = "cookish.android.data.v1";
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = RATION_SCHEMA_VERSION;
 
 export function emptyState() {
   return {
     schemaVersion: SCHEMA_VERSION,
     products: [],
     requests: [],
-    rationDays: {},
+    ration: emptyRation(),
     rationTemplates: [],
     rationView: "week",
     rationAnchor: "",
@@ -396,123 +418,45 @@ export function openLocalData(storage) {
     },
 
     addRationMeal(dateKey) {
-      return apply((next, { now, actor }) => {
-        const day = ensureRationDay(next, dateKey);
-        const meal = {
-          id: createId("meal"),
-          name: `Приём пищи ${day.meals.length + 1}`,
-          time: defaultRationMealTime(null, day.meals.length),
-          items: [],
-        };
-        day.meals.push(meal);
-        touchRationDayRecord(day, now, actor, next);
-        next.rationAnchor = dateKey;
-        return { ok: true, mealId: meal.id };
-      });
+      return runRation({ type: "addMeal", date: dateKey }, dateKey);
     },
 
     updateRationMeal(dateKey, mealId, fields) {
-      return apply((next, { now, actor }) => {
-        const day = ensureRationDay(next, dateKey);
-        const meal = day.meals.find((item) => item.id === mealId);
-        if (!meal) return { ok: false, reason: "Приём пищи не найден." };
-        if (fields.name != null) meal.name = String(fields.name).trim() || "Приём пищи";
-        if (fields.time != null) meal.time = /^\d{2}:\d{2}$/.test(fields.time) ? fields.time : "12:00";
-        next.rationAnchor = dateKey;
-        touchRationDayRecord(day, now, actor, next);
-        return { ok: true, mealId };
-      });
+      return runRation({ type: "updateMeal", date: dateKey, mealId, fields }, dateKey);
     },
 
     removeRationMeal(dateKey, mealId) {
-      return apply((next, { now, actor }) => {
-        const day = ensureRationDay(next, dateKey);
-        const before = day.meals.length;
-        day.meals = day.meals.filter((meal) => meal.id !== mealId);
-        if (day.meals.length === before) return { ok: false, reason: "Приём пищи не найден." };
-        next.rationAnchor = dateKey;
-        touchRationDayRecord(day, now, actor, next);
-        return { ok: true };
-      });
+      return runRation({ type: "removeMeal", date: dateKey, mealId }, dateKey);
     },
 
     addRationFood(dateKey, mealId) {
-      return apply((next, { now, actor }) => {
-        const day = ensureRationDay(next, dateKey);
-        const meal = day.meals.find((item) => item.id === mealId);
-        if (!meal) return { ok: false, reason: "Приём пищи не найден." };
-        const item = { id: createId("ration_item"), productId: "", name: "" };
-        meal.items = meal.items || [];
-        meal.items.push(item);
-        next.rationAnchor = dateKey;
-        touchRationDayRecord(day, now, actor, next);
-        return { ok: true, itemId: item.id, mealId };
-      });
+      return runRation({ type: "addItem", date: dateKey, mealId }, dateKey);
     },
 
     saveRationFood(dateKey, mealId, itemId, { name, hint, addNext } = {}) {
-      return apply((next, { now, actor }) => {
-        const value = String(name || "").trim();
-        if (!value) return { ok: false, reason: "Введите название продукта." };
-        const day = ensureRationDay(next, dateKey);
-        const meal = day.meals.find((item) => item.id === mealId);
-        const item = meal?.items.find((entry) => entry.id === itemId);
-        if (!item) return { ok: false, reason: "Позиция рациона не найдена." };
-        const product = resolveOrCreateProduct(next, { name: value, hint }, now, actor);
-        item.productId = product.id;
-        item.name = product.name;
-        let nextItemId = "";
-        if (addNext) {
-          const nextItem = { id: createId("ration_item"), productId: "", name: "" };
-          meal.items.push(nextItem);
-          nextItemId = nextItem.id;
-        }
-        next.rationAnchor = dateKey;
-        touchRationDayRecord(day, now, actor, next);
-        return { ok: true, itemId, nextItemId, mealId };
-      });
+      return runRation({ type: "saveItem", date: dateKey, mealId, itemId, name, hint, addNext }, dateKey);
     },
 
     removeRationFood(dateKey, mealId, itemId) {
-      return apply((next, { now, actor }) => {
-        const day = ensureRationDay(next, dateKey);
-        const meal = day.meals.find((item) => item.id === mealId);
-        if (!meal) return { ok: false, reason: "Приём пищи не найден." };
-        const before = (meal.items || []).length;
-        meal.items = (meal.items || []).filter((item) => item.id !== itemId);
-        if (meal.items.length === before) return { ok: false, reason: "Позиция рациона не найдена." };
-        next.rationAnchor = dateKey;
-        touchRationDayRecord(day, now, actor, next);
-        return { ok: true, mealId };
-      });
+      return runRation({ type: "removeItem", date: dateKey, mealId, itemId }, dateKey);
     },
 
     setRationPortion(dateKey, mealId, itemId, { portionSize, packageSize, measureUnit } = {}) {
-      return apply((next, { now, actor }) => {
-        const day = ensureRationDay(next, dateKey);
-        const meal = day.meals.find((item) => item.id === mealId);
-        const item = meal?.items.find((entry) => entry.id === itemId);
-        if (!item) return { ok: false, reason: "Позиция рациона не найдена." };
-        item.portionSize = Number(portionSize) || 1;
-        item.packageSize = Number(packageSize) || 1;
-        item.measureUnit = measureUnit || item.measureUnit || "г";
-        touchRationDayRecord(day, now, actor, next);
-        return { ok: true, itemId };
-      });
+      return runRation({ type: "setPortion", date: dateKey, mealId, itemId, portionSize, packageSize, measureUnit });
     },
 
     saveRationTemplateFromDay(dateKey, name) {
       return apply((next, { now, actor }) => {
         const title = String(name || "").trim();
         if (!title) return { ok: false, reason: "Название шаблона не заполнено." };
-        const day = rationDayFor(next, dateKey);
+        const day = readRationDay(next, dateKey);
         if (!day?.meals?.length) return { ok: false, reason: "День больше не содержит приёмов пищи." };
         next.rationTemplates = next.rationTemplates || [];
         const template = {
           id: createId("ration_template"),
           name: title,
           owner: rationOwner(next),
-          meals: cloneRationTemplateMeals(day.meals),
+          meals: cloneMealsWithNewIds(day.meals),
           createdAt: now,
           updatedAt: now,
           updatedBy: actor,
@@ -544,68 +488,25 @@ export function openLocalData(storage) {
     },
 
     applyRationTemplate(templateId, dates) {
-      return apply((next, { now, actor }) => {
+      return apply((next, context) => {
         const template = (next.rationTemplates || []).find((item) => item.id === templateId);
         if (!template) return { ok: false, reason: "Шаблон не найден." };
         const keys = [...new Set(dates || [])];
         if (!keys.length) return { ok: false, reason: "Выберите дни для шаблона." };
-        keys.forEach((dateKey) => {
-          const day = ensureRationDay(next, dateKey);
-          day.meals = cloneRationTemplateMeals(template.meals);
-          touchRationDayRecord(day, now, actor, next);
-        });
+        const result = executeRationCommand(next, { type: "replaceDays", dates: keys, meals: template.meals }, context);
+        if (result.ok === false) return result;
+        replaceStateInPlace(next, result.state);
         return { ok: true, dates: keys };
       });
     },
 
     deleteRationSelection({ mealIds, itemIds, dates } = {}) {
-      return apply((next, { now, actor }) => {
-        const selectedMealIds = new Set(mealIds || []);
-        const selectedItemIds = new Set(itemIds || []);
-        const selectedDates = new Set(dates || []);
-        if (!selectedMealIds.size && !selectedItemIds.size && !selectedDates.size) {
-          return { ok: false, reason: "Ничего не выбрано." };
-        }
-        const datesToEdit = new Set(selectedDates);
-        Object.values(next.rationDays || {}).forEach((day) => {
-          if (!day?.date) return;
-          const hasMeal = (day.meals || []).some((meal) => selectedMealIds.has(meal.id));
-          const hasItem = (day.meals || []).some((meal) =>
-            (meal.items || []).some((item) => selectedItemIds.has(item.id))
-          );
-          if (hasMeal || hasItem) datesToEdit.add(day.date);
-        });
-        let changed = false;
-        datesToEdit.forEach((dateKey) => {
-          const day = ensureRationDay(next, dateKey);
-          let dayChanged = false;
-          if (selectedMealIds.size) {
-            const before = day.meals.length;
-            day.meals = day.meals.filter((meal) => !selectedMealIds.has(meal.id));
-            dayChanged = day.meals.length !== before;
-          } else if (selectedItemIds.size) {
-            day.meals.forEach((meal) => {
-              const before = (meal.items || []).length;
-              meal.items = (meal.items || []).filter((item) => !selectedItemIds.has(item.id));
-              if (meal.items.length !== before) dayChanged = true;
-            });
-          } else if (selectedDates.has(dateKey) && day.meals.length) {
-            day.meals = [];
-            dayChanged = true;
-          }
-          if (dayChanged) {
-            touchRationDayRecord(day, now, actor, next);
-            changed = true;
-          }
-        });
-        if (!changed) return { ok: false, reason: "В сохранённом рационе нечего удалять." };
-        return { ok: true };
-      });
+      return runRation({ type: "deleteSelection", mealIds, itemIds, dates });
     },
 
     createRequestFromRation({ dates, itemIds } = {}) {
       return apply((next, { now, actor }) => {
-        const requestItems = plannedRationRequestItems(next, [...dates || []].sort(), new Set(itemIds || []));
+        const requestItems = plannedRationRequestItems(next, [...(dates || [])].sort(), new Set(itemIds || []));
         if (!requestItems.length) return { ok: false, reason: "Выберите хотя бы одну позицию рациона." };
         const request = {
           id: createId("request"),
@@ -624,30 +525,27 @@ export function openLocalData(storage) {
       });
     },
   };
+
+  function runRation(command, anchor = "") {
+    return apply((next, context) => {
+      const result = executeRationCommand(next, command, context);
+      if (result.ok === false) return { ok: false, reason: result.reason };
+      if (anchor) next.rationAnchor = anchor;
+      const { state: commandState, ...payload } = result;
+      replaceStateInPlace(next, commandState);
+      return payload;
+    });
+  }
+}
+
+function replaceStateInPlace(target, source) {
+  Object.keys(target).forEach((key) => delete target[key]);
+  Object.assign(target, source);
 }
 
 export function prepareState(source) {
   const result = { ...emptyState(), ...structuredClone(source && typeof source === "object" ? source : {}) };
-  result.schemaVersion = SCHEMA_VERSION;
   result.onboardingCompleted = true;
-  const legacyRationDays = result.rationDays && typeof result.rationDays === "object" ? result.rationDays : {};
-  result.rationDays = {};
-  Object.values(legacyRationDays).forEach((day) => {
-    if (!day?.date) return;
-    const owner = String(day.owner || result.user?.email || "local").trim().toLowerCase() || "local";
-    const meals = (day.meals || []).filter((meal) => {
-      const legacyNames = ["Завтрак", "Обед", "Ужин"];
-      const legacyTimes = ["08:00", "13:00", "19:00"];
-      const legacyIndex = Number(String(meal.id || "").match(new RegExp(`^meal_${day.date}_(\\d+)$`))?.[1]) - 1;
-      return !(
-        legacyIndex >= 0
-        && meal.name === legacyNames[legacyIndex]
-        && meal.time === legacyTimes[legacyIndex]
-        && !(meal.items || []).length
-      );
-    });
-    result.rationDays[`${owner}|${day.date}`] = { ...day, meals, owner };
-  });
   result.rationView = ["day", "week", "month"].includes(result.rationView) ? result.rationView : "week";
   result.rationAnchor = /^\d{4}-\d{2}-\d{2}$/.test(result.rationAnchor || "") ? result.rationAnchor : todayDateKey();
   result.rationTemplates = Array.isArray(result.rationTemplates) ? result.rationTemplates : [];
@@ -663,21 +561,11 @@ export function prepareState(source) {
     return normalized;
   }));
   result.requests = mergeRequests([], (result.requests || []).map((request) => migrateRequest(request)));
-  return result;
+  return migrateRationState(result);
 }
 
-export function createId(prefix) {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-}
-
-export function normalizeProductName(name) {
-  return String(name || "").trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " ");
-}
-
-export function genericKeyFromParts(category, name, fallback = "") {
-  if (category) return normalizeGenericKey(category);
-  const first = String(name || "").trim().split(/\s+/)[0] || fallback;
-  return normalizeGenericKey(first);
+export function rationDayFor(source, dateKey) {
+  return readRationDay(source, dateKey);
 }
 
 export function isProductConfirmed(product) {
@@ -886,151 +774,11 @@ function liveProduct(source, productId) {
   return (source.products || []).find((product) => product.id === productId && !product.deletedAt) || null;
 }
 
-function ensureRationDay(source, dateKey) {
-  if (!source.rationDays) source.rationDays = {};
-  const key = rationDayKey(dateKey, source);
-  if (!source.rationDays[key]) {
-    source.rationDays[key] = {
-      date: dateKey,
-      owner: rationOwner(source),
-      meals: [],
-      updatedAt: "",
-      updatedBy: "",
-    };
-  }
-  return source.rationDays[key];
-}
-
-function touchRationDayRecord(day, now, actor, source) {
-  day.updatedAt = now;
-  day.updatedBy = actor;
-  day.owner = rationOwner(source);
-}
-
-function defaultRationMealTime(meal, index = 0) {
-  return /^\d{2}:\d{2}$/.test(meal?.time || "")
-    ? meal.time
-    : ["08:00", "13:00", "19:00"][index] || `${String(Math.min(22, 8 + index * 3)).padStart(2, "0")}:00`;
-}
-
-function cloneRationTemplateMeals(meals) {
-  return (meals || []).map((meal, mealIndex) => ({
-    id: createId("meal"),
-    name: meal.name || `Приём пищи ${mealIndex + 1}`,
-    time: defaultRationMealTime(meal, mealIndex),
-    items: (meal.items || []).map((item) => ({
-      id: createId("ration_item"),
-      productId: item.productId || "",
-      name: item.name || "",
-      portionSize: Number(item.portionSize) || 0,
-      packageSize: Number(item.packageSize) || 0,
-    })),
-  }));
-}
-
 export function rationTemplatesForUser(source) {
   const owner = rationOwner(source);
   return (source.rationTemplates || [])
     .filter((template) => String(template.owner || "local").trim().toLowerCase() === owner)
     .sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
-}
-
-function resolveOrCreateProduct(source, draft, changedAt, actor) {
-  const name = String(draft.name || draft.query || "").trim();
-  const existingById = draft.productId ? liveProduct(source, draft.productId) : null;
-  if (existingById) return existingById;
-  const key = normalizeProductName(name);
-  if (key) {
-    const existing = (source.products || []).find((product) =>
-      !product.deletedAt && normalizeProductName(product.name) === key
-    );
-    if (existing) return existing;
-  }
-  if (!name) return null;
-  const catalog = draft.hint && typeof draft.hint === "object" ? draft.hint : null;
-  const category = catalog?.category || "";
-  const product = {
-    id: createId("product"),
-    name,
-    category,
-    unit: catalog?.unit || draft.unit || "шт.",
-    brand: catalog?.brand || "",
-    kind: catalog?.kind || (catalog?.barcode ? "sku" : "generic"),
-    genericKey: catalog?.genericKey || genericKeyFromParts(category, name),
-    confirmed: false,
-    updatedAt: changedAt,
-    updatedBy: actor,
-    nutrition: catalog?.nutrition ? structuredClone(catalog.nutrition) : null,
-    barcode: catalog?.barcode || "",
-    ingredients: catalog?.ingredients || "",
-    catalogSource: catalog?.catalogSource || (catalog ? "Встроенный справочник" : ""),
-    nutritionSource: catalog?.catalogSource || (catalog ? "Справочник" : ""),
-  };
-  source.products = source.products || [];
-  source.products.push(product);
-  return product;
-}
-
-export function plannedRationRequestItems(source, dates, selectedItemIds) {
-  const portions = new Map();
-  dates.forEach((dateKey) => (rationDayFor(source, dateKey)?.meals || []).forEach((meal) =>
-    (meal.items || []).forEach((item) => {
-      if (!item.productId || !selectedItemIds.has(item.id)) return;
-      const product = (source.products || []).find((value) => value.id === item.productId);
-      const measure = rationMeasure(product);
-      const portionSize = Number(item.portionSize) || measure.defaultPortion;
-      const packageSize = Number(item.packageSize) || measure.defaultPackage;
-      const current = portions.get(item.productId) || {
-        productId: item.productId,
-        plannedAmount: 0,
-        packageSize,
-        measureUnit: item.measureUnit || measure.unit,
-      };
-      current.plannedAmount += portionSize;
-      current.packageSize = packageSize;
-      portions.set(item.productId, current);
-    })
-  ));
-  return [...portions.values()].map((item) => ({
-    ...item,
-    quantity: Math.max(1, Math.ceil(item.plannedAmount / item.packageSize)),
-    unit: "уп.",
-  }));
-}
-
-export function rationMeasure(product) {
-  const unit = String(product?.unit || "г").toLowerCase();
-  if (unit.includes("шт")) return { unit: "шт.", defaultPortion: 1, defaultPackage: 1 };
-  if (unit === "л" || unit.includes("мл")) return { unit: "мл", defaultPortion: 250, defaultPackage: 1000 };
-  return { unit: "г", defaultPortion: 100, defaultPackage: 1000 };
-}
-
-export function rationOwner(source) {
-  return String(source?.user?.email || "local").trim().toLowerCase() || "local";
-}
-
-export function rationDayKey(dateKey, source) {
-  return `${rationOwner(source)}|${dateKey}`;
-}
-
-export function rationDayFor(source, dateKey) {
-  const owner = rationOwner(source);
-  return source.rationDays?.[`${owner}|${dateKey}`]
-    || (owner === "local" ? source.rationDays?.[dateKey] : null);
-}
-
-export function todayDateKey() {
-  return formatRationDate(new Date());
-}
-
-export function parseRationDate(value) {
-  const [year, month, day] = String(value).split("-").map(Number);
-  return new Date(year, month - 1, day, 12);
-}
-
-export function formatRationDate(value) {
-  const date = value instanceof Date ? value : parseRationDate(value);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 export function timestamp(value) {
@@ -1090,10 +838,6 @@ export function restoreRequestVersion(request, transaction, changedAt, actor) {
   updateRequestStatus(request, changedAt);
   appendRequestVersion(request, `Откат: ${transaction.action}`, changedAt, actor);
   return request;
-}
-
-function normalizeGenericKey(value) {
-  return normalizeProductName(value).replace(/[^a-zа-яё0-9]+/gi, "_").replace(/^_|_$/g, "");
 }
 
 function inferProductKind(product) {
