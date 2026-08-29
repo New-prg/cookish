@@ -62,6 +62,7 @@ jobs:
       - name: Install dependencies and test
         run: |
           npm ci
+          npx playwright install --with-deps chromium
           npm test
 
       - name: Prepare Android project
