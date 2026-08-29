@@ -1,5 +1,15 @@
 # Cookish agent instructions
 
+## Branch policy
+
+Work directly on `master`. For long, risky rework that cannot reach green in one
+session, use a disposable `refactor/*` branch, land it with a single PR, and
+delete the branch after the merge. Do not create other branches (including
+agent-session branches like `t3code/*`); remove leftover worktrees when deleting
+their branches. Push `master` at the end of every session so work is never
+local-only. Use `git revert` to undo a bad commit instead of keeping a parallel
+branch.
+
 ## Android releases
 
 When the user says that it is time for a new version, asks to release an APK,
