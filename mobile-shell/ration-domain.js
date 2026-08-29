@@ -10,7 +10,59 @@ const MEAL_STATES = new Set(RATION_MEAL_STATES);
 const DISCREPANCY_KINDS = new Set(RATION_DISCREPANCY_KINDS);
 
 export function emptyRation() {
-  return { versions: [], specialDays: {}, history: {} };
+  return { versions: [], specialDays: {}, history: {}, profile: defaultRationProfile() };
+}
+
+export function defaultRationProfile() {
+  return {
+    ageGroup: "",
+    heightCm: null,
+    weightKg: null,
+    goal: "",
+    mealsPerDay: null,
+    schedule: "",
+    budget: null,
+    preferences: "",
+    excludedProducts: [],
+    targetCalories: null,
+    targetProtein: null,
+    targetFat: null,
+    targetCarbs: null,
+    updatedAt: "",
+    updatedBy: "",
+  };
+}
+
+export function validateRationProfile(profile) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  const missing = [];
+  const violations = [];
+  if (!String(source.ageGroup || "").trim()) missing.push("ageGroup");
+  if (!String(source.goal || "").trim()) missing.push("goal");
+  if (!isFilledNumber(source.heightCm)) missing.push("heightCm");
+  if (!isFilledNumber(source.weightKg)) missing.push("weightKg");
+  if (!isFilledNumber(source.mealsPerDay)) missing.push("mealsPerDay");
+  if (!isFilledNumber(source.targetCalories)) missing.push("targetCalories");
+  const height = Number(source.heightCm);
+  if (Number.isFinite(height) && (height <= 0 || height > 300)) violations.push("heightCm");
+  const weight = Number(source.weightKg);
+  if (Number.isFinite(weight) && (weight <= 0 || weight > 1000)) violations.push("weightKg");
+  const meals = Number(source.mealsPerDay);
+  if (Number.isFinite(meals) && (meals < 1 || meals > 12)) violations.push("mealsPerDay");
+  const calories = Number(source.targetCalories);
+  if (Number.isFinite(calories) && calories < 0) violations.push("targetCalories");
+  ["targetProtein", "targetFat", "targetCarbs"].forEach((key) => {
+    const value = Number(source[key]);
+    if (Number.isFinite(value) && value < 0) violations.push(key);
+  });
+  const protein = Number(source.targetProtein);
+  const fat = Number(source.targetFat);
+  const carbs = Number(source.targetCarbs);
+  if ([protein, fat, carbs, calories].every(Number.isFinite) && calories > 0) {
+    const macroCalories = protein * 4 + fat * 9 + carbs * 4;
+    if (Math.abs(macroCalories - calories) / calories > 0.15) violations.push("macroMismatch");
+  }
+  return { ok: missing.length === 0 && violations.length === 0, missing, violations };
 }
 
 export function migrateRationState(source) {
@@ -97,7 +149,6 @@ export function readRationRange(state, fromKey, toKey) {
   }
   return days;
 }
-
 export function readRationHistoryDay(state, dateKey) {
   if (!DATE_PATTERN.test(String(dateKey || ""))) return null;
   const owner = rationOwner(state);
@@ -109,6 +160,74 @@ export function readRationHistoryDay(state, dateKey) {
     versionId: entry.versionId || "",
     meals: entry.meals || {},
   };
+}
+
+const NUTRITION_FIELDS = ["calories", "protein", "fat", "carbs", "fiber"];
+
+export function readRationDayNutrition(state, dateKey) {
+  const day = readRationDay(state, dateKey);
+  const result = {
+    date: dateKey,
+    source: day?.source || "empty",
+    totals: { calories: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 },
+    perMeal: [],
+    missing: [],
+  };
+  if (!day) return result;
+  const products = state.products || [];
+  day.meals.forEach((meal) => {
+    const mealTotals = { mealId: meal.id, name: meal.name || "", calories: 0, protein: 0, fat: 0, carbs: 0, fiber: 0 };
+    (meal.items || []).forEach((item) => {
+      const product = products.find((value) => value.id === item.productId && !value.deletedAt)
+        || products.find((value) => value.id === item.productId);
+      const measure = rationMeasure(product);
+      const portionSize = Number(item.portionSize) || measure.defaultPortion;
+      const unit = String(item.measureUnit || measure.unit || "г");
+      const portion = portionToBase(portionSize, unit);
+      if (portion.kind === "piece") {
+        result.missing.push({ mealId: meal.id, itemId: item.id, reason: "piece_weight_unknown" });
+        return;
+      }
+      if (!product?.nutrition) {
+        result.missing.push({ mealId: meal.id, itemId: item.id, reason: "no_nutrition" });
+        return;
+      }
+      const factor = portion.base / 100;
+      NUTRITION_FIELDS.forEach((field) => {
+        const raw = product.nutrition[field];
+        if (raw == null || raw === "") {
+          result.missing.push({ mealId: meal.id, itemId: item.id, field, reason: "nutrient_unknown" });
+          return;
+        }
+        const value = Number(raw);
+        if (!Number.isFinite(value)) {
+          result.missing.push({ mealId: meal.id, itemId: item.id, field, reason: "nutrient_unknown" });
+          return;
+        }
+        mealTotals[field] += value * factor;
+      });
+    });
+    NUTRITION_FIELDS.forEach((field) => {
+      mealTotals[field] = round2(mealTotals[field]);
+      result.totals[field] += mealTotals[field];
+    });
+    result.perMeal.push(mealTotals);
+  });
+  NUTRITION_FIELDS.forEach((field) => {
+    result.totals[field] = round2(result.totals[field]);
+  });
+  return result;
+}
+
+function portionToBase(amount, unit) {
+  const value = String(unit || "").toLowerCase();
+  if (value.includes("шт")) return { kind: "piece" };
+  if (value.includes("кг") || value === "л" || value.includes("литр")) return { kind: "volume", base: Number(amount) * 1000 };
+  return { kind: "volume", base: Number(amount) };
+}
+
+function round2(value) {
+  return Math.round(value * 100) / 100;
 }
 
 export function activeRationVersion(ration, owner, dateKey) {
@@ -423,6 +542,13 @@ function runRationCommand(next, command, ctx) {
     case "transferMeals": {
       return transferMeals(next, ration, owner, command, ctx);
     }
+    case "setRationProfile": {
+      const current = normalizeProfile(ration.profile);
+      const fields = command.fields && typeof command.fields === "object" ? command.fields : {};
+      const next = normalizeProfile({ ...current, ...fields, updatedAt: ctx.now, updatedBy: ctx.actor });
+      ration.profile = next;
+      return { ok: true, profile: structuredClone(next), validation: validateRationProfile(next) };
+    }
     case "deleteSelection": {
       return deleteSelection(next, ration, owner, command, ctx);
     }
@@ -721,6 +847,7 @@ function buildRationFromLegacy(days, templates, owner) {
       ration.specialDays[`${dayOwner}|${day.date}`] = structuredClone(day);
     });
   });
+  ration.profile = normalizeProfile(ration.profile);
   if (!byOwner.size) {
     const template = templates
       .filter((item) => ownerKey(item.owner) === owner)
@@ -757,7 +884,39 @@ function normalizeRation(ration) {
     versions: (Array.isArray(ration.versions) ? ration.versions : []).map((version, index) => normalizeVersion(version, index)),
     specialDays: normalizeSpecialDays(ration.specialDays),
     history: ration.history && typeof ration.history === "object" ? structuredClone(ration.history) : {},
+    profile: normalizeProfile(ration.profile),
   };
+}
+
+function normalizeProfile(profile) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  return {
+    ageGroup: String(source.ageGroup || ""),
+    heightCm: finiteOrNull(source.heightCm),
+    weightKg: finiteOrNull(source.weightKg),
+    goal: String(source.goal || ""),
+    mealsPerDay: finiteOrNull(source.mealsPerDay),
+    schedule: String(source.schedule || ""),
+    budget: finiteOrNull(source.budget),
+    preferences: String(source.preferences || ""),
+    excludedProducts: Array.isArray(source.excludedProducts) ? source.excludedProducts.map((value) => String(value)) : [],
+    targetCalories: finiteOrNull(source.targetCalories),
+    targetProtein: finiteOrNull(source.targetProtein),
+    targetFat: finiteOrNull(source.targetFat),
+    targetCarbs: finiteOrNull(source.targetCarbs),
+    updatedAt: String(source.updatedAt || ""),
+    updatedBy: String(source.updatedBy || ""),
+  };
+}
+
+function finiteOrNull(value) {
+  if (value === "" || value == null) return null;
+  const result = Number(value);
+  return Number.isFinite(result) ? result : null;
+}
+
+function isFilledNumber(value) {
+  return finiteOrNull(value) != null;
 }
 
 function normalizeVersion(version, index) {

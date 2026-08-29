@@ -16,12 +16,14 @@ import {
   rationMeasure,
   rationOwner,
   readRationDay,
+  readRationDayNutrition,
   readRationHistoryDay,
   resolveOrCreateProduct,
   todayDateKey,
+  validateRationProfile,
 } from "./ration-domain.js";
 
-export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationDayKey, rationMeasure, rationOwner, readRationHistoryDay, todayDateKey, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
+export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationDayKey, rationMeasure, rationOwner, readRationDayNutrition, readRationHistoryDay, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
 export const STORAGE_KEY = "cookish.android.data.v1";
 export const SCHEMA_VERSION = RATION_SCHEMA_VERSION;
@@ -451,6 +453,10 @@ export function openLocalData(storage) {
 
     markRationMeal(dateKey, mealId, state) {
       return runRation({ type: "markMeal", date: dateKey, mealId, state });
+    },
+
+    setRationProfile(fields) {
+      return runRation({ type: "setRationProfile", fields });
     },
 
     recordRationDiscrepancy(dateKey, mealId, discrepancy) {
