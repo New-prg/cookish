@@ -10,6 +10,19 @@ their branches. Push `master` at the end of every session so work is never
 local-only. Use `git revert` to undo a bad commit instead of keeping a parallel
 branch.
 
+## Current development plan
+
+The plan lives in GitHub issues, not in repo files. Source of truth is epic #21
+(`gh issue view 21`): phased checklist with the execution order.
+
+- Active slice: milestone «Рацион: локальный срез», in order
+  #22 → #23 → #24/#25 (#26 in parallel) → #27 → #28 → #38 → #37.
+- #37 is the release gate: issues in milestone «После локального среза»
+  (#29–#36) must not start until #37 is done.
+- Milestone «Бэклог» issues are parked; do not reopen them without the user.
+- When starting implementation, read the epic, then the first open issue of the
+  slice; close issues as their scope lands and push `master` after each session.
+
 ## Android releases
 
 When the user says that it is time for a new version, asks to release an APK,
