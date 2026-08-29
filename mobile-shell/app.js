@@ -11,7 +11,8 @@ import {
   productPurchasedTotal,
   rationDayFor,
   rationMeasure,
-  rationTemplatesForUser,
+  readRationDayNutrition,
+  readRationHistoryDay,
   receiptLine,
   remainingRequestQuantity,
   responseItemTotal,
@@ -71,10 +72,8 @@ import {
   let barcodeScanTarget = "product";
   let answerDraftItems = new Map();
   let purchaseFillProduct = null;
-  let rationSelectedDates = new Set();
-  let rationSelectedItemIds = new Set();
-  let rationSelectedMealIds = new Set();
-  let rationSelectionMode = false;
+  let rationOverlay = "";
+  let rationOverlayDate = "";
   let rationPortionTarget = null;
   let formDirty = false;
   let requestAutosaveTimer = null;
@@ -192,7 +191,10 @@ import {
       if (document.getElementById("request-items") && !persistRequestDraft({ silent: false })) return;
       draftItems = [];
     }
-    if (route === "ration" && next !== "ration") clearRationSelection();
+    if (route === "ration" && next !== "ration") {
+      rationOverlay = "";
+      rationOverlayDate = "";
+    }
     route = next;
     routeId = id;
     routeSubId = subId;
@@ -293,13 +295,6 @@ import {
     const resolve = confirmResolve;
     confirmResolve = null;
     if (resolve) resolve(result);
-  }
-
-  function clearRationSelection() {
-    rationSelectedDates.clear();
-    rationSelectedItemIds.clear();
-    rationSelectedMealIds.clear();
-    rationSelectionMode = false;
   }
 
   function render() {
@@ -2213,149 +2208,204 @@ import {
     showToast("Покупки сохранены.");
   }
 
+  const RATION_STATE_LABELS = {
+    unmarked: "не отмечено",
+    eaten: "съедено",
+    changed: "изменено",
+    skipped: "не съедено",
+  };
+
   function renderRation(focusItemId = "") {
-    const view = ["day", "week", "month"].includes(state.rationView) ? state.rationView : "week";
-    const anchor = /^\d{4}-\d{2}-\d{2}$/.test(state.rationAnchor || "") ? state.rationAnchor : todayDateKey();
-    const viewLabel = view === "day" ? "День" : view === "week" ? "Неделя" : "Месяц";
-    rationHeaderPicker.innerHTML = `
-      <button id="ration-view-button" class="ration-view-button" type="button" aria-haspopup="menu" aria-expanded="false"><span>${viewLabel}</span><i aria-hidden="true">▾</i></button>
-      <div id="ration-view-menu" class="ration-view-menu" role="menu" hidden>
-        ${[["day", "День"], ["week", "Неделя"], ["month", "Месяц"]].map(([value, label]) => `<button class="ration-view-option ${view === value ? "active" : ""}" data-view="${value}" role="menuitem" type="button"><span>${view === value ? "✓" : ""}</span>${label}</button>`).join("")}
-      </div>`;
+    const today = todayDateKey();
+    const day = rationDayFor(state, today) || { date: today, meals: [] };
+    const historyDay = readRationHistoryDay(state, today);
+    const nutrition = readRationDayNutrition(state, today);
+    const profile = state.ration?.profile || {};
+    const meals = [...(day.meals || [])].sort((a, b) => rationMealTime(a).localeCompare(rationMealTime(b)));
+    rationHeaderPicker.innerHTML = "";
     app.innerHTML = `
-      <section class="ration-toolbar">
-        <div class="ration-date-nav">
-          <button id="ration-prev" class="ration-nav-button" type="button" aria-label="Предыдущий период">‹</button>
-          <input id="ration-anchor" type="date" value="${anchor}">
-          <button id="ration-next" class="ration-nav-button" type="button" aria-label="Следующий период">›</button>
-          <button id="ration-today" class="text-button" type="button">Сегодня</button>
-          <button id="ration-select-mode" class="text-button" type="button" ${rationSelectionActive() ? "disabled" : ""}>${rationSelectionActive() ? "Выбор включён" : "Выбрать"}</button>
-          <button id="ration-add-meal" class="ration-add-button" type="button">＋ Приём</button>
+      <section class="ration-today">
+        <header class="ration-today-header">
+          <div class="ration-today-date">
+            <span>${rationWeekday(today)}</span>
+            <h2>${rationLongDate(today)}</h2>
+          </div>
+          <div class="ration-today-totals">
+            <strong>${number(nutrition.totals.calories)} ккал</strong>
+            <span>Б ${number(nutrition.totals.protein)} · Ж ${number(nutrition.totals.fat)} · У ${number(nutrition.totals.carbs)}</span>
+            ${Number(profile.targetCalories) ? `<em>Цель ${number(profile.targetCalories)} ккал</em>` : ""}
+          </div>
+        </header>
+        <div class="ration-today-meals">
+          ${meals.length ? meals.map((meal) => rationTodayMealCard(today, meal, historyDay, nutrition)).join("") : `<p class="ration-today-empty muted">На сегодня приёмов пока нет. Добавьте первый приём пищи или откройте План.</p>`}
         </div>
+        <button id="ration-add-meal" class="keep-add-item" type="button"><span>＋</span> Добавить приём пищи</button>
       </section>
-      ${rationSelectionActive() ? `<div class="ration-selection-sheet">${rationSelectionToolbar()}${rationTemplateControls()}${rationSelectionItems()}</div>` : ""}
-      <section class="ration-calendar-shell">
-        ${view === "day" ? rationDayCalendar(anchor) : view === "week" ? rationWeekCalendar(anchor) : rationMonthCalendar(anchor)}
-      </section>
-      ${rationMealDialog(anchor)}
+      <aside class="ration-rail" aria-label="Оверлеи рациона">
+        <button class="ration-rail-flag ${rationOverlay === "plan" ? "active" : ""}" data-overlay="plan" type="button" aria-label="Открыть План">План</button>
+        <button class="ration-rail-flag ${rationOverlay === "history" ? "active" : ""}" data-overlay="history" type="button" aria-label="Открыть Историю">История</button>
+      </aside>
+      ${rationOverlayPanel()}
+      ${rationMealDialog(today)}
       ${rationPortionDialog()}
-      ${rationTemplateDialog()}
     `;
-    bindRation(view, anchor);
+    bindRation(today);
     if (focusItemId) document.querySelector(`.ration-food-row[data-item-id="${focusItemId}"] .ration-food-input`)?.focus();
-    else if (view === "day" && anchor === todayDateKey() && !routeSubId) {
-      setTimeout(() => document.querySelector(".ration-now-line")?.scrollIntoView({ block: "center" }), 0);
-    }
   }
 
-  function rationCalendarTitle(view, anchor) {
-    const date = parseRationDate(anchor);
-    if (view === "month") return new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(date);
-    if (view === "week") {
-      const start = startOfRationWeek(anchor);
-      const end = addRationDays(start, 6);
-      return `${rationShortDate(start)} — ${rationShortDate(end)}`;
-    }
-    return new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(date);
+  function shiftedRationMealTime(time, minutes) {
+    if (!minutes) return time;
+    const total = timeMinutesOf(time) + minutes;
+    const wrapped = (total % 1440 + 1440) % 1440;
+    return `${String(Math.floor(wrapped / 60)).padStart(2, "0")}:${String(wrapped % 60).padStart(2, "0")}`;
   }
 
-  function rationCurrentTime() {
-    return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date());
+  function timeMinutesOf(time) {
+    const match = String(time || "").match(/^(\d{1,2}):(\d{2})$/);
+    return match ? Number(match[1]) * 60 + Number(match[2]) : 0;
+  }
+
+  function rationTodayMealCard(dateKey, meal, historyDay, nutrition) {
+    const record = historyDay?.meals?.[meal.id] || {};
+    const stateKey = RATION_STATE_LABELS[record.state] ? record.state : "unmarked";
+    const shift = Number(record.transferredMinutes) || 0;
+    const time = shiftedRationMealTime(rationMealTime(meal), shift);
+    const mealTotals = nutrition.perMeal.find((entry) => entry.mealId === meal.id)
+      || { calories: 0, protein: 0, fat: 0, carbs: 0 };
+    const rows = (meal.items || []).map((item) => {
+      const product = getProduct(item.productId);
+      const measure = rationMeasure(product);
+      const portion = Number(item.portionSize) || measure.defaultPortion;
+      return `<li>${escapeHtml(product?.name || item.name || "Продукт")}<small>${number(portion)} ${measure.unit}</small></li>`;
+    }).join("");
+    return `<article class="ration-today-meal state-${stateKey}" data-meal-id="${meal.id}">
+      <header class="ration-today-meal-header">
+        <span class="meal-event-time">${time}${shift ? `<small>${shift > 0 ? "+" : ""}${shift} мин</small>` : ""}</span>
+        <button class="ration-today-meal-open" data-meal-id="${meal.id}" type="button" aria-label="Открыть приём пищи ${escapeAttr(meal.name)}">
+          <strong>${escapeHtml(meal.name)}</strong>
+          <span class="ration-state-chip">${RATION_STATE_LABELS[stateKey]}</span>
+          <small>${number(mealTotals.calories)} ккал · Б ${number(mealTotals.protein)} · Ж ${number(mealTotals.fat)} · У ${number(mealTotals.carbs)}</small>
+        </button>
+        <button class="ration-eat-button ${stateKey === "eaten" ? "done" : ""}" data-meal-id="${meal.id}" type="button" aria-label="${stateKey === "eaten" ? "Снять отметку" : "Отметить съедено"}">${stateKey === "eaten" ? "✓" : "Съесть"}</button>
+      </header>
+      ${(meal.items || []).length ? `<ul class="ration-today-items">${rows}</ul>` : ""}
+    </article>`;
+  }
+
+  function rationOverlayPanel() {
+    if (!rationOverlay) return "";
+    if (rationOverlay === "plan") return rationPlanOverlay();
+    return rationHistoryOverlay();
+  }
+
+  function rationOverlayDates(fromKey, count) {
+    return Array.from({ length: count }, (_, index) => addRationDays(fromKey, index));
+  }
+
+  function rationPlanOverlay() {
+    const today = todayDateKey();
+    const rows = rationOverlayDates(addRationDays(today, 1), 14).map((dateKey) => {
+      const day = rationDayFor(state, dateKey);
+      const labels = (day?.meals || []).map((meal) => meal.name).filter(Boolean).slice(0, 3).join(" · ");
+      return `<button class="ration-overlay-day ${rationOverlayDate === dateKey ? "active" : ""}" data-date="${dateKey}" type="button">
+        <strong>${rationShortDate(dateKey)}</strong><span>${rationWeekday(dateKey).slice(0, 2)}</span>
+        <small>${escapeHtml(labels || "Нет приёмов")}</small>
+      </button>`;
+    }).join("");
+    const editor = rationOverlayDate ? rationDayEditor(rationOverlayDate, false) : "";
+    return `<section class="ration-overlay" data-overlay="plan">
+      <header class="ration-overlay-header">
+        <h2>План</h2>
+        <button id="close-ration-overlay" class="text-button" type="button" aria-label="Закрыть оверлей">×</button>
+      </header>
+      <p class="muted">Ближайшие две недели. Нажмите на день, чтобы задать Особый день или изменить приёмы.</p>
+      <div class="ration-overlay-days">${rows}</div>
+      ${editor ? `<section class="ration-overlay-editor">
+        <h3>${rationLongDate(rationOverlayDate)}</h3>
+        ${editor}
+      </section>` : ""}
+      <form id="ration-plan-request" class="ration-overlay-request">
+        <h3>Запросить продукты</h3>
+        <div class="ration-overlay-request-fields">
+          <label><span>С</span><input id="ration-request-from" type="date" value="${addRationDays(today, 1)}"></label>
+          <label><span>По</span><input id="ration-request-to" type="date" value="${addRationDays(today, 7)}"></label>
+        </div>
+        <button class="button full" type="submit">Создать запрос</button>
+      </form>
+    </section>`;
+  }
+
+  function rationHistoryOverlay() {
+    const today = todayDateKey();
+    const rows = rationOverlayDates(addRationDays(today, -13), 13).reverse().map((dateKey) => {
+      const record = readRationHistoryDay(state, dateKey);
+      const counts = { eaten: 0, changed: 0, skipped: 0 };
+      Object.values(record?.meals || {}).forEach((meal) => {
+        if (counts[meal.state] != null) counts[meal.state] += 1;
+      });
+      const summary = counts.eaten + counts.changed + counts.skipped
+        ? `Съедено ${counts.eaten} · изменено ${counts.changed} · не съедено ${counts.skipped}`
+        : "Нет отметок";
+      return `<button class="ration-overlay-day ${rationOverlayDate === dateKey ? "active" : ""}" data-date="${dateKey}" type="button">
+        <strong>${rationShortDate(dateKey)}</strong><span>${rationWeekday(dateKey).slice(0, 2)}</span>
+        <small>${escapeHtml(summary)}</small>
+      </button>`;
+    }).join("");
+    const editor = rationOverlayDate ? rationHistoryDayEditor(rationOverlayDate) : "";
+    return `<section class="ration-overlay" data-overlay="history">
+      <header class="ration-overlay-header">
+        <h2>История питания</h2>
+        <button id="close-ration-overlay" class="text-button" type="button" aria-label="Закрыть оверлей">×</button>
+      </header>
+      <p class="muted">Прошлые две недели. Отметки можно исправить, план прошлого не меняется.</p>
+      <div class="ration-overlay-days">${rows || `<p class="muted">История пока пуста.</p>`}</div>
+      ${editor}
+    </section>`;
+  }
+
+  function rationHistoryDayEditor(dateKey) {
+    const day = rationDayFor(state, dateKey);
+    const record = readRationHistoryDay(state, dateKey);
+    if (!day?.meals?.length) return `<p class="muted ration-history-empty">В этот день не было приёмов пищи.</p>`;
+    const meals = day.meals.map((meal) => {
+      const mealRecord = record?.meals?.[meal.id] || { state: "unmarked", discrepancies: [] };
+      const stateKey = RATION_STATE_LABELS[mealRecord.state] ? mealRecord.state : "unmarked";
+      const discrepancies = (mealRecord.discrepancies || []).map((item) => `<li>${escapeHtml(rationDiscrepancyLabel(item))}</li>`).join("");
+      const rows = (meal.items || []).map((item) => {
+        const product = getProduct(item.productId);
+        return `<li>${escapeHtml(product?.name || item.name || "Продукт")}
+          <button class="ration-history-exclude" data-meal-id="${meal.id}" data-item-id="${item.id}" type="button" aria-label="Записать, что продукт не съеден">не ел</button>
+        </li>`;
+      }).join("");
+      return `<article class="ration-history-meal" data-meal-id="${meal.id}">
+        <header>
+          <strong>${escapeHtml(meal.name)}</strong>
+          <span class="ration-state-chip">${RATION_STATE_LABELS[stateKey]}</span>
+        </header>
+        ${(meal.items || []).length ? `<ul class="ration-today-items">${rows}</ul>` : ""}
+        <div class="ration-history-states">
+          ${["eaten", "changed", "skipped", "unmarked"].map((value) => `<button class="ration-state-set ${stateKey === value ? "active" : ""}" data-meal-id="${meal.id}" data-state="${value}" type="button">${RATION_STATE_LABELS[value]}</button>`).join("")}
+        </div>
+        ${(mealRecord.discrepancies || []).length ? `<ul class="ration-history-discrepancies">${discrepancies}</ul>` : ""}
+      </article>`;
+    }).join("");
+    return `<section class="ration-overlay-editor">
+      <h3>${rationLongDate(dateKey)}</h3>
+      ${meals}
+    </section>`;
+  }
+
+  function rationDiscrepancyLabel(item) {
+    const product = getProduct(item.productId)?.name || item.name || "";
+    if (item.kind === "excluded") return `Исключён: ${product}`;
+    if (item.kind === "added") return `Добавлен: ${item.replacedName || product}`;
+    if (item.kind === "replaced") return `Заменён: ${product} → ${getProduct(item.replacedProductId)?.name || item.replacedName || ""}`;
+    if (item.kind === "amount") return `Съедено ${number(item.amount)} ${item.measureUnit || ""} вместо порции: ${product}`;
+    return "Расхождение";
   }
 
   function rationMealTime(meal, index = 0) {
     return /^\d{2}:\d{2}$/.test(meal?.time || "") ? meal.time : ["08:00", "13:00", "19:00"][index] || `${String(Math.min(22, 8 + index * 3)).padStart(2, "0")}:00`;
-  }
-
-  function rationMealNutrition(meal) {
-    return (meal?.items || []).reduce((total, item) => {
-      const product = getProduct(item.productId);
-      const measure = rationMeasure(product);
-      const portion = Number(item.portionSize) || measure.defaultPortion;
-      const factor = measure.unit === "шт." ? 1 : portion / 100;
-      total.calories += (Number(product?.nutrition?.calories) || 0) * factor;
-      total.protein += (Number(product?.nutrition?.protein) || 0) * factor;
-      total.fat += (Number(product?.nutrition?.fat) || 0) * factor;
-      total.carbs += (Number(product?.nutrition?.carbs) || 0) * factor;
-      return total;
-    }, { calories: 0, protein: 0, fat: 0, carbs: 0 });
-  }
-
-  function rationDayNutrition(dateKey) {
-    return (rationDayFor(state, dateKey)?.meals || []).reduce((total, meal) => {
-      const value = rationMealNutrition(meal);
-      Object.keys(total).forEach((key) => { total[key] += value[key]; });
-      return total;
-    }, { calories: 0, protein: 0, fat: 0, carbs: 0 });
-  }
-
-  function rationDayCalendar(dateKey) {
-    const day = rationDayFor(state, dateKey) || { date: dateKey, meals: defaultRationMeals(dateKey) };
-    return `<div class="ration-day-calendar">
-      <button class="ration-day-banner ration-select-day ${dateKey === todayDateKey() ? "today" : ""} ${dateKey === state.rationAnchor ? "focused" : ""} ${rationSelectedDates.has(dateKey) ? "selected" : ""}" data-date="${dateKey}" type="button"><strong>${rationWeekday(dateKey)}</strong><span>${rationLongDate(dateKey)}</span></button>
-      <div class="ration-day-agenda">
-        ${dateKey === todayDateKey() ? `<div class="ration-agenda-now"><span>${rationCurrentTime()}</span><i></i><strong>Сейчас</strong></div>` : ""}
-        ${(day.meals || []).map((meal, index) => rationDayMealCard(dateKey, meal, index)).join("")}
-      </div>
-    </div>`;
-  }
-
-  function rationDayMealCard(dateKey, meal, index) {
-    const nutrition = rationMealNutrition(meal);
-    const products = (meal.items || []).map((item) => getProduct(item.productId)?.name || item.name).filter(Boolean);
-    return `<button class="ration-calendar-meal agenda-event ${rationSelectedMealIds.has(meal.id) ? "meal-selected" : ""}" data-date="${dateKey}" data-meal-id="${meal.id}" type="button">
-      <span class="meal-event-time">${rationMealTime(meal, index)}</span>
-      <div><strong>${escapeHtml(meal.name)}</strong><span class="meal-event-products">${products.length ? products.map(escapeHtml).join(" · ") : "Добавьте продукты"}</span><small>${number(nutrition.calories)} ккал · Б ${number(nutrition.protein)} · Ж ${number(nutrition.fat)} · У ${number(nutrition.carbs)}</small></div>
-    </button>`;
-  }
-
-  function rationDayMealEvent(dateKey, meal, index, startHour, hourHeight) {
-    const time = rationMealTime(meal, index);
-    const [hour, minute] = time.split(":").map(Number);
-    const top = Math.max(0, (hour * 60 + minute - startHour * 60) / 60 * hourHeight);
-    const nutrition = rationMealNutrition(meal);
-    const products = (meal.items || []).map((item) => getProduct(item.productId)?.name || item.name).filter(Boolean);
-    return `<button class="ration-calendar-meal day-event" data-date="${dateKey}" data-meal-id="${meal.id}" type="button" style="top:${top}px">
-      <span class="meal-event-time">${time}</span><strong>${escapeHtml(meal.name)}</strong>
-      <span class="meal-event-products">${products.length ? products.map(escapeHtml).join(" · ") : "Добавьте продукты"}</span>
-      <small>${number(nutrition.calories)} ккал · Б ${number(nutrition.protein)} · Ж ${number(nutrition.fat)} · У ${number(nutrition.carbs)}</small>
-    </button>`;
-  }
-
-  function rationWeekCalendar(anchor) {
-    const start = startOfRationWeek(anchor);
-    return `<div class="ration-week-calendar">
-      ${Array.from({ length: 7 }, (_, index) => {
-        const dateKey = addRationDays(start, index);
-        const day = rationDayFor(state, dateKey) || { meals: defaultRationMeals(dateKey) };
-        const selected = rationSelectedDates.has(dateKey);
-        return `<section class="ration-week-column ${dateKey === todayDateKey() ? "today" : ""} ${dateKey === anchor ? "focused" : ""} ${selected ? "selected" : ""}">
-          <button class="ration-week-header ration-select-day" data-date="${dateKey}" type="button"><span>${rationWeekday(dateKey).slice(0, 2)}</span><strong>${parseRationDate(dateKey).getDate()}</strong>${dateKey === todayDateKey() ? `<small>${rationCurrentTime()}</small>` : ""}</button>
-          <div class="ration-week-events">${(day.meals || []).map((meal, mealIndex) => {
-            const nutrition = rationMealNutrition(meal);
-            const selectableIds = (meal.items || []).filter((item) => item.productId).map((item) => item.id);
-            const mealSelected = rationSelectedMealIds.has(meal.id) || (selectableIds.length && selectableIds.every((itemId) => rationSelectedItemIds.has(itemId)));
-            return `<button class="ration-calendar-meal week-event ${mealSelected ? "meal-selected" : ""}" data-date="${dateKey}" data-meal-id="${meal.id}" type="button"><span>${rationMealTime(meal, mealIndex)}</span><strong>${escapeHtml(meal.name)}</strong><small>${number(nutrition.calories)}<i>ккал</i></small><em><span>Б ${number(nutrition.protein)}</span><span>Ж ${number(nutrition.fat)}</span><span>У ${number(nutrition.carbs)}</span></em></button>`;
-          }).join("")}</div>
-        </section>`;
-      }).join("")}
-    </div>`;
-  }
-
-  function rationMonthCalendar(anchor) {
-    const date = parseRationDate(anchor);
-    const first = new Date(date.getFullYear(), date.getMonth(), 1, 12);
-    const gridStart = addRationDays(formatRationDate(first), -((first.getDay() + 6) % 7));
-    return `<div class="ration-month-calendar">
-      <div class="ration-month-weekdays">${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((day) => `<span>${day}</span>`).join("")}</div>
-      <div class="ration-month-grid">${Array.from({ length: 42 }, (_, index) => {
-        const dateKey = addRationDays(gridStart, index);
-        const nutrition = rationDayNutrition(dateKey);
-        const outside = parseRationDate(dateKey).getMonth() !== date.getMonth();
-        const selected = rationSelectedDates.has(dateKey);
-        return `<button class="ration-month-day ration-select-day ${outside ? "outside" : ""} ${dateKey === todayDateKey() ? "today" : ""} ${dateKey === anchor ? "focused" : ""} ${selected ? "selected" : ""}" data-date="${dateKey}" type="button"><strong>${parseRationDate(dateKey).getDate()}</strong><span>${number(nutrition.calories)}<small>ккал</small></span></button>`;
-      }).join("")}</div>
-    </div>`;
   }
 
   function rationMealDialog(dateKey) {
@@ -2363,82 +2413,21 @@ import {
     const day = rationDayFor(state, dateKey) || { date: dateKey, meals: defaultRationMeals(dateKey) };
     const meal = day.meals.find((value) => value.id === routeSubId);
     if (!meal) return "";
+    const record = readRationHistoryDay(state, dateKey)?.meals?.[meal.id] || { state: "unmarked", discrepancies: [] };
+    const stateKey = RATION_STATE_LABELS[record.state] ? record.state : "unmarked";
+    const isToday = dateKey === todayDateKey();
     return `<dialog id="ration-meal-dialog" class="ration-meal-dialog">
       <header><div><span>${rationLongDate(dateKey)}</span><h2>${escapeHtml(meal.name)}</h2></div><button id="close-ration-meal" type="button" aria-label="Закрыть">×</button></header>
+      <div class="ration-meal-states">
+        ${["eaten", "changed", "skipped", "unmarked"].map((value) => `<button class="ration-state-set ${stateKey === value ? "active" : ""}" data-meal-id="${meal.id}" data-state="${value}" type="button">${RATION_STATE_LABELS[value]}</button>`).join("")}
+      </div>
+      <div class="ration-meal-transfer">
+        <span>Перенести</span>
+        ${[-60, -15, 15, 60].map((delta) => `<button class="ration-transfer-button" data-meal-id="${meal.id}" data-delta="${delta}" type="button">${delta > 0 ? "+" : ""}${delta}</button>`).join("")}
+      </div>
+      ${!isToday ? `<p class="muted">Прошлые отметки можно исправить; план этого дня не меняется.</p>` : ""}
       ${rationMealEditor(dateKey, meal, day.meals.length)}
     </dialog>`;
-  }
-
-  function rationSelectionItems() {
-    if (!rationSelectionActive()) return "";
-    const dates = [...rationSelectedDates].sort();
-    const rows = dates.flatMap((dateKey) => (rationDayFor(state, dateKey)?.meals || []).flatMap((meal) =>
-      (meal.items || []).filter((item) => item.productId).map((item) => {
-        const product = getProduct(item.productId);
-        const measure = rationMeasure(product);
-        return `<label class="ration-selection-item"><input class="ration-item-check" data-date="${dateKey}" data-item-id="${item.id}" type="checkbox" ${rationSelectedItemIds.has(item.id) ? "checked" : ""}><span><strong>${escapeHtml(product?.name || item.name || "Продукт")}</strong><small>${rationShortDate(dateKey)} · ${rationMealTime(meal)} · ${number(item.portionSize || measure.defaultPortion)} ${measure.unit}</small></span></label>`;
-      })
-    ));
-    return `<section class="ration-selection-items">${rows.length ? rows.join("") : `<p class="muted">В выбранных днях пока нет продуктов.</p>`}</section>`;
-  }
-
-  function rationDynamics(view, anchor) {
-    const points = rationMetricPoints(view, anchor);
-    const maxCalories = Math.max(1, ...points.map((point) => point.calories));
-    const maxPrice = Math.max(1, ...points.map((point) => point.price));
-    const totalCalories = points.reduce((sum, point) => sum + point.calories, 0);
-    const totalPrice = points.reduce((sum, point) => sum + point.price, 0);
-    return `
-      <section class="ration-dynamics section">
-        <header class="ration-dynamics-header">
-          <div><span class="eyebrow">Динамика</span><h2>${view === "day" ? "За день" : view === "week" ? "За неделю" : "За месяц"}</h2></div>
-          <div class="ration-totals"><strong>${number(totalCalories)} ккал</strong><span>${money(totalPrice)}</span></div>
-        </header>
-        <div class="ration-chart ${view === "month" ? "month" : ""}">
-          ${points.map((point) => `<div class="ration-chart-point" title="${escapeAttr(`${point.label}: ${number(point.calories)} ккал, ${money(point.price)}`)}">
-            <div class="ration-bars"><i class="calories" style="height:${Math.max(point.calories ? 5 : 0, point.calories / maxCalories * 100)}%"></i><i class="price" style="height:${Math.max(point.price ? 5 : 0, point.price / maxPrice * 100)}%"></i></div>
-            <span>${escapeHtml(point.label)}</span>
-          </div>`).join("")}
-        </div>
-        <div class="ration-legend"><span><i class="calories"></i>Калории</span><span><i class="price"></i>Цена</span></div>
-        <p class="muted ration-basis">Калории и стоимость распределяются пропорционально настроенным порциям; цена упаковки берётся из последней покупки.</p>
-      </section>`;
-  }
-
-  function rationMetricPoints(view, anchor) {
-    if (view === "day") {
-      const day = rationDayFor(state, anchor);
-      return (day?.meals?.length ? day.meals : defaultRationMeals(anchor)).map((meal) => ({
-        label: meal.name,
-        ...rationItemsMetrics(meal.items || []),
-      }));
-    }
-    let dates;
-    if (view === "month") {
-      const date = parseRationDate(anchor);
-      const count = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-      dates = Array.from({ length: count }, (_, index) => formatRationDate(new Date(date.getFullYear(), date.getMonth(), index + 1, 12)));
-    } else {
-      const start = startOfRationWeek(anchor);
-      dates = Array.from({ length: 7 }, (_, index) => addRationDays(start, index));
-    }
-    return dates.map((dateKey) => ({
-      label: view === "month" ? String(parseRationDate(dateKey).getDate()) : rationWeekday(dateKey).slice(0, 2),
-      ...rationItemsMetrics((rationDayFor(state, dateKey)?.meals || []).flatMap((meal) => meal.items || [])),
-    }));
-  }
-
-  function rationItemsMetrics(items) {
-    return items.reduce((total, item) => {
-      const product = getProduct(item.productId);
-      const measure = rationMeasure(product);
-      const portionSize = Number(item.portionSize) || measure.defaultPortion;
-      const packageSize = Number(item.packageSize) || measure.defaultPackage;
-      const nutritionFactor = measure.unit === "шт." ? 1 : portionSize / 100;
-      total.calories += (Number(product?.nutrition?.calories) || 0) * nutritionFactor;
-      total.price += latestProductPrice(item.productId) * portionSize / packageSize;
-      return total;
-    }, { calories: 0, price: 0 });
   }
 
   function latestProductPrice(productId) {
@@ -2450,90 +2439,6 @@ import {
       });
     }));
     return latest?.price || 0;
-  }
-
-  function rationSelectionToolbar() {
-    if (!rationSelectionActive()) return "";
-    const dateCount = rationSelectedDates.size;
-    const itemCount = rationSelectedItemIds.size;
-    const mealCount = rationSelectedMealIds.size;
-    const canDelete = mealCount > 0 || itemCount > 0 || dateCount > 0;
-    return `<section class="ration-selection">
-      <div>
-        <strong>${dateCount} дн. · ${mealCount} приём. · ${itemCount} поз.</strong>
-        <span>Нажимайте дни и приёмы пищи, чтобы выбрать их</span>
-      </div>
-      <div class="ration-selection-actions">
-        <button id="request-ration" class="button" type="button" ${itemCount ? "" : "disabled"}>Запросить</button>
-        <button id="delete-ration-selection" class="button danger" type="button" ${canDelete ? "" : "disabled"}>Удалить</button>
-        <button id="cancel-ration-selection" class="text-button" type="button">Отмена</button>
-      </div>
-    </section>`;
-  }
-
-  function rationSelectionActive() {
-    return rationSelectionMode;
-  }
-
-  function rationTemplateControls() {
-    const templates = rationTemplatesForUser(state);
-    return `<section class="ration-template-actions">
-      <button id="create-ration-template" class="button secondary" type="button" ${rationSelectedDates.size !== 1 ? "disabled" : ""}>Создать шаблон дня</button>
-      <div class="ration-template-apply">
-        <select id="ration-template-select" aria-label="Сохранённый шаблон" ${templates.length ? "" : "disabled"}>
-          ${templates.length ? templates.map((template) => `<option value="${escapeAttr(template.id)}">${escapeHtml(template.name)}</option>`).join("") : `<option>Нет шаблонов</option>`}
-        </select>
-        <button id="apply-ration-template" class="button" type="button" ${templates.length && rationSelectedDates.size ? "" : "disabled"}>Применить</button>
-      </div>
-      <div class="ration-template-manage">
-        <button id="rename-ration-template" class="text-button" type="button" ${templates.length ? "" : "disabled"}>Переименовать</button>
-        <button id="delete-ration-template" class="text-button error" type="button" ${templates.length ? "" : "disabled"}>Удалить шаблон</button>
-      </div>
-    </section>`;
-  }
-
-  function rationTemplateDialog() {
-    return `<dialog id="ration-template-dialog" class="answer-dialog">
-      <form id="ration-template-form">
-        <h2 id="ration-template-dialog-title">Новый шаблон</h2>
-        <label class="field"><span>Название шаблона</span><input id="ration-template-name" maxlength="80" autocomplete="off" required></label>
-        <button class="button full" type="submit">Сохранить</button>
-        <button id="cancel-ration-template" class="text-button dialog-cancel" type="button">Отмена</button>
-      </form>
-    </dialog>`;
-  }
-
-  function rationWeekEditor(anchor) {
-    const start = startOfRationWeek(anchor);
-    return `<div class="ration-week">${Array.from({ length: 7 }, (_, index) => {
-      const dateKey = addRationDays(start, index);
-      const selected = rationSelectedDates.has(dateKey);
-      return `
-        <details class="ration-day-panel ${selected ? "selected" : ""}" data-date="${dateKey}" ${dateKey === anchor || dateKey === todayDateKey() ? "open" : ""}>
-          <summary><strong>${rationWeekday(dateKey)}</strong><span>${rationShortDate(dateKey)}</span></summary>
-          ${rationDayEditor(dateKey, false)}
-        </details>`;
-    }).join("")}</div>`;
-  }
-
-  function rationMonthEditor(anchor) {
-    const date = parseRationDate(anchor);
-    const first = new Date(date.getFullYear(), date.getMonth(), 1, 12);
-    const gridStart = addRationDays(formatRationDate(first), -((first.getDay() + 6) % 7));
-    return `
-      <h2 class="ration-month-title">${new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(date)}</h2>
-      <div class="ration-weekdays">${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((day) => `<span>${day}</span>`).join("")}</div>
-      <div class="ration-calendar">${Array.from({ length: 42 }, (_, index) => {
-        const dateKey = addRationDays(gridStart, index);
-        const day = rationDayFor(state, dateKey);
-        const itemCount = day?.meals?.reduce((sum, meal) => sum + meal.items.filter((item) => item.name || item.productId).length, 0) || 0;
-        const outside = parseRationDate(dateKey).getMonth() !== date.getMonth();
-        return `<button class="ration-calendar-day ${outside ? "outside" : ""} ${dateKey === todayDateKey() ? "today" : ""}" data-date="${dateKey}" type="button">
-          <strong>${parseRationDate(dateKey).getDate()}</strong>
-          ${itemCount ? `<span>${itemCount} ${rationProductWord(itemCount)}</span>` : ""}
-        </button>`;
-      }).join("")}</div>
-      <p class="muted ration-month-hint">Нажмите на день, чтобы заполнить его приёмы пищи.</p>`;
   }
 
   function rationDayEditor(dateKey, showHeading) {
@@ -2571,9 +2476,7 @@ import {
     const packageSize = Number(item.packageSize) || measure.defaultPackage;
     return `
       <div class="ration-food-row" data-item-id="${item.id}">
-        ${rationSelectionActive()
-          ? `<input class="ration-item-check" data-date="${dateKey}" type="checkbox" aria-label="Добавить в запрос" ${rationSelectedItemIds.has(item.id) ? "checked" : ""}>`
-          : `<span class="list-checkbox" aria-hidden="true"></span>`}
+        <span class="list-checkbox" aria-hidden="true"></span>
         <input class="ration-food-input" list="${listId}" value="${escapeAttr(value)}" placeholder="Продукт" autocomplete="off">
         <datalist id="${listId}">${productSuggestionOptions(value)}</datalist>
         <button class="save-ration-food" type="button" aria-label="Сохранить ${escapeAttr(value || "продукт")}">✓</button>
@@ -2596,95 +2499,102 @@ import {
     </dialog>`;
   }
 
-  function bindRation(view, anchor) {
-    const viewButton = document.getElementById("ration-view-button");
-    const viewMenu = document.getElementById("ration-view-menu");
-    viewButton.onclick = (event) => {
-      event.stopPropagation();
-      viewMenu.hidden = !viewMenu.hidden;
-      viewButton.setAttribute("aria-expanded", String(!viewMenu.hidden));
-    };
-    document.querySelectorAll(".ration-view-option").forEach((button) => {
+  function bindRation(today) {
+    document.querySelectorAll(".ration-rail-flag").forEach((button) => {
       button.onclick = () => {
-        applyLocal(localData.setRationCalendar({ view: button.dataset.view, anchor }));
+        rationOverlay = rationOverlay === button.dataset.overlay ? "" : button.dataset.overlay;
+        rationOverlayDate = "";
         renderRation();
       };
     });
-    document.addEventListener("click", (event) => {
-      if (!event.target.closest(".ration-header-picker")) {
-        viewMenu.hidden = true;
-        viewButton.setAttribute("aria-expanded", "false");
-      }
-    }, { once: true });
-    document.getElementById("ration-anchor").onchange = (event) => setRationAnchor(event.target.value || todayDateKey());
-    document.getElementById("ration-today").onclick = () => setRationAnchor(todayDateKey());
-    document.getElementById("ration-prev").onclick = () => shiftRationAnchor(view, anchor, -1);
-    document.getElementById("ration-next").onclick = () => shiftRationAnchor(view, anchor, 1);
-    document.getElementById("ration-select-mode").onclick = () => {
-      rationSelectionMode = true;
+    document.getElementById("close-ration-overlay")?.addEventListener("click", () => {
+      rationOverlay = "";
+      rationOverlayDate = "";
       renderRation();
-    };
-    document.querySelectorAll(".ration-month-day").forEach((button) => {
-      button.onclick = () => {
-        routeSubId = null;
-        applyLocal(localData.setRationCalendar({ view: "day", anchor: button.dataset.date }));
-        renderRation();
-      };
     });
-    document.querySelectorAll(".ration-calendar-meal").forEach((button) => {
-      button.onclick = (event) => {
-        if (button.dataset.longPressed === "true") {
-          button.dataset.longPressed = "false";
-          return;
-        }
-        if (rationSelectionMode) {
-          toggleRationMealSelection(button);
-          return;
-        }
-        applyLocal(localData.setRationCalendar({ anchor: button.dataset.date }));
+    document.querySelectorAll(".ration-today-meal-open").forEach((button) => {
+      button.onclick = () => {
         routeSubId = button.dataset.mealId;
         renderRation();
       };
-      bindRationLongPress(button, () => {
-        rationSelectionMode = true;
-        button.dataset.longPressed = "true";
-        toggleRationMealSelection(button, true);
-      });
+    });
+    document.querySelectorAll(".ration-eat-button").forEach((button) => {
+      button.onclick = () => {
+        const mealId = button.dataset.mealId;
+        const current = readRationHistoryDay(state, today)?.meals?.[mealId]?.state;
+        const result = localData.markRationMeal(today, mealId, current === "eaten" ? "unmarked" : "eaten");
+        if (!applyLocal(result)) return showToast(result.reason);
+        renderRation();
+        showToast(current === "eaten" ? "Отметка снята." : "Приём пищи съеден.");
+      };
+    });
+    document.querySelectorAll(".ration-state-set").forEach((button) => {
+      button.onclick = () => {
+        const result = localData.markRationMeal(today, button.dataset.mealId, button.dataset.state);
+        if (!applyLocal(result)) return showToast(result.reason);
+        renderRation();
+      };
+    });
+    document.querySelectorAll(".ration-transfer-button").forEach((button) => {
+      button.onclick = async () => {
+        const delta = Number(button.dataset.delta);
+        const shift = rationShiftFor(today, button.dataset.mealId, delta);
+        if (shift.crossesMidnight && !await askConfirm("Перенос сдвигает приём пищи через полночь. Продолжить?")) return;
+        const result = localData.transferRationMeals(today, button.dataset.mealId, delta, shift.crossesMidnight);
+        if (!applyLocal(result)) return showToast(result.reason);
+        renderRation();
+        showToast("Приёмы пищи перенесены.");
+      };
+    });
+    document.querySelectorAll(".ration-history-exclude").forEach((button) => {
+      button.onclick = () => {
+        const item = rationDayFor(state, rationOverlayDate)?.meals
+          .find((meal) => meal.id === button.dataset.mealId)?.items
+          .find((value) => value.id === button.dataset.itemId);
+        if (!item?.productId) return showToast("У позиции нет продукта.");
+        const result = localData.recordRationDiscrepancy(rationOverlayDate, button.dataset.mealId, {
+          kind: "excluded",
+          productId: item.productId,
+        });
+        if (!applyLocal(result)) return showToast(result.reason);
+        renderRation();
+        showToast("Расхождение записано.");
+      };
+    });
+    document.querySelectorAll(".ration-overlay-day").forEach((button) => {
+      button.onclick = () => {
+        rationOverlayDate = rationOverlayDate === button.dataset.date ? "" : button.dataset.date;
+        renderRation();
+      };
+    });
+    document.getElementById("ration-plan-request")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const from = document.getElementById("ration-request-from").value;
+      const to = document.getElementById("ration-request-to").value;
+      if (!from || !to || from > to) return showToast("Проверьте диапазон дат.");
+      const dates = [];
+      let cursor = from;
+      while (cursor <= to && dates.length < 60) {
+        dates.push(cursor);
+        cursor = addRationDays(cursor, 1);
+      }
+      const itemIds = dates.flatMap((dateKey) => (rationDayFor(state, dateKey)?.meals || [])
+        .flatMap((meal) => (meal.items || []).filter((item) => item.productId).map((item) => item.id)));
+      if (!itemIds.length) return showToast("В выбранных днях нет продуктов.");
+      const created = localData.createRequestFromRation({ dates, itemIds });
+      if (!applyLocal(created)) return showToast(created.reason);
+      rationOverlay = "";
+      rationOverlayDate = "";
+      draftItems = [];
+      navigate("request-edit", created.requestId);
+      showToast("Продукты рациона добавлены в запрос.");
     });
     document.getElementById("ration-add-meal").onclick = () => {
-      const added = localData.addRationMeal(anchor);
+      const added = localData.addRationMeal(today);
       if (!applyLocal(added)) return;
       routeSubId = added.mealId;
       renderRation();
     };
-    document.querySelectorAll(".ration-select-day:not(.ration-month-day)").forEach((selector) => {
-      selector.onclick = () => {
-        if (selector.dataset.longPressed === "true") {
-          selector.dataset.longPressed = "false";
-          return;
-        }
-        if (rationSelectionMode) return toggleRationDaySelection(selector.dataset.date);
-        if (view === "week") {
-          applyLocal(localData.setRationCalendar({ view: "day", anchor: selector.dataset.date }));
-          renderRation();
-        }
-      };
-      bindRationLongPress(selector, () => {
-        rationSelectionMode = true;
-        selector.dataset.longPressed = "true";
-        toggleRationDaySelection(selector.dataset.date);
-      });
-    });
-    document.getElementById("cancel-ration-selection")?.addEventListener("click", () => {
-      clearRationSelection();
-      renderRation();
-    });
-    document.getElementById("request-ration")?.addEventListener("click", createRequestFromRationSelection);
-    document.getElementById("delete-ration-selection")?.addEventListener("click", deleteRationSelection);
-    document.getElementById("create-ration-template")?.addEventListener("click", createRationTemplate);
-    document.getElementById("apply-ration-template")?.addEventListener("click", applyRationTemplate);
-    document.getElementById("rename-ration-template")?.addEventListener("click", renameRationTemplate);
-    document.getElementById("delete-ration-template")?.addEventListener("click", deleteRationTemplate);
     document.querySelectorAll(".add-ration-meal").forEach((button) => {
       button.onclick = () => {
         applyLocal(localData.addRationMeal(button.dataset.date));
@@ -2709,15 +2619,6 @@ import {
     document.querySelectorAll(".save-ration-food").forEach((button) => {
       button.onclick = () => saveRationFood(button.closest(".ration-food-row").querySelector(".ration-food-input"), false);
     });
-    document.querySelectorAll(".ration-item-check").forEach((checkbox) => {
-      checkbox.onchange = () => {
-        const itemId = checkbox.dataset.itemId || checkbox.closest(".ration-food-row")?.dataset.itemId;
-        if (checkbox.checked) rationSelectedItemIds.add(itemId);
-        else rationSelectedItemIds.delete(itemId);
-        if (checkbox.dataset.date) refreshRationSelectedDate(checkbox.dataset.date);
-        renderRation();
-      };
-    });
     document.querySelectorAll(".ration-portion-button").forEach((button) => {
       button.onclick = () => openRationPortionDialog(button);
     });
@@ -2734,7 +2635,6 @@ import {
       };
     });
     bindRationPortionDialog();
-    bindRationTemplateDialog();
     const mealDialog = document.getElementById("ration-meal-dialog");
     if (mealDialog) {
       mealDialog.dataset.dirty = "false";
@@ -2744,82 +2644,12 @@ import {
     }
   }
 
-  function bindRationLongPress(element, handler) {
-    let timer = null;
-    let startX = 0;
-    let startY = 0;
-    element.addEventListener("pointerdown", (event) => {
-      if (event.button != null && event.button !== 0) return;
-      startX = event.clientX;
-      startY = event.clientY;
-      timer = setTimeout(() => {
-        timer = null;
-        handler();
-      }, 460);
-    });
-    element.addEventListener("pointermove", (event) => {
-      if (timer && Math.hypot(event.clientX - startX, event.clientY - startY) > 10) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    });
-    ["pointerup", "pointercancel", "pointerleave"].forEach((name) => element.addEventListener(name, () => {
-      if (timer) clearTimeout(timer);
-      timer = null;
-    }));
-  }
-
-  function toggleRationMealSelection(button, allowEmpty = false) {
-    const dateKey = button.dataset.date;
-    const meal = rationDayFor(state, dateKey)?.meals.find((value) => value.id === button.dataset.mealId)
-      || defaultRationMeals(dateKey).find((value) => value.id === button.dataset.mealId);
-    const itemIds = (meal?.items || []).filter((item) => item.productId).map((item) => item.id);
-    rationSelectionMode = true;
-    const mealId = meal?.id || button.dataset.mealId;
-    const allSelected = rationSelectedMealIds.has(mealId);
-    if (allSelected) rationSelectedMealIds.delete(mealId);
-    else rationSelectedMealIds.add(mealId);
-    itemIds.forEach((itemId) => allSelected ? rationSelectedItemIds.delete(itemId) : rationSelectedItemIds.add(itemId));
-    refreshRationSelectedDate(dateKey);
-    applyLocal(localData.setRationCalendar({ anchor: dateKey }));
-    if (navigator.vibrate) navigator.vibrate(20);
-    renderRation();
-  }
-
-  function toggleRationDaySelection(dateKey) {
-    rationSelectionMode = true;
-    const itemIds = rationItemIdsForDate(dateKey);
-    const mealIds = rationMealIdsForDate(dateKey);
-    const selected = rationSelectedDates.has(dateKey);
-    if (selected) {
-      rationSelectedDates.delete(dateKey);
-      itemIds.forEach((itemId) => rationSelectedItemIds.delete(itemId));
-      mealIds.forEach((mealId) => rationSelectedMealIds.delete(mealId));
-    } else {
-      rationSelectedDates.add(dateKey);
-      itemIds.forEach((itemId) => rationSelectedItemIds.add(itemId));
-      mealIds.forEach((mealId) => rationSelectedMealIds.add(mealId));
-    }
-    applyLocal(localData.setRationCalendar({ anchor: dateKey }));
-    if (navigator.vibrate) navigator.vibrate(20);
-    renderRation();
-  }
-
-  function rationItemIdsForDate(dateKey) {
-    return (rationDayFor(state, dateKey)?.meals || []).flatMap((meal) =>
-      (meal.items || []).filter((item) => item.productId).map((item) => item.id)
-    );
-  }
-
-  function rationMealIdsForDate(dateKey) {
-    return (rationDayFor(state, dateKey)?.meals || []).map((meal) => meal.id);
-  }
-
-  function refreshRationSelectedDate(dateKey) {
-    const hasSelectedItems = rationItemIdsForDate(dateKey).some((itemId) => rationSelectedItemIds.has(itemId));
-    const hasSelectedMeals = rationMealIdsForDate(dateKey).some((mealId) => rationSelectedMealIds.has(mealId));
-    if (hasSelectedItems || hasSelectedMeals) rationSelectedDates.add(dateKey);
-    else rationSelectedDates.delete(dateKey);
+  function rationShiftFor(dateKey, mealId, delta) {
+    const day = rationDayFor(state, dateKey);
+    const meal = day?.meals.find((value) => value.id === mealId);
+    const shift = Number(readRationHistoryDay(state, dateKey)?.meals?.[mealId]?.transferredMinutes) || 0;
+    const total = timeMinutesOf(rationMealTime(meal)) + shift + delta;
+    return { crossesMidnight: total < 0 || total >= 1440 };
   }
 
   function openRationPortionDialog(button) {
@@ -2874,156 +2704,6 @@ import {
     const count = portion && packageSize ? Math.floor(packageSize / portion * 10) / 10 : 0;
     const preview = document.getElementById("ration-portion-preview");
     if (preview) preview.textContent = packageSize ? `Одной упаковки хватит примерно на ${number(count)} порц. по ${number(portion)} ${unit}.` : "";
-  }
-
-  function createRationTemplate() {
-    const dates = [...rationSelectedDates];
-    if (dates.length !== 1) return showToast("Для шаблона выберите один день.");
-    const day = rationDayFor(state, dates[0]);
-    if (!day?.meals?.length) return showToast("В выбранном дне пока нет приёмов пищи.");
-    openRationTemplateDialog("create", `Рацион ${rationShortDate(dates[0])}`, dates[0]);
-  }
-
-  function renameRationTemplate() {
-    const templateId = document.getElementById("ration-template-select")?.value;
-    const template = rationTemplatesForUser(state).find((item) => item.id === templateId);
-    if (template) openRationTemplateDialog("rename", template.name, "", template.id);
-  }
-
-  function openRationTemplateDialog(mode, name, dateKey = "", templateId = "") {
-    const dialog = document.getElementById("ration-template-dialog");
-    dialog.dataset.mode = mode;
-    dialog.dataset.date = dateKey;
-    dialog.dataset.templateId = templateId;
-    dialog.dataset.dirty = "false";
-    document.getElementById("ration-template-dialog-title").textContent = mode === "rename" ? "Переименовать шаблон" : "Новый шаблон";
-    document.getElementById("ration-template-name").value = name;
-    dialog.showModal();
-    document.getElementById("ration-template-name").focus();
-  }
-
-  function bindRationTemplateDialog() {
-    const dialog = document.getElementById("ration-template-dialog");
-    document.getElementById("cancel-ration-template")?.addEventListener("click", () => closeDialogSafely(dialog));
-    document.getElementById("ration-template-form")?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const name = document.getElementById("ration-template-name").value.trim();
-      if (!name) return;
-      if (dialog.dataset.mode === "rename") saveRenamedRationTemplate(dialog.dataset.templateId, name);
-      else saveNewRationTemplate(dialog.dataset.date, name);
-      dialog.dataset.dirty = "false";
-      dialog.close();
-    });
-  }
-
-  function saveNewRationTemplate(dateKey, name) {
-    if (!applyLocal(localData.saveRationTemplateFromDay(dateKey, name))) return;
-    renderRation();
-    showToast("Шаблон дня сохранён.");
-  }
-
-  function saveRenamedRationTemplate(templateId, name) {
-    if (!applyLocal(localData.renameRationTemplate(templateId, name))) return;
-    renderRation();
-    showToast("Шаблон переименован.");
-  }
-
-  async function deleteRationTemplate() {
-    const templateId = document.getElementById("ration-template-select")?.value;
-    const template = rationTemplatesForUser(state).find((item) => item.id === templateId);
-    if (!template || !await askConfirm(`Удалить шаблон «${template.name}»?`)) return;
-    const previous = localData.snapshot();
-    if (!applyLocal(localData.removeRationTemplate(templateId))) return;
-    renderRation();
-    showToast(`Шаблон «${template.name}» удалён.`, "Отменить", () => {
-      state = localData.commit(previous);
-      renderRation();
-    });
-  }
-
-  async function applyRationTemplate() {
-    const templateId = document.getElementById("ration-template-select")?.value;
-    const template = rationTemplatesForUser(state).find((item) => item.id === templateId);
-    const dates = [...rationSelectedDates];
-    if (!template || !dates.length) return;
-    const filledDates = dates.filter((dateKey) => (rationDayFor(state, dateKey)?.meals || []).some((meal) => meal.items?.length || meal.name));
-    if (filledDates.length && !await askConfirm(`Шаблон заменит существующий рацион в ${filledDates.length} ${filledDates.length === 1 ? "дне" : "днях"}. Продолжить?`)) return;
-    const previous = localData.snapshot();
-    if (!applyLocal(localData.applyRationTemplate(templateId, dates))) return;
-    renderRation();
-    showToast(`Шаблон применён к ${dates.length} дн.`, "Отменить", () => {
-      state = localData.commit(previous);
-      renderRation();
-    });
-  }
-
-  function createRequestFromRationSelection() {
-    const created = localData.createRequestFromRation({
-      dates: [...rationSelectedDates],
-      itemIds: [...rationSelectedItemIds],
-    });
-    if (!applyLocal(created)) return;
-    clearRationSelection();
-    draftItems = [];
-    navigate("request-edit", created.requestId);
-    showToast("Продукты рациона добавлены в запрос.");
-  }
-
-  async function deleteRationSelection() {
-    const selectedMealIds = new Set(rationSelectedMealIds);
-    const selectedItemIds = new Set(rationSelectedItemIds);
-    const selectedDates = new Set(rationSelectedDates);
-    if (!selectedMealIds.size && !selectedItemIds.size && !selectedDates.size) {
-      return showToast("Ничего не выбрано.");
-    }
-
-    let confirmText = "Удалить выбранное из рациона?";
-    if (selectedMealIds.size) {
-      confirmText = selectedMealIds.size === 1
-        ? "Удалить выбранный приём пищи и все его продукты?"
-        : `Удалить ${selectedMealIds.size} приёма(ов) пищи и все их продукты?`;
-    } else if (selectedItemIds.size) {
-      confirmText = selectedItemIds.size === 1
-        ? "Удалить выбранный продукт из рациона?"
-        : `Удалить ${selectedItemIds.size} продукт(ов) из рациона?`;
-    } else if (selectedDates.size) {
-      confirmText = selectedDates.size === 1
-        ? "Очистить рацион выбранного дня?"
-        : `Очистить рацион в ${selectedDates.size} днях?`;
-    }
-    if (!await askConfirm(confirmText)) return;
-
-    const previous = localData.snapshot();
-    const deleted = localData.deleteRationSelection({
-      mealIds: [...selectedMealIds],
-      itemIds: [...selectedItemIds],
-      dates: [...selectedDates],
-    });
-    if (!applyLocal(deleted)) {
-      clearRationSelection();
-      renderRation();
-      return;
-    }
-    clearRationSelection();
-    routeSubId = null;
-    renderRation();
-    showToast("Выбранное удалено из рациона.", "Отменить", () => {
-      state = localData.commit(previous);
-      renderRation();
-    });
-  }
-
-  function setRationAnchor(dateKey) {
-    routeSubId = null;
-    applyLocal(localData.setRationCalendar({ anchor: dateKey }));
-    renderRation();
-  }
-
-  function shiftRationAnchor(view, anchor, direction) {
-    const date = parseRationDate(anchor);
-    if (view === "month") date.setMonth(date.getMonth() + direction);
-    else date.setDate(date.getDate() + direction * (view === "week" ? 7 : 1));
-    setRationAnchor(formatRationDate(date));
   }
 
   function updateRationMealName(input) {
@@ -3101,12 +2781,6 @@ import {
     return formatRationDate(date);
   }
 
-  function startOfRationWeek(value) {
-    const date = parseRationDate(value);
-    date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
-    return formatRationDate(date);
-  }
-
   function rationWeekday(value) {
     const result = new Intl.DateTimeFormat("ru-RU", { weekday: "long" }).format(parseRationDate(value));
     return result.charAt(0).toUpperCase() + result.slice(1);
@@ -3118,14 +2792,6 @@ import {
 
   function rationLongDate(value) {
     return new Intl.DateTimeFormat("ru-RU", { weekday: "long", day: "numeric", month: "long" }).format(parseRationDate(value));
-  }
-
-  function rationProductWord(count) {
-    const mod10 = count % 10;
-    const mod100 = count % 100;
-    if (mod10 === 1 && mod100 !== 11) return "продукт";
-    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "продукта";
-    return "продуктов";
   }
 
   function renderAppUpdateSection() {

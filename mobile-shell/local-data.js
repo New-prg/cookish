@@ -18,12 +18,13 @@ import {
   readRationDay,
   readRationDayNutrition,
   readRationHistoryDay,
+  readRationRange,
   resolveOrCreateProduct,
   todayDateKey,
   validateRationProfile,
 } from "./ration-domain.js";
 
-export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationDayKey, rationMeasure, rationOwner, readRationDayNutrition, readRationHistoryDay, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
+export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationDayKey, rationMeasure, rationOwner, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
 export const STORAGE_KEY = "cookish.android.data.v1";
 export const SCHEMA_VERSION = RATION_SCHEMA_VERSION;
