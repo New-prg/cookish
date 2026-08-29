@@ -23,4 +23,7 @@ yarn-error.log*
 /android/.gradle/
 /android/local.properties
 /android/app/build/
-/output/*.apk
+
+# local release artifacts and session reports
+/output/
+/reports/
