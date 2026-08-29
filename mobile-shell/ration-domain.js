@@ -1,8 +1,13 @@
 export const RATION_SCHEMA_VERSION = 12;
 
+export const RATION_MEAL_STATES = ["unmarked", "eaten", "changed", "skipped"];
+export const RATION_DISCREPANCY_KINDS = ["added", "excluded", "replaced", "amount"];
+
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{2}:\d{2}$/;
 const DAY_MS = 86400000;
+const MEAL_STATES = new Set(RATION_MEAL_STATES);
+const DISCREPANCY_KINDS = new Set(RATION_DISCREPANCY_KINDS);
 
 export function emptyRation() {
   return { versions: [], specialDays: {}, history: {} };
@@ -91,6 +96,19 @@ export function readRationRange(state, fromKey, toKey) {
     cursor = formatRationDate(new Date(validDate(cursor).getTime() + DAY_MS));
   }
   return days;
+}
+
+export function readRationHistoryDay(state, dateKey) {
+  if (!DATE_PATTERN.test(String(dateKey || ""))) return null;
+  const owner = rationOwner(state);
+  const entry = state.ration?.history?.[`${owner}|${dateKey}`];
+  if (!entry) return null;
+  return {
+    date: dateKey,
+    owner,
+    versionId: entry.versionId || "",
+    meals: entry.meals || {},
+  };
 }
 
 export function activeRationVersion(ration, owner, dateKey) {
@@ -396,12 +414,136 @@ function runRationCommand(next, command, ctx) {
       delete ration.specialDays[key];
       return { ok: true, date };
     }
+    case "markMeal": {
+      return markMeal(next, ration, owner, command, ctx);
+    }
+    case "recordDiscrepancy": {
+      return recordDiscrepancy(next, ration, owner, command, ctx);
+    }
+    case "transferMeals": {
+      return transferMeals(next, ration, owner, command, ctx);
+    }
     case "deleteSelection": {
       return deleteSelection(next, ration, owner, command, ctx);
     }
     default:
       return fail(`Неизвестная команда рациона: ${type || "(пусто)"}`);
   }
+}
+
+function historyWritable(ctx, date) {
+  const today = DATE_PATTERN.test(ctx.today || "") ? ctx.today : String(ctx.now || "").slice(0, 10);
+  if (date > today) return fail("Нельзя менять Историю питания будущего дня.");
+  if (ctx.actor === "ai") return fail("ИИ не может записывать Историю питания.");
+  return null;
+}
+
+function ensureHistoryEntry(ration, owner, dateKey, ctx) {
+  const key = `${owner}|${dateKey}`;
+  if (!ration.history[key]) {
+    const version = activeRationVersion(ration, owner, dateKey);
+    ration.history[key] = { date: dateKey, owner, versionId: version?.id || "", meals: {} };
+  }
+  return ration.history[key];
+}
+
+function mealHistory(entry, mealId) {
+  if (!entry.meals[mealId]) {
+    entry.meals[mealId] = { state: "unmarked", discrepancies: [], transferredMinutes: 0 };
+  }
+  return entry.meals[mealId];
+}
+
+function markMeal(next, ration, owner, command, ctx) {
+  const date = commandDate(command.date);
+  if (!date) return fail("Некорректная дата.");
+  const state = String(command.state || "");
+  if (!MEAL_STATES.has(state)) return fail("Неизвестное состояние приёма пищи.");
+  const blocked = historyWritable(ctx, date);
+  if (blocked) return blocked;
+  if (!projectionHasMeal(next, date, command.mealId)) return fail("Приём пищи не найден.");
+  const entry = ensureHistoryEntry(ration, owner, date, ctx);
+  const meal = mealHistory(entry, command.mealId);
+  meal.state = state;
+  const version = activeRationVersion(ration, owner, date);
+  if (version) meal.versionId = version.id;
+  return { ok: true, date, mealId: command.mealId, state };
+}
+
+function recordDiscrepancy(next, ration, owner, command, ctx) {
+  const date = commandDate(command.date);
+  if (!date) return fail("Некорректная дата.");
+  const kind = String(command.discrepancy?.kind || "");
+  if (!DISCREPANCY_KINDS.has(kind)) return fail("Неизвестный вид расхождения.");
+  const productId = String(command.discrepancy?.productId || "");
+  const name = String(command.discrepancy?.name || "");
+  if (kind !== "amount" && !productId && !name) return fail("Расхождение должно указывать Продукт.");
+  if (kind === "replaced" && !String(command.discrepancy?.replacedProductId || command.discrepancy?.replacedName || "")) {
+    return fail("Замена должна указывать Продукт, которым заменили.");
+  }
+  const blocked = historyWritable(ctx, date);
+  if (blocked) return blocked;
+  if (!projectionHasMeal(next, date, command.mealId)) return fail("Приём пищи не найден.");
+  const entry = ensureHistoryEntry(ration, owner, date, ctx);
+  const meal = mealHistory(entry, command.mealId);
+  const version = activeRationVersion(ration, owner, date);
+  if (version) meal.versionId = version.id;
+  const discrepancy = { kind };
+  if (productId) discrepancy.productId = productId;
+  if (name) discrepancy.name = name;
+  if (kind === "replaced" && String(command.discrepancy.replacedProductId || "")) {
+    discrepancy.replacedProductId = String(command.discrepancy.replacedProductId);
+  }
+  if (kind === "replaced" && String(command.discrepancy.replacedName || "")) {
+    discrepancy.replacedName = String(command.discrepancy.replacedName);
+  }
+  if (command.discrepancy.amount != null) discrepancy.amount = Number(command.discrepancy.amount) || 0;
+  if (command.discrepancy.measureUnit) discrepancy.measureUnit = String(command.discrepancy.measureUnit);
+  meal.discrepancies.push(discrepancy);
+  if (meal.state === "unmarked") meal.state = "changed";
+  return { ok: true, date, mealId: command.mealId, discrepancy };
+}
+
+function transferMeals(next, ration, owner, command, ctx) {
+  const date = commandDate(command.date);
+  if (!date) return fail("Некорректная дата.");
+  const minutes = Number(command.minutes);
+  if (!Number.isFinite(minutes) || minutes === 0) return fail("Перенос требует ненулевого сдвига в минутах.");
+  const blocked = historyWritable(ctx, date);
+  if (blocked) return blocked;
+  const day = readRationDay(next, date);
+  if (!day?.meals?.length) return fail("В этот день нет приёмов пищи.");
+  const chosen = day.meals.find((meal) => meal.id === command.mealId);
+  if (!chosen) return fail("Приём пищи не найден.");
+  const sorted = day.meals.slice().sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")));
+  const chosenIndex = sorted.findIndex((meal) => meal.id === chosen.id);
+  const entry = ensureHistoryEntry(ration, owner, date, ctx);
+  const shifted = [];
+  for (let index = chosenIndex; index < sorted.length; index += 1) {
+    const meal = sorted[index];
+    const history = entry.meals[meal.id];
+    const marked = history && history.state !== "unmarked";
+    if (index > chosenIndex && marked) continue;
+    const newMinutes = timeMinutes(meal.time) + minutes;
+    if (newMinutes < 0 || newMinutes >= 1440) {
+      if (!command.confirmMidnight) {
+        return fail("Перенос сдвигает приём пищи через полночь и требует явного подтверждения.");
+      }
+    }
+    const record = mealHistory(entry, meal.id);
+    record.transferredMinutes = (Number(record.transferredMinutes) || 0) + minutes;
+    const version = activeRationVersion(ration, owner, date);
+    if (version) record.versionId = version.id;
+    shifted.push(meal.id);
+  }
+  if (!shifted.length) return fail("Нет приёмов пищи для переноса.");
+  return { ok: true, date, shifted };
+}
+
+function timeMinutes(value) {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return 0;
+  return Number(match[1]) * 60 + Number(match[2]);
 }
 
 function releaseVersion(ration, owner, command, ctx) {

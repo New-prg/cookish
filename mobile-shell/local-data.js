@@ -1,4 +1,6 @@
 import {
+  RATION_DISCREPANCY_KINDS,
+  RATION_MEAL_STATES,
   RATION_SCHEMA_VERSION,
   cloneMealsWithNewIds,
   createId,
@@ -14,11 +16,12 @@ import {
   rationMeasure,
   rationOwner,
   readRationDay,
+  readRationHistoryDay,
   resolveOrCreateProduct,
   todayDateKey,
 } from "./ration-domain.js";
 
-export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationDayKey, rationMeasure, rationOwner, todayDateKey };
+export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationDayKey, rationMeasure, rationOwner, readRationHistoryDay, todayDateKey, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
 export const STORAGE_KEY = "cookish.android.data.v1";
 export const SCHEMA_VERSION = RATION_SCHEMA_VERSION;
@@ -77,6 +80,7 @@ export function openLocalData(storage) {
     const context = {
       now: new Date().toISOString(),
       actor: String(next.user?.email || "local"),
+      today: todayDateKey(),
     };
     const result = mutator(next, context) || { ok: false };
     if (result.ok === false) return result;
@@ -443,6 +447,18 @@ export function openLocalData(storage) {
 
     setRationPortion(dateKey, mealId, itemId, { portionSize, packageSize, measureUnit } = {}) {
       return runRation({ type: "setPortion", date: dateKey, mealId, itemId, portionSize, packageSize, measureUnit });
+    },
+
+    markRationMeal(dateKey, mealId, state) {
+      return runRation({ type: "markMeal", date: dateKey, mealId, state });
+    },
+
+    recordRationDiscrepancy(dateKey, mealId, discrepancy) {
+      return runRation({ type: "recordDiscrepancy", date: dateKey, mealId, discrepancy });
+    },
+
+    transferRationMeals(dateKey, mealId, minutes, confirmMidnight = false) {
+      return runRation({ type: "transferMeals", date: dateKey, mealId, minutes, confirmMidnight });
     },
 
     saveRationTemplateFromDay(dateKey, name) {

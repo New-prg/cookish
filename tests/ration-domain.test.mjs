@@ -7,6 +7,7 @@ import {
   executeRationCommand,
   migrateRationState,
   readRationDay,
+  readRationHistoryDay,
   readRationRange,
 } from "../mobile-shell/ration-domain.js";
 import {
@@ -59,12 +60,16 @@ function v11Blob() {
       "a@example.com|2026-08-04": {
         date: "2026-08-04",
         owner: "a@example.com",
-        meals: [{
-          id: "meal_2",
-          name: "Завтрак",
-          time: "08:00",
-          items: [{ id: "item_2", productId: "product_bread", name: "Хлеб", portionSize: 2, packageSize: 1, measureUnit: "шт." }],
-        }],
+        meals: [
+          {
+            id: "meal_2",
+            name: "Завтрак",
+            time: "08:00",
+            items: [{ id: "item_2", productId: "product_bread", name: "Хлеб", portionSize: 2, packageSize: 1, measureUnit: "шт." }],
+          },
+          { id: "meal_3", name: "Обед", time: "13:00", items: [] },
+          { id: "meal_4", name: "Ужин", time: "19:00", items: [] },
+        ],
         updatedAt: "2026-08-04T08:00:00.000Z",
         updatedBy: "a@example.com",
       },
@@ -172,7 +177,8 @@ test("commands return new state without touching the input", () => {
   assert.ok(result.mealId);
   assert.deepEqual(state, before);
   const special = result.state.ration.specialDays["a@example.com|2026-08-10"];
-  assert.equal(special.meals.length, 2);
+  assert.equal(special.meals.length, 4);
+  assert.equal(special.meals[3].name, "Приём пищи 4");
   assert.equal(special.updatedAt, "2026-08-10T10:00:00.000Z");
 });
 
@@ -412,4 +418,232 @@ test("range projection covers special days and both versions", () => {
     ["2026-08-11", "special", "Особый"],
     ["2026-08-12", "cycle", "План два"],
   ]);
+});
+
+function historyState() {
+  return migrateRationState(v11Blob());
+}
+
+const HISTORY_CTX = { now: "2026-08-04T12:00:00.000Z", today: "2026-08-04", actor: "a@example.com" };
+
+function dayWithMeals(state, date) {
+  return readRationDay(state, date);
+}
+
+test("meal states start unmarked and accept explicit states", () => {
+  const state = historyState();
+  const day = dayWithMeals(state, "2026-08-03");
+  const mealId = day.meals[0].id;
+
+  assert.equal(readRationHistoryDay(state, "2026-08-03"), null);
+
+  const eaten = executeRationCommand(state, { type: "markMeal", date: "2026-08-03", mealId, state: "eaten" }, HISTORY_CTX);
+  assert.equal(eaten.ok, true);
+  let entry = readRationHistoryDay(eaten.state, "2026-08-03");
+  assert.equal(entry.meals[mealId].state, "eaten");
+
+  const skipped = executeRationCommand(eaten.state, { type: "markMeal", date: "2026-08-03", mealId, state: "skipped" }, HISTORY_CTX);
+  entry = readRationHistoryDay(skipped.state, "2026-08-03");
+  assert.equal(entry.meals[mealId].state, "skipped");
+
+  const changed = executeRationCommand(skipped.state, { type: "markMeal", date: "2026-08-03", mealId, state: "changed" }, HISTORY_CTX);
+  entry = readRationHistoryDay(changed.state, "2026-08-03");
+  assert.equal(entry.meals[mealId].state, "changed");
+
+  const reset = executeRationCommand(changed.state, { type: "markMeal", date: "2026-08-03", mealId, state: "unmarked" }, HISTORY_CTX);
+  entry = readRationHistoryDay(reset.state, "2026-08-03");
+  assert.equal(entry.meals[mealId].state, "unmarked");
+
+  const bad = executeRationCommand(state, { type: "markMeal", date: "2026-08-03", mealId, state: "done" }, HISTORY_CTX);
+  assert.equal(bad.ok, false);
+});
+
+test("history entries reference the version that was in force", () => {
+  const state = historyState();
+  const mealId = dayWithMeals(state, "2026-08-03").meals[0].id;
+  const marked = executeRationCommand(state, { type: "markMeal", date: "2026-08-03", mealId, state: "eaten" }, HISTORY_CTX);
+
+  assert.equal(marked.ok, true);
+  const entry = readRationHistoryDay(marked.state, "2026-08-03");
+  assert.equal(entry.versionId, marked.state.ration.versions[0].id);
+});
+
+test("discrepancies store exclusion, replacement and partial amount", () => {
+  const state = historyState();
+  const day = dayWithMeals(state, "2026-08-03");
+  const mealId = day.meals[0].id;
+  const keptItemId = day.meals[0].items[0].id;
+
+  const excluded = executeRationCommand(state, {
+    type: "recordDiscrepancy",
+    date: "2026-08-03",
+    mealId,
+    discrepancy: { kind: "excluded", productId: "product_water" },
+  }, HISTORY_CTX);
+  assert.equal(excluded.ok, true);
+
+  const replaced = executeRationCommand(excluded.state, {
+    type: "recordDiscrepancy",
+    date: "2026-08-03",
+    mealId,
+    discrepancy: { kind: "replaced", productId: "product_water", replacedProductId: "product_bread" },
+  }, HISTORY_CTX);
+  assert.equal(replaced.ok, true);
+
+  const amount = executeRationCommand(replaced.state, {
+    type: "recordDiscrepancy",
+    date: "2026-08-03",
+    mealId,
+    discrepancy: { kind: "amount", productId: "product_water", amount: 100, measureUnit: "мл" },
+  }, HISTORY_CTX);
+  assert.equal(amount.ok, true);
+
+  const added = executeRationCommand(amount.state, {
+    type: "recordDiscrepancy",
+    date: "2026-08-03",
+    mealId,
+    discrepancy: { kind: "added", name: "Печенье", amount: 1 },
+  }, HISTORY_CTX);
+  assert.equal(added.ok, true);
+
+  const entry = readRationHistoryDay(added.state, "2026-08-03");
+  const record = entry.meals[mealId];
+  assert.equal(record.state, "changed");
+  assert.deepEqual(record.discrepancies.map((item) => item.kind), ["excluded", "replaced", "amount", "added"]);
+  assert.equal(record.discrepancies[2].amount, 100);
+  assert.equal(record.discrepancies[3].name, "Печенье");
+  assert.ok(keptItemId);
+
+  const bad = executeRationCommand(state, {
+    type: "recordDiscrepancy",
+    date: "2026-08-03",
+    mealId,
+    discrepancy: { kind: "swapped", productId: "product_water" },
+  }, HISTORY_CTX);
+  assert.equal(bad.ok, false);
+});
+
+test("one-time transfer shifts chosen and following unmarked meals", () => {
+  const state = historyState();
+  const dinner = dayWithMeals(state, "2026-08-04").meals.find((meal) => meal.time === "19:00");
+  const lunch = dayWithMeals(state, "2026-08-04").meals.find((meal) => meal.time === "13:00");
+  const breakfast = dayWithMeals(state, "2026-08-04").meals.find((meal) => meal.time === "08:00");
+  assert.ok(dinner && lunch && breakfast);
+
+  const shifted = executeRationCommand(state, {
+    type: "transferMeals",
+    date: "2026-08-04",
+    mealId: lunch.id,
+    minutes: 45,
+  }, HISTORY_CTX);
+  assert.equal(shifted.ok, true);
+
+  const entry = readRationHistoryDay(shifted.state, "2026-08-04");
+  assert.equal(entry.meals[lunch.id].transferredMinutes, 45);
+  assert.equal(entry.meals[dinner.id].transferredMinutes, 45);
+  assert.equal(entry.meals[dinner.id].state, "unmarked");
+  assert.equal(entry.meals[breakfast.id]?.transferredMinutes || 0, 0);
+
+  const again = executeRationCommand(shifted.state, {
+    type: "transferMeals",
+    date: "2026-08-04",
+    mealId: lunch.id,
+    minutes: 15,
+  }, HISTORY_CTX);
+  assert.equal(again.ok, true);
+  const entryAfterAgain = readRationHistoryDay(again.state, "2026-08-04");
+  assert.equal(entryAfterAgain.meals[lunch.id].transferredMinutes, 60);
+  assert.equal(entryAfterAgain.meals[dinner.id].transferredMinutes, 60);
+});
+
+test("transfer skips marked meals and keeps earlier meals", () => {
+  const state = historyState();
+  const day = dayWithMeals(state, "2026-08-04");
+  const lunch = day.meals.find((meal) => meal.time === "13:00");
+  const dinner = day.meals.find((meal) => meal.time === "19:00");
+  const marked = executeRationCommand(state, { type: "markMeal", date: "2026-08-04", mealId: dinner.id, state: "skipped" }, HISTORY_CTX);
+  assert.ok(lunch);
+
+  const shifted = executeRationCommand(marked.state, {
+    type: "transferMeals",
+    date: "2026-08-04",
+    mealId: lunch.id,
+    minutes: 30,
+  }, HISTORY_CTX);
+
+  const entry = readRationHistoryDay(shifted.state, "2026-08-04");
+  assert.equal(entry.meals[day.meals[0].id]?.transferredMinutes || 0, 0);
+  assert.equal(entry.meals[lunch.id].transferredMinutes, 30);
+  assert.equal(entry.meals[dinner.id]?.transferredMinutes || 0, 0);
+  assert.equal(entry.meals[dinner.id].state, "skipped");
+});
+
+test("transfer across midnight requires explicit confirmation", () => {
+  const state = historyState();
+  const dinner = dayWithMeals(state, "2026-08-04").meals.find((meal) => meal.time === "19:00");
+
+  const denied = executeRationCommand(state, {
+    type: "transferMeals",
+    date: "2026-08-04",
+    mealId: dinner.id,
+    minutes: 330,
+  }, HISTORY_CTX);
+  assert.equal(denied.ok, false);
+  assert.match(denied.reason, /полночь/);
+
+  const allowed = executeRationCommand(state, {
+    type: "transferMeals",
+    date: "2026-08-04",
+    mealId: dinner.id,
+    minutes: 330,
+    confirmMidnight: true,
+  }, HISTORY_CTX);
+  assert.equal(allowed.ok, true);
+});
+
+test("ai cannot write past or today history, human can correct past", () => {
+  const state = historyState();
+  const pastMeal = dayWithMeals(state, "2026-08-03").meals[0].id;
+  const todayMeal = dayWithMeals(state, "2026-08-04").meals[0].id;
+
+  const aiPast = executeRationCommand(state, { type: "markMeal", date: "2026-08-03", mealId: pastMeal, state: "eaten" }, { now: "2026-08-04T12:00:00.000Z", today: "2026-08-04", actor: "ai" });
+  assert.equal(aiPast.ok, false);
+  assert.match(aiPast.reason, /ИИ/);
+
+  const aiDiscrepancy = executeRationCommand(state, {
+    type: "recordDiscrepancy",
+    date: "2026-08-03",
+    mealId: pastMeal,
+    discrepancy: { kind: "excluded", productId: "product_water" },
+  }, { now: "2026-08-04T12:00:00.000Z", today: "2026-08-04", actor: "ai" });
+  assert.equal(aiDiscrepancy.ok, false);
+
+  const aiTransfer = executeRationCommand(state, {
+    type: "transferMeals",
+    date: "2026-08-04",
+    mealId: todayMeal,
+    minutes: 10,
+  }, { now: "2026-08-04T12:00:00.000Z", today: "2026-08-04", actor: "ai" });
+  assert.equal(aiTransfer.ok, false);
+
+  const humanPast = executeRationCommand(state, { type: "markMeal", date: "2026-08-03", mealId: pastMeal, state: "eaten" }, HISTORY_CTX);
+  assert.equal(humanPast.ok, true);
+});
+
+test("nobody can mark future meals", () => {
+  const state = historyState();
+  const futureMeal = dayWithMeals(state, "2026-08-05").meals[0].id;
+  const result = executeRationCommand(state, { type: "markMeal", date: "2026-08-05", mealId: futureMeal, state: "eaten" }, HISTORY_CTX);
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /будущего/);
+});
+
+test("history survives re-migration", () => {
+  const state = historyState();
+  const mealId = dayWithMeals(state, "2026-08-03").meals[0].id;
+  const marked = executeRationCommand(state, { type: "markMeal", date: "2026-08-03", mealId, state: "eaten" }, HISTORY_CTX);
+  const migrated = migrateRationState(structuredClone(marked.state));
+
+  assert.deepEqual(migrated, marked.state);
+  assert.equal(readRationHistoryDay(migrated, "2026-08-03").meals[mealId].state, "eaten");
 });
