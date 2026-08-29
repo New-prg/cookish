@@ -376,12 +376,62 @@ function runRationCommand(next, command, ctx) {
       });
       return { ok: true, dates };
     }
+    case "createCycle":
+    case "releaseVersion": {
+      return releaseVersion(ration, owner, command, ctx);
+    }
+    case "setSpecialDay": {
+      const date = commandDate(command.date);
+      if (!date) return fail("Некорректная дата.");
+      const day = ensureSpecialDay(ration, owner, date, ctx, { materialize: false });
+      day.meals = command.meals ? structuredClone(command.meals) : [];
+      touchSpecialDay(day, ctx);
+      return { ok: true, date };
+    }
+    case "removeSpecialDay": {
+      const date = commandDate(command.date);
+      if (!date) return fail("Некорректная дата.");
+      const key = `${owner}|${date}`;
+      if (!ration.specialDays[key]) return fail("Особый день не найден.");
+      delete ration.specialDays[key];
+      return { ok: true, date };
+    }
     case "deleteSelection": {
       return deleteSelection(next, ration, owner, command, ctx);
     }
     default:
       return fail(`Неизвестная команда рациона: ${type || "(пусто)"}`);
   }
+}
+
+function releaseVersion(ration, owner, command, ctx) {
+  const days = Array.isArray(command.days) ? command.days : [];
+  if (!days.length) return fail("Цикл должен содержать хотя бы один день.");
+  const anchor = commandDate(command.anchor);
+  if (!anchor) return fail("Некорректная опорная дата.");
+  const effectiveFrom = commandDate(command.effectiveFrom) || anchor;
+  const weekdayBinding = Boolean(command.weekdayBinding);
+  const version = {
+    id: createId("ration_version"),
+    owner,
+    effectiveFrom,
+    createdAt: ctx.now,
+    updatedAt: ctx.now,
+    updatedBy: ctx.actor,
+    cycle: {
+      anchor,
+      weekdayBinding,
+      days: days.map((day, index) => {
+        const sourceDay = day && typeof day === "object" ? day : {};
+        return {
+          id: sourceDay.id || `cycle_day_${effectiveFrom}_${index}`,
+          meals: structuredClone(sourceDay.meals || []),
+        };
+      }),
+    },
+  };
+  ration.versions.push(version);
+  return { ok: true, versionId: version.id, effectiveFrom };
 }
 
 function deleteSelection(next, ration, owner, command, ctx) {
