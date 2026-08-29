@@ -3,7 +3,7 @@
 **Product name:** Cookish
 **Platform:** Android (Capacitor WebView, native barcode scan, in-app APK update)
 **Primary language:** Russian UI
-**Updated:** 2026-08-19
+**Updated:** 2026-08-29
 **Package id:** `ru.listok.purchases`
 
 This file is the source of truth for **what problems the app must solve** and
@@ -11,6 +11,8 @@ This file is the source of truth for **what problems the app must solve** and
 How data is stored today is documented in [`README.md`](../README.md).
 Implementation may lag; when code and this file disagree, treat this file as
 the intended product unless a deliberate product change is recorded here.
+The approved data scheme is offline-first with account sync, see
+[ADR-0001](adr/0001-offline-first-with-account-sync.md).
 
 ---
 
@@ -18,29 +20,42 @@ the intended product unless a deliberate product change is recorded here.
 
 ### 1.1 Job to be done
 
-Cookish helps a small household plan food, turn the plan into a shopping list,
-record purchases and spend, and keep a personal meal ration. The phone is the
-system of record. There is no custom backend and no account.
+Cookish helps a small household plan food, follow the plan day by day, turn the
+plan into a shopping list, record purchases and spend, and keep a personal meal
+ration. The phone is the system of record. Local features work without an
+account; network features (account sync, AI) stay off until an account exists
+(ADR-0001).
 
 ### 1.2 Core value propositions
 
 | Value | User-facing outcome |
 |---|---|
 | Instant start | Open the app, land on Summary. No sign-in, no spreadsheet, no setup wizard |
-| Offline | Everything works without network. Open Food Facts search is the only optional online lookup |
+| Offline | Local features work without network. Open Food Facts search is the only optional online lookup |
+| Today first | Ration opens on today's date with meal states, not on a calendar editor |
 | Keep-like lists | Creating a request feels like a note checklist, not a multi-step form |
-| Ration → basket | Meal plan portions convert into purchase quantities |
+| Plan → basket | Planned future days convert into purchase quantities with package rounding |
 | Light nutrition | Products carry optional nutrition for ration totals |
 
 ### 1.3 Non-goals (for now)
 
 - Google sign-in or Google Sheets as storage or sync
-- Accounts, multi-device merge, or a custom backend
 - Public multi-tenant SaaS
 - Retailer price scraping or live store catalogs
 - Full inventory / warehouse stock ledger
 - iOS
 - Social feed, recipes marketplace, calorie dieting coach AI
+- Full AI access to food history (minimal context only until #14 is decided)
+- Notifications and the evening checklist (#15)
+- Allergens (#16)
+- Sharing, several rations per device, final export (#17)
+- Chat and document deletion policy; the prototype stores everything (#18)
+- Rework of the connection between ration and Requests (#19); current behavior stays
+- Product metrics (#20)
+
+Accounts, backend sync and AI tools are part of the approved scheme
+(ADR-0001, epic #21), but they come after the local slice ships and stay
+disabled without an account.
 
 ---
 
@@ -49,9 +64,10 @@ system of record. There is no custom backend and no account.
 | Layer | Reality |
 |---|---|
 | UI shell | Single-page vanilla JS `mobile-shell/app.js` + `styles.css` |
+| Ration rules | `mobile-shell/ration-domain.js`, a deep in-process module; UI, sync and AI tools call one command/projection interface (#23) |
 | Navigation | Bottom tabs: Сводка · Запросы · Рацион · Профиль; stack routes for products / request edit / purchase editor |
 | Data | Local data on the device. See README |
-| Auth | None. The app opens Summary |
+| Auth | None yet. Account + backend sync are planned (#29, #30); network features stay off without an account |
 | Updates | Profile checks the latest public GitHub Release and can install `Cookish.apk` |
 | Tests | Node tests for local domain helpers |
 
@@ -66,8 +82,8 @@ These are **requirements**, not nice-to-haves:
 5. Purchase price is saved against the **real product id** (not catalog suggestion ids) and shown on the line / request total.
 6. «Готово» on request edit commits pending fields and returns to the list **without** an “unsaved data” confirm.
 7. Bottom navigation stays pinned; content scrolls inside `main`.
-8. Ration selection toolbar is a stable grid, not overlapping controls.
-9. Ration selection «Удалить» deletes selected meals/items/days.
+8. Ration main page shows only today; the План and История overlays never move the bottom nav or scramble the date header.
+9. A meal starts as `не отмечено`; explicit states come from the human or a permitted actor, and AI can never write past history.
 10. Existing local data continues to load after an app update.
 
 ---
@@ -89,8 +105,9 @@ On one phone these are the same person at different times.
 1. **First run:** land on Summary. No account gate.
 2. **Quick list:** Requests → Создать → empty note → type products → leave.
 3. **Shop:** open request → check items as bought → optional price via swipe / long-press → totals update.
-4. **Plan meals:** Ration week view → add meals/products → select → Запросить → request prefilled with package rounding.
-5. **Catalog:** scan barcode / search Open Food Facts → save nutrition → reuse in ration and lists.
+4. **Follow the ration:** Рацион → today screen → mark meals eaten / changed / skipped → fix yesterday in История overlay.
+5. **Change the future:** План overlay → pick a future date → edit that Особый день or shift the plan → request the planned days with package rounding.
+6. **Catalog:** scan barcode / search Open Food Facts → save nutrition → reuse in ration and lists.
 
 ---
 
@@ -102,7 +119,7 @@ On one phone these are the same person at different times.
 |---|---|---|
 | **Сводка** | Home health: active lists, spend signals, shortcuts | Create request; open products |
 | **Запросы** | All shopping notes | Create; open note |
-| **Рацион** | Personal meal calendar | Navigate period; select; request; delete selection |
+| **Рацион** | Today's ration adherence screen | Mark meal states; open План / История overlays |
 | **Профиль** | Products entry, app update, danger zone | Open products; check for update; clear local data |
 
 ### 4.2 Stack routes (not tabs)
@@ -139,7 +156,7 @@ On one phone these are the same person at different times.
 | No spam create | Typing a product name must not create many product versions mid-keystroke |
 | Debounced search only | OFF/name search may debounce; **commit** of domain objects must not use the same timer as search |
 | Immediate local | UI updates immediately; the device is the store |
-| Undo for destructive soft ops | Delete product / template / selection / purchase uncheck → toast with Отменить when feasible |
+| Undo for destructive soft ops | Delete product / meal / purchase uncheck → toast with Отменить when feasible |
 
 ### 5.3 Lists & notes (Keep-like)
 
@@ -191,7 +208,7 @@ On one phone these are the same person at different times.
 | Pattern | Requirement |
 |---|---|
 | Partial updates preferred | Prefer updating one row over re-render whole note after check |
-| Ration | Selection/delete must not reshuffle toolbar layout |
+| Ration | Opening an overlay or marking a state must not reshuffle the today layout |
 | Keyboard | Opening keyboard must not permanently detach bottom nav |
 
 ---
@@ -254,20 +271,75 @@ On one phone these are the same person at different times.
 
 ### 6.5 Ration (Рацион)
 
-**Solves:** “What do we eat when, and what should we buy?”
+**Solves:** “What do we eat today, did we follow the plan, and what will we eat next?”
+
+The ration opens on a **today screen**. The user never edits a calendar, a
+cycle or versions directly. Future dates live in the План overlay, past dates
+in the История overlay; both hang on a right-side rail of flags over the today
+screen.
+
+#### 6.5.1 Today screen
 
 | ID | Requirement |
 |---|---|
-| RAT-1 | Views: day / week / month with period navigation and Сегодня |
-| RAT-2 | Meals have time, name, products with portion + package size |
-| RAT-3 | Nutrition totals from product nutrition when available |
-| RAT-4 | Selection mode: days and/or meals/items |
-| RAT-5 | Запросить selected → request with package rounding |
-| RAT-6 | Удалить selected meals/items/days with confirm + undo |
-| RAT-7 | Day templates: create / rename / apply / delete template |
-| RAT-8 | Ration belongs to this device |
-| RAT-9 | Toolbar layout stable on all phone widths (no overlapping controls) |
-| RAT-10 | Editing meal dialog must not flicker from unrelated rerenders |
+| RAT-1 | Main page shows only the current date and today's meals ordered by time |
+| RAT-2 | Each meal card shows time, name, composition with portions, КБЖУ and the meal state |
+| RAT-3 | Meal state starts as `не отмечено` and never implies the person skipped food |
+| RAT-4 | One short action marks `съедено`; `изменено`, `не съедено` and other actions open from the meal card |
+| RAT-5 | Discrepancy recording (added / excluded / replaced product, actual amount) opens from the meal card and stores against the version that was in force |
+| RAT-6 | One-time transfer shifts the chosen meal and every following unmarked meal of the day by the same amount; midnight crossing needs explicit confirmation |
+| RAT-7 | The screen works fully offline and renders only ration module projections |
+
+#### 6.5.2 Overlays (right rail)
+
+| ID | Requirement |
+|---|---|
+| RAT-8 | A rail of right-side flags opens the План and История overlays without leaving the tab |
+| RAT-9 | План overlay shows computed future days with meals and КБЖУ; the terms Цикл рациона and Версия рациона never appear in UI |
+| RAT-10 | From the План overlay the user picks a future date and creates or edits its Особый день; this works offline without AI |
+| RAT-11 | From the План overlay the user turns a chosen range of future days into a request with package rounding (one product once per request) |
+| RAT-12 | История overlay shows past days with states and discrepancies and lets the human correct past entries |
+| RAT-13 | Overlays keep their state when closed and never change the plan just by being viewed |
+
+#### 6.5.3 Hidden model
+
+| ID | Requirement |
+|---|---|
+| RAT-14 | A Цикл рациона (ordered days, anchor date, optional weekday binding) plus the active Версия рациона compute any date's plan; a Особый day overrides the cycle for its date only |
+| RAT-15 | Editing the future plan releases a new Версия рациона with an effective date; past history keeps the version that was in force |
+| RAT-16 | Changing a shared product card recalculates past and future КБЖУ |
+| RAT-17 | A deterministic nutrition profile supplies КБЖУ targets (#26) |
+
+#### 6.5.4 Authority matrix
+
+| Period | Human | AI (after account exists) |
+|---|---|---|
+| Past (История питания) | Read and correct states / discrepancies | Read only, minimal context; never write |
+| Today | Mark states, record discrepancies, transfer meals | Read; may suggest, never writes past or today |
+| Future | Create/edit Особый день, shift plan in План overlay | May propose plan edits that land as a new Версия рациона or Особый день, gated by #36 |
+
+#### 6.5.5 Fate of the previous ration editor
+
+The approved scheme (epic #21) retires three features of the old calendar
+editor. This is a product decision; implementation removes them in #27/#28.
+
+- **Day / week / month view modes.** Removed. The main page is today only;
+  future dates are the План overlay, past dates the История overlay. There is
+  no month view.
+- **Day templates (создать / переименовать / применить / удалить).** Removed.
+  The stored ration days and templates convert during migration (#23) into the
+  initial Версия рациона of the cycle. No template UI returns.
+- **Selection UI (selection mode, toolbar, checkbox lists).** Removed. Deletion
+  happens through meal card actions and the План overlay; Запросить works from
+  the План overlay on a chosen range of future days (RAT-11).
+
+#### 6.5.6 Storage ownership
+
+| ID | Requirement |
+|---|---|
+| RAT-18 | Without an account the whole ration (plan, history, profile) is local to this device; network features stay off |
+| RAT-19 | UI never rewrites ration structure directly; all changes go through ration module commands |
+| RAT-20 | Deleting a meal / item / day requires confirm and offers undo when feasible |
 
 ### 6.6 Profile & system
 
@@ -306,17 +378,18 @@ On one phone these are the same person at different times.
 - Swipe / long-press row → purchase sheet (price, bought qty, barcode).
 - Готово / back → commit pending field edits, return to list.
 
-### 7.2 Ration selection sheet
+### 7.2 Ration today screen and overlays (canonical)
 
 ```
-[ N дн · M приём · K поз ]
-[ Запросить ] [ Удалить ]
-[ Отмена ]
-[ template controls ]
-[ selected items list ]
+[ date: today ]                       ( rail: План · История )
+[ ✓ съедено ] Приём пищи 08:00 · КБЖУ   [ card → ]
+[ не отмечено ] Приём пищи 13:00 · КБЖУ [ card → ]
+
+План overlay:   future days · Особый день per date · range → Запросить
+История overlay: past days · states · расхождения · human corrections
 ```
 
-Must not collide with bottom nav; must not scramble date toolbar.
+Bottom nav stays pinned; overlays never scramble the date header.
 
 ### 7.3 Purchase details dialog
 
@@ -366,8 +439,9 @@ A build may ship for household use only if:
 - [ ] Checkbox buy/unbuy on request note; swipe/long-press for purchase details (no ···)
 - [ ] Confirmed product is not rewritten when a different SKU is scanned
 - [ ] Bottom nav stable on Profile and long Ration
-- [ ] Ration toolbar + selection actions usable on ≤360 px width
-- [ ] App opens Summary without an account
+- [ ] Ration opens on today; meal states and overlays usable on ≤360 px width
+- [ ] Terms Цикл рациона and Версия рациона never appear in the UI
+- [ ] App opens Summary without an account; network features are off without one
 - [ ] Existing local products, requests, purchases, and ration load after update
 - [ ] Tests for local domain helpers pass
 
