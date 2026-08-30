@@ -121,7 +121,375 @@ document.getElementById("request-delete-action").addEventListener("click", () =>
   }
 });
 
-// --- Редактор запроса ---
+// --- Редактор запроса: свайпы как в приложении ---
+
+const purchaseDialog = document.getElementById("answer-action-dialog");
+const purchasePrice = document.getElementById("purchase-price");
+const purchaseQuantity = document.getElementById("purchase-quantity");
+const purchaseStatus = document.getElementById("purchase-status");
+let purchaseRow = null;
+
+function refreshSpentTotal() {
+  const total = [...app.querySelectorAll(".request-item.is-bought")]
+    .reduce((sum, row) => sum + (Number(row.dataset.price) || 0), 0);
+  const note = app.querySelector(".keep-note-meta strong");
+  if (note) note.textContent = `${total} ₽`;
+}
+
+function openPurchaseDialog(row) {
+  const editor = row.querySelector(".request-line-editor");
+  const name = row.querySelector(".product-chip")?.textContent
+    || row.querySelector(".product-candidate")?.textContent || "Позиция";
+  purchaseRow = row;
+  purchaseDialog.dataset.productName = name;
+  purchaseStatus.hidden = true;
+  const previousPrice = Number(row.dataset.price) || 0;
+  purchasePrice.value = previousPrice > 0 ? String(previousPrice) : "";
+  purchaseQuantity.value = Number(row.dataset.quantity) > 0 ? row.dataset.quantity : "1";
+  purchaseDialog.showModal();
+  requestAnimationFrame(() => purchasePrice.focus({ preventScroll: true }));
+}
+
+function markRowBought(row, { quantity, price }) {
+  row.classList.add("is-resolved", "is-bought");
+  row.dataset.price = price > 0 ? String(price) : "";
+  row.dataset.quantity = String(quantity);
+  const editor = row.querySelector(".request-line-editor");
+  const chip = row.querySelector(".product-chip");
+  const name = chip?.textContent || row.querySelector(".product-candidate")?.textContent || "Позиция";
+  if (!chip) {
+    editor.innerHTML = "";
+    const chipNode = document.createElement("span");
+    chipNode.className = "product-chip";
+    chipNode.dataset.product = name;
+    chipNode.textContent = name;
+    const tail = document.createElement("span");
+    tail.className = "request-line-tail";
+    editor.append(chipNode, tail);
+  }
+  const tail = row.querySelector(".request-line-tail");
+  if (tail) {
+    const unit = unitForProduct(name);
+    const prettyQty = String(quantity).replace(".", ",");
+    tail.textContent = ` куплено — ${prettyQty} ${unit}${price > 0 ? `, ${price} ₽` : ""}`;
+  }
+  refreshSpentTotal();
+}
+
+function unmarkRowBought(row) {
+  row.classList.remove("is-bought");
+  delete row.dataset.price;
+  delete row.dataset.quantity;
+  const tail = row.querySelector(".request-line-tail");
+  if (tail) tail.textContent = "";
+  const label = row.querySelector(".request-swipe-label");
+  if (label) label.textContent = "Заполнить";
+  refreshSpentTotal();
+}
+
+function unitForProduct(name) {
+  const row = [...app.querySelectorAll(".product-row")]
+    .find((item) => item.dataset.name === name);
+  return row?.dataset.unit || "шт.";
+}
+
+function deleteRequestRow(row) {
+  if (row.classList.contains("is-bought")) {
+    showToast("Покупку сначала нужно снять свайпом влево.");
+    return;
+  }
+  row.remove();
+  showToast("Позиция удалена.");
+}
+
+document.getElementById("save-purchase-item").addEventListener("click", () => {
+  if (!purchaseRow) return purchaseDialog.close();
+  const quantity = Math.max(0.01, Number(purchaseQuantity.value) || 1);
+  const price = Math.max(0, Number(purchasePrice.value) || 0);
+  markRowBought(purchaseRow, { quantity, price });
+  purchaseRow = null;
+  purchaseDialog.close();
+  showToast("Покупка отмечена.");
+  refreshSpentTotal();
+});
+
+document.getElementById("scan-purchase-barcode").addEventListener("click", () => {
+  purchaseStatus.textContent = "Сканирование доступно в Android-приложении.";
+  purchaseStatus.hidden = false;
+});
+
+function bindRowGestures(row) {
+  if (row.dataset.swipeBound === "1") return;
+  if (row.classList.contains("is-blank")) return;
+  const surface = row.querySelector(".request-item-surface");
+  const fillLabel = row.querySelector(".request-swipe-label");
+  const deleteLabel = row.querySelector(".request-swipe-delete-label");
+  if (!surface) return;
+  row.dataset.swipeBound = "1";
+
+  let startX = 0;
+  let startY = 0;
+  let currentX = 0;
+  let tracking = false;
+  let horizontal = false;
+  let pointerId = null;
+  let tapPreviewTimer = 0;
+
+  const clearTapPreview = () => {
+    window.clearTimeout(tapPreviewTimer);
+    tapPreviewTimer = 0;
+    row.classList.remove("is-delete-tap-preview", "is-fill-tap-preview");
+    surface.classList.remove("is-delete-tap-preview", "is-fill-tap-preview");
+    row.querySelectorAll(".is-tap-bouncing").forEach((icon) => icon.classList.remove("is-tap-bouncing"));
+  };
+
+  const threshold = () => Math.max(96, Math.round(window.innerWidth / 3));
+  const maxPull = () => Math.min(window.innerWidth * 0.55, threshold() * 1.35);
+
+  const setOffset = (x, { animate = false } = {}) => {
+    currentX = x;
+    if (animate) surface.classList.remove("is-dragging");
+    else surface.classList.add("is-dragging");
+    surface.style.transform = `translate3d(${x}px,0,0)`;
+    const progress = Math.min(1, Math.abs(x) / threshold());
+    const swipingLeft = x < -4;
+    const swipingRight = x > 4;
+    row.classList.toggle("is-swiping", swipingLeft || swipingRight);
+    row.classList.toggle("is-swiping-left", swipingLeft);
+    row.classList.toggle("is-swiping-right", swipingRight);
+    row.classList.toggle("is-swipe-armed-left", swipingLeft && progress >= 1);
+    row.classList.toggle("is-swipe-armed-right", swipingRight && progress >= 1);
+    const activeLabel = swipingRight ? deleteLabel : fillLabel;
+    const inactiveLabel = swipingRight ? fillLabel : deleteLabel;
+    if (activeLabel) {
+      activeLabel.style.opacity = String(Math.min(1, 0.35 + progress * 0.65));
+      activeLabel.style.transform = progress >= 1 ? "scale(1.04)" : "translateX(0)";
+    }
+    if (inactiveLabel) {
+      inactiveLabel.style.opacity = "";
+      inactiveLabel.style.transform = "";
+    }
+  };
+
+  const resetSurface = ({ animate = true } = {}) => {
+    setOffset(0, { animate });
+    window.setTimeout(() => {
+      if (currentX === 0) {
+        surface.classList.remove("is-dragging");
+        row.classList.remove("is-swiping", "is-swiping-left", "is-swiping-right", "is-swipe-armed-left", "is-swipe-armed-right");
+        if (fillLabel) {
+          fillLabel.style.opacity = "";
+          fillLabel.style.transform = "";
+        }
+        if (deleteLabel) {
+          deleteLabel.style.opacity = "";
+          deleteLabel.style.transform = "";
+        }
+      }
+    }, animate ? 220 : 0);
+  };
+
+  const runLeftAction = () => {
+    setOffset(-threshold(), { animate: true });
+    try { navigator.vibrate?.(12); } catch {}
+    window.setTimeout(() => {
+      if (!row.isConnected) return;
+      if (row.classList.contains("is-bought")) {
+        unmarkRowBought(row);
+        const label = row.querySelector(".request-swipe-label");
+        if (label) label.textContent = "Заполнить";
+        showToast("Покупка снята.");
+      } else {
+        openPurchaseDialog(row);
+      }
+      resetSurface({ animate: true });
+    }, 160);
+  };
+
+  const deleteRow = () => {
+    setOffset(threshold(), { animate: true });
+    try { navigator.vibrate?.(12); } catch {}
+    window.setTimeout(() => {
+      if (row.isConnected) deleteRequestRow(row);
+    }, 160);
+  };
+
+  const onPointerDown = (event) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    tracking = true;
+    horizontal = false;
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    currentX = 0;
+    surface.classList.add("is-dragging");
+    try { surface.setPointerCapture?.(event.pointerId); } catch {}
+  };
+
+  const onPointerMove = (event) => {
+    if (!tracking || (pointerId != null && event.pointerId !== pointerId)) return;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (Math.abs(dx) >= 8 || Math.abs(dy) >= 8) clearTapPreview();
+    if (!horizontal) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (Math.abs(dy) > Math.abs(dx)) {
+        tracking = false;
+        resetSurface({ animate: true });
+        return;
+      }
+      horizontal = true;
+      row.dataset.swiped = "1";
+      const chip = row.querySelector(".product-chip");
+      if (chip) chip.dataset.suppressClick = "1";
+    }
+    const pull = Math.max(-maxPull(), Math.min(maxPull(), dx));
+    setOffset(pull, { animate: false });
+    if (event.cancelable && horizontal) event.preventDefault();
+  };
+
+  const onPointerUp = (event) => {
+    if (!tracking || (pointerId != null && event.pointerId !== pointerId)) return;
+    tracking = false;
+    pointerId = null;
+    const dx = currentX;
+    if (horizontal && -dx >= threshold()) {
+      runLeftAction();
+      return;
+    }
+    if (horizontal && dx >= threshold()) {
+      deleteRow();
+      return;
+    }
+    if (!horizontal) {
+      surface.classList.remove("is-dragging");
+      return;
+    }
+    resetSurface({ animate: true });
+    window.setTimeout(() => {
+      row.dataset.swiped = "";
+      const chip = row.querySelector(".product-chip");
+      if (chip) chip.dataset.suppressClick = "";
+    }, 0);
+  };
+
+  const onPointerCancel = (event) => {
+    if (!tracking || (pointerId != null && event.pointerId !== pointerId)) return;
+    tracking = false;
+    pointerId = null;
+    resetSurface({ animate: true });
+    window.setTimeout(() => {
+      row.dataset.swiped = "";
+      const chip = row.querySelector(".product-chip");
+      if (chip) chip.dataset.suppressClick = "";
+    }, 220);
+  };
+
+  surface.addEventListener("pointerdown", onPointerDown);
+  surface.addEventListener("pointermove", onPointerMove, { passive: false });
+  surface.addEventListener("pointerup", onPointerUp);
+  surface.addEventListener("pointercancel", onPointerCancel);
+  surface.addEventListener("lostpointercapture", () => {
+    if (tracking) {
+      tracking = false;
+      resetSurface({ animate: true });
+    }
+  });
+
+  [
+    [row.querySelector(".keep-remove-item"), row.querySelector(".keep-remove-cross"), "is-delete-tap-preview"],
+    [row.querySelector(".request-swipe-handle"), row.querySelector(".request-swipe-arrow"), "is-fill-tap-preview"],
+  ].forEach(([hitArea, icon, previewClass]) => {
+    hitArea?.addEventListener("pointerdown", (event) => {
+      if (!icon || (event.pointerType === "mouse" && event.button !== 0)) return;
+      clearTapPreview();
+      void surface.offsetWidth;
+      icon.classList.add("is-tap-bouncing");
+      row.classList.add(previewClass);
+      surface.classList.add(previewClass);
+      tapPreviewTimer = window.setTimeout(clearTapPreview, 1050);
+    });
+  });
+
+  // Тап по стрелке — открыть детали покупки, тап по крестику — удалить.
+  row.querySelector(".request-swipe-handle")?.addEventListener("click", (event) => {
+    if (row.dataset.swiped === "1") return;
+    event.stopPropagation();
+    if (row.classList.contains("is-bought")) {
+      unmarkRowBought(row);
+      showToast("Покупка снята.");
+    } else {
+      openPurchaseDialog(row);
+    }
+  });
+  row.querySelector(".keep-remove-item")?.addEventListener("click", (event) => {
+    if (row.dataset.swiped === "1") return;
+    event.stopPropagation();
+    deleteRequestRow(row);
+  });
+}
+
+// Пустые строки не участвуют в свайпах (как в приложении) — удаляются крестиком.
+app.addEventListener("click", (event) => {
+  const crossArea = event.target.closest(".keep-remove-item");
+  if (!crossArea) return;
+  const row = crossArea.closest(".request-item");
+  if (row?.classList.contains("is-blank")) {
+    row.remove();
+    showToast("Позиция удалена.");
+  }
+});
+
+// Тап по чипу — карточка продукта (как в приложении).
+app.querySelectorAll(".request-item").forEach((row) => {
+  bindRowGestures(row);
+  const chip = row.querySelector(".product-chip");
+  chip?.addEventListener("click", () => {
+    if (chip.dataset.suppressClick === "1") return;
+    const source = [...app.querySelectorAll(".product-row")]
+      .find((item) => item.dataset.name === chip.textContent.trim());
+    fillProductForm(source?.dataset || { name: chip.textContent.trim() });
+    showScreen("product-form");
+  });
+});
+
+// Ввод в строке: Enter превращает текст в товар, если он есть в каталоге.
+function confirmRequestLine(editor) {
+  const text = editor.textContent.trim();
+  if (!text) return;
+  const row = editor.closest(".request-item");
+  const match = [...app.querySelectorAll(".product-row")]
+    .find((item) => item.dataset.name.toLowerCase().startsWith(text.toLowerCase()));
+  editor.innerHTML = "";
+  if (match) {
+    row.classList.remove("is-blank");
+    row.classList.add("is-resolved");
+    const chipNode = document.createElement("span");
+    chipNode.className = "product-chip";
+    chipNode.dataset.product = match.dataset.name;
+    chipNode.textContent = match.dataset.name;
+    const tail = document.createElement("span");
+    tail.className = "request-line-tail";
+    editor.append(chipNode, tail);
+    bindRowGestures(row);
+    showToast(`«${match.dataset.name}» добавлен.`);
+  } else {
+    const candidate = document.createElement("span");
+    candidate.className = "product-candidate";
+    candidate.textContent = text;
+    editor.append(candidate);
+    bindRowGestures(row);
+  }
+}
+
+app.querySelectorAll(".request-line-editor").forEach((editor) => {
+  editor.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      confirmRequestLine(editor);
+    }
+  });
+});
 
 document.getElementById("add-request-item").addEventListener("click", () => {
   const blank = app.querySelector(".request-item.is-blank");
@@ -133,6 +501,10 @@ document.getElementById("add-request-item").addEventListener("click", () => {
   const row = template.cloneNode(true);
   row.classList.remove("is-resolved", "is-bought");
   row.classList.add("is-blank");
+  row.removeAttribute("data-price");
+  row.removeAttribute("data-quantity");
+  row.dataset.swipeBound = "";
+  delete row.dataset.swipeBound;
   const editor = row.querySelector(".request-line-editor");
   if (editor) {
     editor.innerHTML = "";
@@ -142,19 +514,7 @@ document.getElementById("add-request-item").addEventListener("click", () => {
   editor?.focus();
 });
 
-app.querySelectorAll(".keep-remove-item").forEach((cross) => {
-  cross.addEventListener("click", (event) => {
-    const row = event.currentTarget.closest(".request-item");
-    const blank = row?.classList.contains("is-blank");
-    const candidate = row?.querySelector(".product-candidate");
-    if (blank || candidate) {
-      row.remove();
-      showToast("Позиция удалена.");
-    } else {
-      showToast("Купленные позиции удаляются свайпом.");
-    }
-  });
-});
+refreshSpentTotal();
 
 // --- Рацион: отметки и диалог приёма ---
 
