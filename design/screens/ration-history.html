@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Рацион · История — Cookish мокап</title>
+  <link rel="stylesheet" href="../css/cookish.css" />
+  <link rel="stylesheet" href="../css/screen-frame.css" />
+</head>
+<body>
+  <div class="design-banner"><span>Мокап · Рацион · История</span><a href="../index.html">Все экраны</a></div>
+
+  <header class="topbar">
+    <h1 id="page-title">Рацион</h1>
+    <button id="header-action" class="text-button" type="button" hidden></button>
+  </header>
+
+  <main id="app">
+    <aside class="ration-rail" aria-label="Оверлеи рациона">
+      <button class="ration-rail-flag" data-overlay="plan" type="button" aria-label="Открыть План">План</button>
+      <button class="ration-rail-flag active" data-overlay="history" type="button" aria-label="Открыть Историю">История</button>
+    </aside>
+
+    <section class="ration-overlay" data-overlay="history">
+      <header class="ration-overlay-header">
+        <h2>История питания</h2>
+        <button class="text-button" type="button" aria-label="Закрыть оверлей">×</button>
+      </header>
+      <p class="muted">Прошлые две недели. Отметки можно исправить, план прошлого не меняется.</p>
+
+      <div class="ration-overlay-days">
+        <button class="ration-overlay-day active" type="button"><strong>29 авг</strong><span>сб</span><small>Съедено 2 · изменено 1 · не съедено 0</small></button>
+        <button class="ration-overlay-day" type="button"><strong>28 авг</strong><span>пт</span><small>Съедено 3 · изменено 0 · не съедено 0</small></button>
+        <button class="ration-overlay-day" type="button"><strong>27 авг</strong><span>чт</span><small>Съедено 1 · изменено 0 · не съедено 2</small></button>
+        <button class="ration-overlay-day" type="button"><strong>26 авг</strong><span>ср</span><small>Нет отметок</small></button>
+        <button class="ration-overlay-day" type="button"><strong>25 авг</strong><span>вт</span><small>Съедено 3 · изменено 0 · не съедено 0</small></button>
+        <button class="ration-overlay-day" type="button"><strong>24 авг</strong><span>пн</span><small>Съедено 2 · изменено 1 · не съедено 0</small></button>
+        <button class="ration-overlay-day" type="button"><strong>23 авг</strong><span>вс</span><small>Съедено 3 · изменено 0 · не съедено 0</small></button>
+      </div>
+
+      <section class="ration-overlay-editor">
+        <h3>29 августа 2026</h3>
+
+        <article class="ration-history-meal">
+          <header>
+            <strong>Завтрак</strong>
+            <span class="ration-state-chip">съедено</span>
+          </header>
+          <ul class="ration-today-items">
+            <li>Овсяные хлопья
+              <button class="ration-history-exclude" type="button" aria-label="Записать, что продукт не съеден">не ел</button>
+            </li>
+            <li>Бананы
+              <button class="ration-history-exclude" type="button" aria-label="Записать, что продукт не съеден">не ел</button>
+            </li>
+          </ul>
+          <div class="ration-history-states">
+            <button class="ration-state-set active" type="button">съедено</button>
+            <button class="ration-state-set" type="button">изменено</button>
+            <button class="ration-state-set" type="button">не съедено</button>
+            <button class="ration-state-set" type="button">не отмечено</button>
+          </div>
+        </article>
+
+        <article class="ration-history-meal">
+          <header>
+            <strong>Обед</strong>
+            <span class="ration-state-chip">изменено</span>
+          </header>
+          <ul class="ration-today-items">
+            <li>Куриное филе
+              <button class="ration-history-exclude" type="button" aria-label="Записать, что продукт не съеден">не ел</button>
+            </li>
+            <li>Гречка
+              <button class="ration-history-exclude" type="button" aria-label="Записать, что продукт не съеден">не ел</button>
+            </li>
+          </ul>
+          <div class="ration-history-states">
+            <button class="ration-state-set" type="button">съедено</button>
+            <button class="ration-state-set active" type="button">изменено</button>
+            <button class="ration-state-set" type="button">не съедено</button>
+            <button class="ration-state-set" type="button">не отмечено</button>
+          </div>
+          <ul class="ration-history-discrepancies">
+            <li>Исключён: Огурцы</li>
+            <li>Съедено 90 г вместо порции: Гречка</li>
+          </ul>
+        </article>
+
+        <article class="ration-history-meal">
+          <header>
+            <strong>Ужин</strong>
+            <span class="ration-state-chip">съедено</span>
+          </header>
+          <ul class="ration-today-items">
+            <li>Творог 5%
+              <button class="ration-history-exclude" type="button" aria-label="Записать, что продукт не съеден">не ел</button>
+            </li>
+          </ul>
+          <div class="ration-history-states">
+            <button class="ration-state-set active" type="button">съедено</button>
+            <button class="ration-state-set" type="button">изменено</button>
+            <button class="ration-state-set" type="button">не съедено</button>
+            <button class="ration-state-set" type="button">не отмечено</button>
+          </div>
+        </article>
+
+      </section>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Основная навигация">
+    <button data-route="summary"><span aria-hidden="true">⌂</span>Сводка</button>
+    <button data-route="requests"><span aria-hidden="true">≡</span>Запросы</button>
+    <button data-route="ration" class="active" aria-current="page"><span aria-hidden="true">▦</span>Рацион</button>
+    <button data-route="profile"><span aria-hidden="true">○</span>Профиль</button>
+  </nav>
+</body>
+</html>

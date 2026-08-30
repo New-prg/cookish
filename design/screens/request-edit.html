@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Запрос от 29 августа — Cookish мокап</title>
+  <link rel="stylesheet" href="../css/cookish.css" />
+  <link rel="stylesheet" href="../css/screen-frame.css" />
+</head>
+<body>
+  <div class="design-banner"><span>Мокап · Запрос · редактор</span><a href="../index.html">Все экраны</a></div>
+
+  <header class="topbar">
+    <h1 id="page-title">29 августа</h1>
+    <div class="header-menu-wrap">
+      <button class="header-more-button" type="button" aria-label="Меню запроса" aria-haspopup="menu" aria-expanded="false">⋮</button>
+      <div class="header-overflow-menu" role="menu" hidden>
+        <button type="button" role="menuitem">Информация о товарах</button>
+        <button class="error" type="button" role="menuitem">Удалить запрос</button>
+      </div>
+    </div>
+    <button id="header-action" class="text-button" type="button">Готово</button>
+  </header>
+
+  <main id="app">
+    <div class="keep-note">
+      <div class="keep-note-actions keep-note-meta" style="border-top:0;padding-bottom:4px">
+        <strong>247 ₽</strong>
+      </div>
+      <div class="keep-list">
+
+        <div class="request-item is-resolved">
+          <div class="request-swipe-bg request-swipe-delete-bg" aria-hidden="true"><span class="request-swipe-delete-label">Удалить</span></div>
+          <div class="request-swipe-bg request-swipe-fill-bg" aria-hidden="true"><span class="request-swipe-label">Заполнить</span></div>
+          <div class="request-item-surface">
+            <span class="keep-remove-item" aria-hidden="true"><span class="request-swipe-dots"></span><span class="keep-remove-cross">×</span></span>
+            <div class="request-item-main">
+              <div class="request-item-fields">
+                <div class="request-product-field">
+                  <div class="request-line-editor" contenteditable="true" role="textbox" aria-label="Строка покупки" data-placeholder="Товар"><span class="product-chip">Молоко 2,5%</span><span class="request-line-tail"> куплено — 1 л, 89 ₽</span></div>
+                </div>
+              </div>
+            </div>
+            <span class="request-swipe-handle" aria-hidden="true"><span class="request-swipe-arrow">&lt;</span><span class="request-swipe-dots"></span></span>
+          </div>
+        </div>
+
+        <div class="request-item is-resolved is-bought">
+          <div class="request-swipe-bg request-swipe-delete-bg" aria-hidden="true"><span class="request-swipe-delete-label">Удалить</span></div>
+          <div class="request-swipe-bg request-swipe-fill-bg" aria-hidden="true"><span class="request-swipe-label">Снять</span></div>
+          <div class="request-item-surface">
+            <span class="keep-remove-item" aria-hidden="true"><span class="request-swipe-dots"></span><span class="keep-remove-cross">×</span></span>
+            <div class="request-item-main">
+              <div class="request-item-fields">
+                <div class="request-product-field">
+                  <div class="request-line-editor" contenteditable="true" role="textbox" aria-label="Строка покупки" data-placeholder="Товар"><span class="product-chip">Гречка</span><span class="request-line-tail"> куплено всё</span></div>
+                </div>
+              </div>
+            </div>
+            <span class="request-swipe-handle" aria-hidden="true"><span class="request-swipe-arrow">&lt;</span><span class="request-swipe-dots"></span></span>
+          </div>
+        </div>
+
+        <div class="request-item">
+          <div class="request-swipe-bg request-swipe-delete-bg" aria-hidden="true"><span class="request-swipe-delete-label">Удалить</span></div>
+          <div class="request-swipe-bg request-swipe-fill-bg" aria-hidden="true"><span class="request-swipe-label">Заполнить</span></div>
+          <div class="request-item-surface">
+            <span class="keep-remove-item" aria-hidden="true"><span class="request-swipe-dots"></span><span class="keep-remove-cross">×</span></span>
+            <div class="request-item-main">
+              <div class="request-item-fields">
+                <div class="request-product-field">
+                  <div class="request-line-editor" contenteditable="true" role="textbox" aria-label="Строка покупки" data-placeholder="Товар"><span class="product-candidate">Хлеб бородинский</span></div>
+                </div>
+              </div>
+            </div>
+            <span class="request-swipe-handle" aria-hidden="true"><span class="request-swipe-arrow">&lt;</span><span class="request-swipe-dots"></span></span>
+          </div>
+        </div>
+
+        <div class="request-item is-blank">
+          <div class="request-swipe-bg request-swipe-delete-bg" aria-hidden="true"><span class="request-swipe-delete-label">Удалить</span></div>
+          <div class="request-swipe-bg request-swipe-fill-bg" aria-hidden="true"><span class="request-swipe-label">Заполнить</span></div>
+          <div class="request-item-surface">
+            <span class="keep-remove-item" aria-hidden="true"><span class="request-swipe-dots"></span><span class="keep-remove-cross">×</span></span>
+            <div class="request-item-main">
+              <div class="request-item-fields">
+                <div class="request-product-field">
+                  <div class="request-line-editor" contenteditable="true" role="textbox" aria-label="Строка покупки" data-placeholder="Товар" spellcheck="true"></div>
+                </div>
+              </div>
+            </div>
+            <span class="request-swipe-handle" aria-hidden="true"><span class="request-swipe-arrow">&lt;</span><span class="request-swipe-dots"></span></span>
+          </div>
+        </div>
+
+      </div>
+      <button class="keep-add-line" type="button">＋ Позиция</button>
+    </div>
+  </main>
+</body>
+</html>

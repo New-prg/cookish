@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Профиль — Cookish мокап</title>
+  <link rel="stylesheet" href="../css/cookish.css" />
+  <link rel="stylesheet" href="../css/screen-frame.css" />
+</head>
+<body>
+  <div class="design-banner"><span>Мокап · Профиль</span><a href="../index.html">Все экраны</a></div>
+
+  <header class="topbar">
+    <h1 id="page-title">Профиль</h1>
+    <button id="header-action" class="text-button" type="button" hidden></button>
+  </header>
+
+  <main id="app">
+    <div class="metrics">
+      <div class="metric"><span>Всего запросов</span><strong>3</strong></div>
+      <div class="metric"><span>Выполнено</span><strong>2</strong></div>
+      <div class="metric"><span>Количество трат</span><strong>4</strong></div>
+      <div class="metric"><span>Сумма трат</span><strong>3 891 ₽</strong></div>
+    </div>
+
+    <section class="section profile-products">
+      <div class="section-heading"><div><span class="eyebrow">Данные</span><h2 class="profile-section-title">Продукты</h2></div><strong>8</strong></div>
+      <p class="muted">Каталог, единицы измерения, штрихкоды и пищевая ценность продуктов.</p>
+      <button class="button secondary full" type="button">Открыть продукты</button>
+    </section>
+
+    <section class="section profile-update">
+      <div class="section-heading"><div><span class="eyebrow">Обновления</span><h2 class="profile-section-title">Версия приложения</h2></div><strong>0.8.3</strong></div>
+      <p class="muted">Cookish проверяет последний публичный релиз автоматически.</p>
+      <button class="button secondary full" type="button">Проверить обновления</button>
+    </section>
+
+    <section class="section danger-zone">
+      <span class="eyebrow">Опасная зона</span>
+      <h2 class="profile-section-title">Данные устройства</h2>
+      <button class="button danger full" type="button">Удалить все локальные данные</button>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Основная навигация">
+    <button data-route="summary"><span aria-hidden="true">⌂</span>Сводка</button>
+    <button data-route="requests"><span aria-hidden="true">≡</span>Запросы</button>
+    <button data-route="ration"><span aria-hidden="true">▦</span>Рацион</button>
+    <button data-route="profile" class="active" aria-current="page"><span aria-hidden="true">○</span>Профиль</button>
+  </nav>
+</body>
+</html>

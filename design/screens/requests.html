@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Запросы — Cookish мокап</title>
+  <link rel="stylesheet" href="../css/cookish.css" />
+  <link rel="stylesheet" href="../css/screen-frame.css" />
+</head>
+<body>
+  <div class="design-banner"><span>Мокап · Запросы</span><a href="../index.html">Все экраны</a></div>
+
+  <header class="topbar">
+    <h1 id="page-title">Запросы</h1>
+    <button id="header-action" class="text-button" type="button">Создать</button>
+  </header>
+
+  <main id="app">
+    <button class="row link-row request-link" type="button">
+      <div class="row-main">
+        <strong>Молоко 2,5%, Хлеб бородинский и Бананы</strong>
+        <span>29 августа</span>
+      </div>
+    </button>
+    <button class="row link-row request-link" type="button">
+      <div class="row-main">
+        <strong>Гречка и Куриное филе</strong>
+        <span>28 августа</span>
+      </div>
+      <span class="status done">1 247 ₽</span>
+    </button>
+    <button class="row link-row request-link" type="button">
+      <div class="row-main">
+        <strong>Творог 5% и Бананы</strong>
+        <span>21 августа</span>
+      </div>
+      <span class="status done">412 ₽</span>
+    </button>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Основная навигация">
+    <button data-route="summary"><span aria-hidden="true">⌂</span>Сводка</button>
+    <button data-route="requests" class="active" aria-current="page"><span aria-hidden="true">≡</span>Запросы</button>
+    <button data-route="ration"><span aria-hidden="true">▦</span>Рацион</button>
+    <button data-route="profile"><span aria-hidden="true">○</span>Профиль</button>
+  </nav>
+</body>
+</html>

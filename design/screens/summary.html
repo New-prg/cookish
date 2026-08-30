@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Сводка — Cookish мокап</title>
+  <link rel="stylesheet" href="../css/cookish.css" />
+  <link rel="stylesheet" href="../css/screen-frame.css" />
+</head>
+<body>
+  <div class="design-banner"><span>Мокап · Сводка</span><a href="../index.html">Все экраны</a></div>
+
+  <header class="topbar">
+    <h1 id="page-title">Сводка</h1>
+    <button id="header-action" class="text-button" type="button" hidden></button>
+  </header>
+
+  <main id="app">
+    <div class="summary-screen">
+      <div class="metrics">
+        <div class="metric"><span>Активные запросы</span><strong>1</strong></div>
+        <div class="metric"><span>Средний чек</span><strong>1 247 ₽</strong></div>
+        <div class="metric"><span>Траты за 30 дней</span><strong>3 891 ₽</strong></div>
+        <button class="metric metric-button" type="button"><span>Продукты</span><strong>8</strong></button>
+      </div>
+      <section class="section summary-requests">
+        <h2 class="section-title">Активные запросы</h2>
+        <button class="row link-row request-link" type="button">
+          <div class="row-main">
+            <strong>Молоко 2,5%, Хлеб бородинский и Бананы</strong>
+            <span>29 августа</span>
+          </div>
+        </button>
+        <button class="button full summary-create-request" type="button">Создать запрос</button>
+      </section>
+    </div>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Основная навигация">
+    <button data-route="summary" class="active" aria-current="page"><span aria-hidden="true">⌂</span>Сводка</button>
+    <button data-route="requests"><span aria-hidden="true">≡</span>Запросы</button>
+    <button data-route="ration"><span aria-hidden="true">▦</span>Рацион</button>
+    <button data-route="profile"><span aria-hidden="true">○</span>Профиль</button>
+  </nav>
+</body>
+</html>

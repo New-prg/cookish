@@ -13,7 +13,8 @@
     "run": "powershell -ExecutionPolicy Bypass -File run.ps1",
     "run:phone": "powershell -ExecutionPolicy Bypass -File run.ps1 -PhysicalOnly",
     "run:usb": "powershell -ExecutionPolicy Bypass -File run.ps1 -Usb",
-    "run:emulator": "powershell -ExecutionPolicy Bypass -File run.ps1 -Emulator"
+    "run:emulator": "powershell -ExecutionPolicy Bypass -File run.ps1 -Emulator",
+    "design": "node scripts/serve-design.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
