@@ -79,15 +79,15 @@
         </div>
         <div class="keep-list" id="request-items">
 
-          <div class="request-item is-resolved is-bought" data-price="89" >
+          <div class="request-item is-resolved">
             <div class="request-swipe-bg request-swipe-delete-bg" aria-hidden="true"><span class="request-swipe-delete-label">Удалить</span></div>
-            <div class="request-swipe-bg request-swipe-fill-bg" aria-hidden="true"><span class="request-swipe-label">Снять</span></div>
+            <div class="request-swipe-bg request-swipe-fill-bg" aria-hidden="true"><span class="request-swipe-label">Заполнить</span></div>
             <div class="request-item-surface">
               <span class="keep-remove-item" aria-hidden="true"><span class="request-swipe-dots"></span><span class="keep-remove-cross">×</span></span>
               <div class="request-item-main">
                 <div class="request-item-fields">
                   <div class="request-product-field">
-                    <div class="request-line-editor" contenteditable="true" role="textbox" aria-label="Строка покупки" data-placeholder="Товар"><span class="product-chip" data-product="Молоко 2,5%">Молоко 2,5%</span><span class="request-line-tail"> куплено — 1 л, 89 ₽</span></div>
+                    <div class="request-line-editor" contenteditable="true" role="textbox" aria-label="Строка покупки" data-placeholder="Товар"><span class="product-chip">Молоко 2,5%</span><span class="request-line-tail"> куплено — 1 л, 89 ₽</span></div>
                   </div>
                 </div>
               </div>
@@ -95,7 +95,7 @@
             </div>
           </div>
 
-          <div class="request-item is-resolved is-bought" data-price="158">
+          <div class="request-item is-resolved is-bought">
             <div class="request-swipe-bg request-swipe-delete-bg" aria-hidden="true"><span class="request-swipe-delete-label">Удалить</span></div>
             <div class="request-swipe-bg request-swipe-fill-bg" aria-hidden="true"><span class="request-swipe-label">Снять</span></div>
             <div class="request-item-surface">
@@ -103,7 +103,7 @@
               <div class="request-item-main">
                 <div class="request-item-fields">
                   <div class="request-product-field">
-                    <div class="request-line-editor" contenteditable="true" role="textbox" aria-label="Строка покупки" data-placeholder="Товар"><span class="product-chip" data-product="Гречка">Гречка</span><span class="request-line-tail"> куплено — 0,5 кг, 158 ₽</span></div>
+                    <div class="request-line-editor" contenteditable="true" role="textbox" aria-label="Строка покупки" data-placeholder="Товар"><span class="product-chip">Гречка</span><span class="request-line-tail"> куплено всё</span></div>
                   </div>
                 </div>
               </div>
@@ -567,23 +567,6 @@
       <button class="ration-transfer-button" data-delta="-15" type="button">-15</button>
       <button class="ration-transfer-button" data-delta="15" type="button">+15</button>
       <button class="ration-transfer-button" data-delta="60" type="button">+60</button>
-    </div>
-  </dialog>
-
-  <dialog id="answer-action-dialog" class="answer-dialog purchase-dialog" aria-labelledby="answer-dialog-title">
-    <div id="answer-fill-view">
-      <div class="purchase-dialog-heading">
-        <h2 id="answer-dialog-title">Детали покупки</h2>
-      </div>
-      <div class="purchase-value-grid">
-        <label class="field purchase-price-field"><span>Сумма, ₽</span><input id="purchase-price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Необязательно"></label>
-        <label class="field purchase-quantity-field"><span>Количество</span><input id="purchase-quantity" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
-      </div>
-      <p id="purchase-status" class="muted barcode-status purchase-status" aria-live="polite" hidden></p>
-      <div class="purchase-dialog-actions">
-        <button id="scan-purchase-barcode" class="button secondary" type="button">Сканировать</button>
-        <button id="save-purchase-item" class="button" type="button">Готово</button>
-      </div>
     </div>
   </dialog>
 
