@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   REQUEST_HISTORY_LIMIT,
+  browserStorage,
   memoryStorage,
   openLocalData,
   prepareState,
@@ -246,4 +247,30 @@ test("a command copies only the part of the state it changes", () => {
   assert.notEqual(after.requests, before.requests);
   assert.equal(after.requests.find((item) => item.id === second.requestId), before.requests.find((item) => item.id === second.requestId));
   assert.notEqual(after.requests.find((item) => item.id === first.requestId), before.requests.find((item) => item.id === first.requestId));
+});
+
+test("loading an older schema keeps a one-time backup of the original data", () => {
+  const legacy = { schemaVersion: 11, products: [{ id: "product_1", name: "Вода" }], requests: [], rationDays: {} };
+  const storage = memoryStorage(legacy);
+  const data = openLocalData(storage);
+  data.load();
+  data.saveProduct({ name: "Хлеб", unit: "шт." });
+  data.load();
+  assert.deepEqual(storage.backups(), { v11: legacy });
+
+  const current = memoryStorage(data.snapshot());
+  openLocalData(current).load();
+  assert.deepEqual(current.backups(), {});
+});
+
+test("browser storage backs up an unreadable blob instead of silently dropping it", () => {
+  const values = new Map([["cookish.android.data.v1", "{broken"]]);
+  const localStorage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+  const data = openLocalData(browserStorage(localStorage));
+  assert.equal(data.load().products.length, 0);
+  assert.equal(values.get("cookish.android.data.v1.backup.unreadable"), "{broken");
+
+  values.set("cookish.android.data.v1", JSON.stringify({ schemaVersion: 11, products: [], requests: [] }));
+  openLocalData(browserStorage(localStorage)).load();
+  assert.deepEqual(JSON.parse(values.get("cookish.android.data.v1.backup.v11")).schemaVersion, 11);
 });

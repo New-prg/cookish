@@ -397,3 +397,198 @@ test("smoke: undo in a toast restores a deleted product", async () => {
     await context.close();
   }
 });
+
+function planState(fromKey, { products = [], meals } = {}) {
+  return {
+    schemaVersion: 12,
+    products,
+    requests: [],
+    ration: {
+      versions: [{
+        id: "version_1",
+        owner: "local",
+        effectiveFrom: fromKey,
+        cycle: { anchor: fromKey, weekdayBinding: false, days: [{ id: "cycle_1", meals }] },
+      }],
+      specialDays: {},
+      history: {},
+    },
+  };
+}
+
+test("smoke: ration profile form saves targets and the today screen shows the goal", async () => {
+  const { context, page } = await openPage();
+  try {
+    await openRoute(page, "ration");
+    await page.click("#ration-set-goal");
+    await page.waitForSelector("#ration-profile-form");
+    assert.equal(await page.locator("nav.bottom-nav").isVisible(), false);
+
+    await page.fill("#ration-profile-form [name=heightCm]", "400");
+    await page.click("#ration-profile-form button[type=submit]");
+    assert.equal(await page.locator("#ration-profile-form [name=heightCm]").evaluate((input) => input.validity.rangeOverflow), true);
+    assert.equal((await storedState(page))?.ration?.profile?.heightCm ?? null, null);
+
+    await page.fill("#ration-profile-form [name=heightCm]", "176");
+    await page.fill("#ration-profile-form [name=targetCalories]", "2100");
+    await page.fill("#ration-profile-form [name=targetProtein]", "10");
+    await page.fill("#ration-profile-form [name=targetFat]", "10");
+    await page.fill("#ration-profile-form [name=targetCarbs]", "10");
+    await page.click("#ration-profile-form button[type=submit]");
+    assert.match(await page.locator("#ration-profile-status").innerText(), /БЖУ расходятся с калориями/);
+    for (const name of ["targetProtein", "targetFat", "targetCarbs"]) await page.fill(`#ration-profile-form [name=${name}]`, "");
+
+    await page.selectOption("#ration-profile-form [name=goal]", "Поддержание веса");
+    await page.fill("#ration-profile-form [name=targetCalories]", "2100");
+    await page.fill("#ration-profile-form [name=excludedProducts]", "арахис, кинза");
+    await page.click("#ration-profile-form button[type=submit]");
+    await page.waitForSelector(".ration-today");
+
+    assert.match(await page.locator(".ration-today-totals").innerText(), /Цель 2[\s ]?100 ккал/);
+    const { profile } = (await storedState(page)).ration;
+    assert.equal(profile.heightCm, 176);
+    assert.equal(profile.goal, "Поддержание веса");
+    assert.deepEqual(profile.excludedProducts, ["арахис", "кинза"]);
+
+    await openRoute(page, "profile");
+    assert.match(await page.locator(".profile-ration").innerText(), /Цель 2[\s ]?100 ккал/);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: plan overlay shows КБЖУ and repeats a day with undo", async () => {
+  const { context, page } = await openPage();
+  try {
+    const tomorrow = dateKey(1);
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [{ id: "product_oats", name: "Овсянка", unit: "г", nutrition: { calories: 350, protein: 12, fat: 6, carbs: 60, fiber: 10 } }],
+      requests: [],
+      ration: {
+        versions: [],
+        specialDays: {
+          [`local|${tomorrow}`]: {
+            date: tomorrow,
+            owner: "local",
+            meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [{ id: "item_1", productId: "product_oats", name: "Овсянка", portionSize: 100 }] }],
+          },
+        },
+        history: {},
+      },
+    });
+    await openRoute(page, "ration");
+    await page.click('.ration-rail-flag[data-overlay="plan"]');
+    const first = page.locator(".ration-overlay-day").first();
+    assert.match(await first.innerText(), /350 ккал/);
+    assert.doesNotMatch(await page.locator(".ration-overlay-day").nth(1).innerText(), /ккал/);
+
+    await first.click();
+    assert.match(await page.locator(".ration-overlay-nutrition").innerText(), /350 ккал · Б 12/);
+    await page.click('.ration-repeat-button[data-length="1"]');
+    await page.click("#app-confirm-ok");
+    await page.waitForTimeout(80);
+    assert.match(await page.locator(".ration-overlay-day").nth(5).innerText(), /Завтрак.*350 ккал/s);
+    assert.doesNotMatch(await page.locator(".ration-overlay").innerText(), /Цикл|Версия/);
+    const repeated = (await storedState(page)).ration;
+    assert.equal(repeated.versions.length, 1);
+    assert.deepEqual(repeated.specialDays, {});
+
+    await page.click("#toast-action");
+    await page.waitForTimeout(80);
+    const undone = (await storedState(page)).ration;
+    assert.equal(undone.versions.length, 0);
+    assert.deepEqual(Object.keys(undone.specialDays), [`local|${tomorrow}`]);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: meal card records and removes discrepancies; History corrects a past day", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, planState(dateKey(-5), {
+      products: [{ id: "product_tea", name: "Чай", unit: "г" }],
+      meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [{ id: "item_1", productId: "product_tea", name: "Чай" }] }],
+    }));
+    await openRoute(page, "ration");
+    await page.click('.ration-today-meal-open[data-meal-id="meal_1"]');
+    await page.waitForSelector("#ration-meal-dialog[open]");
+    const form = page.locator("#ration-meal-dialog .ration-discrepancy-form");
+    await form.locator("[name=kind]").selectOption("amount");
+    await form.locator("[name=amount]").fill("50");
+    await form.locator("button[type=submit]").click();
+    await page.waitForTimeout(80);
+    await form.locator("[name=kind]").selectOption("added");
+    assert.equal(await form.locator("[name=itemId]").isVisible(), false);
+    await form.locator("[name=name]").fill("Печенье");
+    await form.locator("button[type=submit]").click();
+    await page.waitForTimeout(80);
+
+    const list = page.locator("#ration-meal-dialog .ration-history-discrepancies li");
+    assert.equal(await list.count(), 2);
+    assert.match(await list.nth(0).innerText(), /Съедено 50 г вместо порции: Чай/);
+    assert.match(await list.nth(1).innerText(), /Добавлен: Печенье/);
+    await list.nth(0).locator(".ration-discrepancy-remove").click();
+    await page.waitForTimeout(80);
+    assert.equal(await page.locator("#ration-meal-dialog .ration-history-discrepancies li").count(), 1);
+    const today = (await storedState(page)).ration.history[`local|${dateKey(0)}`].meals.meal_1;
+    assert.deepEqual(today.discrepancies.map((item) => item.kind), ["added"]);
+    assert.equal(today.state, "changed");
+
+    await page.click("#close-ration-meal");
+    await page.click('.ration-rail-flag[data-overlay="history"]');
+    const pastDay = page.locator(".ration-overlay-day").first();
+    const pastDate = await pastDay.getAttribute("data-date");
+    await pastDay.click();
+    const pastForm = page.locator(".ration-overlay-editor .ration-discrepancy-form");
+    await pastForm.locator("[name=kind]").selectOption("replaced");
+    await pastForm.locator("[name=name]").fill("Кофе");
+    await pastForm.locator("button[type=submit]").click();
+    await page.waitForTimeout(80);
+    const past = (await storedState(page)).ration.history[`local|${pastDate}`].meals.meal_1;
+    assert.deepEqual(past.discrepancies, [{ kind: "replaced", productId: "product_tea", name: "Чай", replacedName: "Кофе" }]);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: without an account the app only talks to the product catalog", async () => {
+  const { context, page } = await openPage();
+  try {
+    const external = [];
+    await context.route("**/*", (route) => {
+      const url = new URL(route.request().url());
+      if (url.hostname === "127.0.0.1") return route.continue();
+      external.push(url.hostname);
+      return route.abort();
+    });
+    await openRoute(page, "ration");
+    await page.click("#ration-add-meal");
+    await page.waitForSelector("#ration-meal-dialog[open]");
+    await page.click("#ration-meal-dialog .add-ration-food");
+    await page.locator("#ration-meal-dialog .ration-food-input").last().fill("Гречка");
+    await page.locator("#ration-meal-dialog .save-ration-food").last().click();
+    await page.waitForTimeout(80);
+    await page.click("#close-ration-meal");
+    await page.click('.ration-rail-flag[data-overlay="plan"]');
+    await page.locator(".ration-overlay-day").first().click();
+    await page.click("#close-ration-overlay");
+    await page.click('.ration-rail-flag[data-overlay="history"]');
+    await page.click("#close-ration-overlay");
+    await openRoute(page, "profile");
+    await page.click("#edit-ration-profile");
+    await page.click("#header-action");
+    assert.deepEqual(external, [], "ration and profile flows must stay on the device");
+
+    await openRoute(page, "requests");
+    await page.click("#requests-empty-add");
+    const line = page.locator("#request-items .request-line-editor").first();
+    await line.click();
+    await line.fill("Кефир");
+    await page.waitForTimeout(900);
+    assert.ok(external.every((host) => host === "world.openfoodfacts.org"), `unexpected hosts: ${external.join(", ")}`);
+  } finally {
+    await context.close();
+  }
+});

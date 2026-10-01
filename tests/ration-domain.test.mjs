@@ -638,3 +638,108 @@ test("saving a ration item without a product name fails without changing state",
   assert.match(saved.reason, /Название продукта/);
   assert.deepEqual(data.snapshot(), before);
 });
+
+const REPEAT_CTX = { now: "2026-08-10T09:00:00.000Z", today: "2026-08-10", actor: "a@example.com" };
+
+function planWithSpecialDays(dates) {
+  const state = migrateRationState({ user: { email: "a@example.com" }, products: [], requests: [] });
+  return dates.reduce((current, [date, name]) => executeRationCommand(current, {
+    type: "setSpecialDay",
+    date,
+    meals: [{ id: `meal_${date}`, name, time: "09:00", items: [] }],
+  }, REPEAT_CTX).state, state);
+}
+
+test("repeating a future day turns it into an everyday plan from that date", () => {
+  const state = planWithSpecialDays([["2026-08-12", "Овсянка"], ["2026-08-20", "Праздник"]]);
+  const result = executeRationCommand(state, { type: "repeatDays", from: "2026-08-12", length: 1 }, REPEAT_CTX);
+
+  assert.equal(result.ok, true);
+  const next = result.state;
+  assert.equal(readRationDay(next, "2026-08-11"), null);
+  assert.equal(readRationDay(next, "2026-08-12").source, "cycle");
+  assert.equal(readRationDay(next, "2026-08-13").meals[0].name, "Овсянка");
+  assert.equal(readRationDay(next, "2027-03-01").meals[0].name, "Овсянка");
+  assert.equal(readRationDay(next, "2026-08-20").meals[0].name, "Праздник");
+  assert.deepEqual(Object.keys(next.ration.specialDays), ["a@example.com|2026-08-20"]);
+});
+
+test("repeating a week binds seven computed days to weekdays", () => {
+  const dates = Array.from({ length: 7 }, (_, index) => [shiftDate("2026-08-12", index), `День ${index}`]);
+  const state = planWithSpecialDays(dates);
+  const result = executeRationCommand(state, { type: "repeatDays", from: "2026-08-12", length: 7 }, REPEAT_CTX);
+
+  assert.equal(result.ok, true);
+  const version = result.state.ration.versions.at(-1);
+  assert.equal(version.cycle.weekdayBinding, true);
+  assert.equal(version.effectiveFrom, "2026-08-12");
+  assert.equal(readRationDay(result.state, shiftDate("2026-08-12", 7)).meals[0].name, "День 0");
+  assert.equal(readRationDay(result.state, shiftDate("2026-08-12", 365)).meals[0].name, `День ${365 % 7}`);
+  assert.deepEqual(result.state.ration.specialDays, {});
+});
+
+test("repeat refuses today, the past, odd lengths and empty days", () => {
+  const state = planWithSpecialDays([["2026-08-12", "Овсянка"]]);
+  const run = (command) => executeRationCommand(state, { type: "repeatDays", ...command }, REPEAT_CTX);
+  assert.match(run({ from: "2026-08-10", length: 1 }).reason, /будущего дня/);
+  assert.match(run({ from: "2026-08-09", length: 1 }).reason, /будущего дня/);
+  assert.match(run({ from: "2026-08-12", length: 3 }).reason, /день или неделю/);
+  assert.match(run({ from: "2026-08-14", length: 1 }).reason, /нет приёмов пищи/);
+});
+
+test("withdrawing a repeat restores the previous plan and Особые дни", () => {
+  const state = planWithSpecialDays([["2026-08-12", "Овсянка"]]);
+  const repeated = executeRationCommand(state, { type: "repeatDays", from: "2026-08-12", length: 1 }, REPEAT_CTX);
+  const withdrawn = executeRationCommand(repeated.state, repeated.undo, REPEAT_CTX);
+
+  assert.equal(withdrawn.ok, true);
+  assert.deepEqual(withdrawn.state.ration, state.ration);
+  assert.equal(executeRationCommand(withdrawn.state, repeated.undo, REPEAT_CTX).ok, false);
+});
+
+test("a later version wins over an earlier one with the same start date", () => {
+  const state = historyState();
+  const migrated = state.ration.versions[0];
+  const result = executeRationCommand(state, {
+    type: "releaseVersion",
+    anchor: migrated.effectiveFrom,
+    effectiveFrom: migrated.effectiveFrom,
+    days: [cycleDayPayload(0, "Новый план")],
+  }, { now: "2026-08-09T00:00:00.000Z", actor: "a@example.com" });
+  const version = activeRationVersion(result.state.ration, "a@example.com", "2026-09-01");
+  assert.equal(version.id, result.versionId);
+});
+
+test("a recorded discrepancy can be removed to correct the History", () => {
+  const state = historyState();
+  const mealId = readRationDay(state, "2026-08-03").meals[0].id;
+  const first = executeRationCommand(state, {
+    type: "recordDiscrepancy", date: "2026-08-03", mealId, discrepancy: { kind: "excluded", name: "Вода" },
+  }, HISTORY_CTX);
+  const second = executeRationCommand(first.state, {
+    type: "recordDiscrepancy", date: "2026-08-03", mealId, discrepancy: { kind: "added", name: "Яблоко" },
+  }, HISTORY_CTX);
+  const removed = executeRationCommand(second.state, { type: "removeDiscrepancy", date: "2026-08-03", mealId, index: 0 }, HISTORY_CTX);
+
+  assert.equal(removed.ok, true);
+  assert.deepEqual(readRationHistoryDay(removed.state, "2026-08-03").meals[mealId].discrepancies.map((item) => item.name), ["Яблоко"]);
+  assert.equal(executeRationCommand(removed.state, { type: "removeDiscrepancy", date: "2026-08-03", mealId, index: 5 }, HISTORY_CTX).ok, false);
+  assert.match(
+    executeRationCommand(second.state, { type: "removeDiscrepancy", date: "2026-08-03", mealId, index: 0 }, { ...HISTORY_CTX, actor: "ai" }).reason,
+    /ИИ не может/
+  );
+});
+
+test("a legacy template without a date still becomes a visible plan", () => {
+  const blob = v11Blob();
+  delete blob.rationDays;
+  blob.rationTemplates = [{
+    id: "ration_template_old",
+    owner: "a@example.com",
+    meals: [{ id: "meal_t", name: "Завтрак", time: "08:00", items: [] }],
+  }];
+  const state = migrateRationState(blob);
+  const version = state.ration.versions[0];
+  assert.match(version.effectiveFrom, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(readRationDay(state, version.effectiveFrom).meals[0].name, "Завтрак");
+});

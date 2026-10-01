@@ -159,3 +159,12 @@ test("nutrition projection flags unknown cards on past and future days", () => {
   assert.ok(future.missing.some((entry) => entry.reason === "no_nutrition"));
   assert.ok(future.totals.calories === 0);
 });
+
+test("empty profile fields are missing, not range violations", () => {
+  const result = validateRationProfile({ heightCm: "", weightKg: null, mealsPerDay: "", targetCalories: 2000, targetProtein: "" });
+  assert.deepEqual(result.violations, []);
+  assert.ok(result.missing.includes("heightCm"));
+  assert.ok(result.missing.includes("weightKg"));
+  assert.ok(result.missing.includes("mealsPerDay"));
+  assert.deepEqual(validateRationProfile({ heightCm: "0", mealsPerDay: 0 }).violations, ["heightCm", "mealsPerDay"]);
+});

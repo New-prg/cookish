@@ -1768,8 +1768,8 @@ textarea { resize: vertical; }
 .ration-meal-dialog > header h2 { margin: 2px 0 0; font-size: 19px; }
 .ration-meal-dialog > header button { width: 44px; height: 44px; border: 0; border-radius: 50%; background: #f1f3f1; font-size: 23px; }
 .ration-meal-dialog > .ration-meal { margin: 14px; }
-.ration-meal-header { grid-template-columns: 88px minmax(0, 1fr) 44px; }
-.ration-meal-time { width: 82px; min-height: 44px; padding: 5px; border: 0; background: transparent; color: var(--accent); font-weight: 700; }
+.ration-meal-header { grid-template-columns: 104px minmax(0, 1fr) 44px; }
+.ration-meal-time { width: 100px; min-height: 44px; padding: 5px; border: 0; background: transparent; color: var(--accent); font-weight: 700; }
 
 @media (max-width: 380px) {
   .ration-view-button { min-height: 40px; padding: 0 10px; font-size: 12px; }
@@ -2010,7 +2010,7 @@ body.nav-hidden dialog > #toast {
 .ration-overlay-day span { color: var(--muted); font-size: 11px; }
 .ration-overlay-day small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .ration-overlay-editor { display: grid; gap: 10px; margin-top: 4px; padding: 12px 0; border-top: 1px solid #eef0ee; }
-.ration-overlay-editor h3 { margin: 0; font-size: 15px; text-transform: capitalize; }
+.ration-overlay-editor h3 { margin: 0; font-size: 15px; }
 .ration-overlay-editor .ration-meal { margin: 0; }
 .ration-overlay-request { display: grid; gap: 8px; margin-top: 8px; padding: 12px; border: 1px solid #dce2dd; border-radius: 12px; background: #f8faf8; }
 .ration-overlay-request h3 { margin: 0; font-size: 15px; }
@@ -2022,15 +2022,32 @@ body.nav-hidden dialog > #toast {
 .ration-history-meal header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .ration-history-meal header strong { font-size: 14px; }
 .ration-history-meal .ration-today-items { padding: 0; }
-.ration-history-exclude { min-height: 32px; padding: 2px 8px; border: 0; border-radius: 8px; background: #f9e7e4; color: #a03c30; font-size: 11px; font-weight: 650; }
 .ration-history-states { display: flex; flex-wrap: wrap; gap: 6px; }
 .ration-state-set { min-height: 36px; padding: 4px 10px; border: 1px solid #dce2dd; border-radius: 18px; background: #fff; color: #3c4043; font-size: 12px; font-weight: 600; }
 .ration-state-set.active { border-color: var(--accent); background: var(--accent); color: #fff; }
 .ration-history-discrepancies { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
 .ration-history-empty { margin: 4px 0; }
 
-.ration-meal-states { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
-.ration-meal-transfer { display: flex; align-items: center; gap: 8px; margin: 4px 0 10px; color: var(--muted); font-size: 13px; }
+.ration-overlay-day { grid-template-columns: auto auto minmax(0, 1fr) auto; }
+.ration-overlay-kcal { color: var(--accent); font-size: 11px; font-style: normal; font-weight: 650; white-space: nowrap; }
+.ration-overlay-nutrition { margin: 0; font-size: 12px; }
+.ration-repeat { display: grid; gap: 8px; }
+.ration-discrepancies { display: grid; gap: 8px; margin: 0 14px; }
+.ration-history-meal .ration-discrepancies { margin: 0; }
+.ration-discrepancies h3 { margin: 4px 0 0; font-size: 13px; }
+.ration-discrepancies p { margin: 0; font-size: 12px; }
+.ration-history-discrepancies li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.ration-discrepancy-remove { flex: none; width: 36px; height: 36px; border: 0; border-radius: 50%; background: #f1f3f1; color: var(--muted); font-size: 18px; }
+.ration-discrepancy-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+.ration-discrepancy-form select,
+.ration-discrepancy-form input { min-width: 0; min-height: 40px; padding: 6px 8px; border: 1px solid #dce2dd; border-radius: 8px; background: #fff; font-size: 13px; }
+.ration-discrepancy-form [hidden] { display: none; }
+.ration-discrepancy-form button { grid-column: 1 / -1; }
+.ration-set-goal { align-self: end; min-height: 32px; padding: 0; font-size: 12px; }
+
+.ration-meal-states { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 14px 4px; }
+.ration-meal-transfer { display: flex; align-items: center; gap: 8px; margin: 4px 14px 10px; color: var(--muted); font-size: 13px; }
+.ration-meal-dialog > p { margin-left: 14px; margin-right: 14px; }
 .ration-transfer-button { min-width: 44px; min-height: 40px; border: 1px solid #dce2dd; border-radius: 10px; background: #fff; color: var(--accent); font-size: 13px; font-weight: 700; }
 
 @media (prefers-reduced-motion: reduce) {

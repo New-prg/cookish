@@ -43,22 +43,22 @@ export function validateRationProfile(profile) {
   if (!isFilledNumber(source.weightKg)) missing.push("weightKg");
   if (!isFilledNumber(source.mealsPerDay)) missing.push("mealsPerDay");
   if (!isFilledNumber(source.targetCalories)) missing.push("targetCalories");
-  const height = Number(source.heightCm);
-  if (Number.isFinite(height) && (height <= 0 || height > 300)) violations.push("heightCm");
-  const weight = Number(source.weightKg);
-  if (Number.isFinite(weight) && (weight <= 0 || weight > 1000)) violations.push("weightKg");
-  const meals = Number(source.mealsPerDay);
-  if (Number.isFinite(meals) && (meals < 1 || meals > 12)) violations.push("mealsPerDay");
-  const calories = Number(source.targetCalories);
-  if (Number.isFinite(calories) && calories < 0) violations.push("targetCalories");
-  ["targetProtein", "targetFat", "targetCarbs"].forEach((key) => {
-    const value = Number(source[key]);
-    if (Number.isFinite(value) && value < 0) violations.push(key);
+  // Empty values are "missing", never zero: only filled numbers are range-checked.
+  const height = finiteOrNull(source.heightCm);
+  if (height != null && (height <= 0 || height > 300)) violations.push("heightCm");
+  const weight = finiteOrNull(source.weightKg);
+  if (weight != null && (weight <= 0 || weight > 1000)) violations.push("weightKg");
+  const meals = finiteOrNull(source.mealsPerDay);
+  if (meals != null && (meals < 1 || meals > 12)) violations.push("mealsPerDay");
+  const calories = finiteOrNull(source.targetCalories);
+  if (calories != null && calories < 0) violations.push("targetCalories");
+  const macros = ["targetProtein", "targetFat", "targetCarbs"].map((key) => {
+    const value = finiteOrNull(source[key]);
+    if (value != null && value < 0) violations.push(key);
+    return value;
   });
-  const protein = Number(source.targetProtein);
-  const fat = Number(source.targetFat);
-  const carbs = Number(source.targetCarbs);
-  if ([protein, fat, carbs, calories].every(Number.isFinite) && calories > 0) {
+  const [protein, fat, carbs] = macros;
+  if (macros.every((value) => value != null) && calories > 0) {
     const macroCalories = protein * 4 + fat * 9 + carbs * 4;
     if (Math.abs(macroCalories - calories) / calories > 0.15) violations.push("macroMismatch");
   }
@@ -235,8 +235,11 @@ export function activeRationVersion(ration, owner, dateKey) {
     (version.owner || "local") === ownerKey(owner) && DATE_PATTERN.test(version.effectiveFrom || "")
   );
   if (!versions.length) return null;
+  // On the same start date the version released later wins.
   const sorted = versions.slice().sort((a, b) =>
-    a.effectiveFrom.localeCompare(b.effectiveFrom) || String(a.id).localeCompare(String(b.id))
+    a.effectiveFrom.localeCompare(b.effectiveFrom)
+    || timestampOf(a.createdAt) - timestampOf(b.createdAt)
+    || String(a.id).localeCompare(String(b.id))
   );
   if (String(dateKey) < sorted[0].effectiveFrom) return null;
   let active = sorted[0];
@@ -523,6 +526,12 @@ function runRationCommand(next, command, ctx) {
     case "releaseVersion": {
       return releaseVersion(ration, owner, command, ctx);
     }
+    case "repeatDays": {
+      return repeatDays(next, ration, owner, command, ctx);
+    }
+    case "withdrawRepeat": {
+      return withdrawRepeat(ration, command);
+    }
     case "setSpecialDay": {
       const date = commandDate(command.date);
       if (!date) return fail("Некорректная дата.");
@@ -544,6 +553,9 @@ function runRationCommand(next, command, ctx) {
     }
     case "recordDiscrepancy": {
       return recordDiscrepancy(next, ration, owner, command, ctx);
+    }
+    case "removeDiscrepancy": {
+      return removeDiscrepancy(ration, owner, command, ctx);
     }
     case "transferMeals": {
       return transferMeals(next, ration, owner, command, ctx);
@@ -629,6 +641,18 @@ function recordDiscrepancy(next, ration, owner, command, ctx) {
   if (command.discrepancy.measureUnit) discrepancy.measureUnit = String(command.discrepancy.measureUnit);
   meal.discrepancies.push(discrepancy);
   if (meal.state === "unmarked") meal.state = "changed";
+  return { ok: true, date, mealId: command.mealId, discrepancy };
+}
+
+function removeDiscrepancy(ration, owner, command, ctx) {
+  const date = commandDate(command.date);
+  if (!date) return fail("Некорректная дата.");
+  const blocked = historyWritable(ctx, date);
+  if (blocked) return blocked;
+  const meal = ration.history[`${owner}|${date}`]?.meals?.[command.mealId];
+  const index = Number(command.index);
+  if (!meal || !Number.isInteger(index) || !meal.discrepancies?.[index]) return fail("Расхождение не найдено.");
+  const [discrepancy] = meal.discrepancies.splice(index, 1);
   return { ok: true, date, mealId: command.mealId, discrepancy };
 }
 
@@ -744,6 +768,54 @@ function clampIndex(value, length) {
   return Number.isInteger(index) ? Math.min(Math.max(index, 0), length) : length;
 }
 
+// Human-facing «повторять»: the computed plan of one day (length 1) or of the
+// seven days from `from` (length 7, bound to weekdays) becomes a new Версия
+// starting at `from`. Особые дни inside that range that now equal the cycle
+// are dropped as redundant; every other Особый день keeps overriding the plan.
+function repeatDays(next, ration, owner, command, ctx) {
+  const from = commandDate(command.from);
+  if (!from) return fail("Некорректная дата.");
+  if (from <= ctx.today) return fail("Повторять план можно только с будущего дня.");
+  const length = Number(command.length);
+  if (length !== 1 && length !== 7) return fail("Повторять можно день или неделю.");
+  const dates = Array.from({ length }, (_, index) => shiftRationDate(from, index));
+  const days = dates.map((dateKey) => ({
+    id: `cycle_day_${dateKey}`,
+    meals: structuredClone(readRationDay(next, dateKey)?.meals || []),
+  }));
+  if (!days.some((day) => day.meals.length)) return fail("В выбранных днях нет приёмов пищи.");
+  const released = releaseVersion(ration, owner, { days, anchor: from, effectiveFrom: from, weekdayBinding: length === 7 }, ctx);
+  const removedSpecialDays = {};
+  dates.forEach((dateKey, index) => {
+    const key = `${owner}|${dateKey}`;
+    const special = ration.specialDays[key];
+    if (special && JSON.stringify(special.meals || []) === JSON.stringify(days[index].meals)) {
+      removedSpecialDays[key] = special;
+      delete ration.specialDays[key];
+    }
+  });
+  return {
+    ...released,
+    from,
+    dates,
+    undo: { type: "withdrawRepeat", versionId: released.versionId, specialDays: structuredClone(removedSpecialDays) },
+  };
+}
+
+function withdrawRepeat(ration, command) {
+  const index = ration.versions.findIndex((version) => version.id === command.versionId);
+  if (index < 0) return fail("Повтор уже отменён.");
+  ration.versions.splice(index, 1);
+  Object.entries(command.specialDays || {}).forEach(([key, day]) => {
+    if (!ration.specialDays[key]) ration.specialDays[key] = structuredClone(day);
+  });
+  return { ok: true };
+}
+
+function shiftRationDate(dateKey, days) {
+  return formatRationDate(new Date(validDate(dateKey).getTime() + days * DAY_MS));
+}
+
 function ensureSpecialDay(ration, owner, dateKey, ctx, { materialize = true } = {}) {
   const key = `${owner}|${dateKey}`;
   if (!ration.specialDays[key]) {
@@ -819,16 +891,18 @@ function buildRationFromLegacy(days, templates, owner) {
       .filter((item) => ownerKey(item.owner) === owner)
       .sort((a, b) => timestampOf(b.updatedAt) - timestampOf(a.updatedAt) || timestampOf(b.createdAt) - timestampOf(a.createdAt))[0];
     if (template?.meals?.length) {
-      const when = String(template.updatedAt || template.createdAt || "").slice(0, 10);
+      // A template without a usable date starts today; an empty date would hide it.
+      const stamped = String(template.updatedAt || template.createdAt || "").slice(0, 10);
+      const when = DATE_PATTERN.test(stamped) ? stamped : todayDateKey();
       ration.versions.push({
         id: `ration_version_${owner}_template_${template.id}`,
         owner,
-        effectiveFrom: DATE_PATTERN.test(when) ? when : "",
+        effectiveFrom: when,
         createdAt: template.updatedAt || template.createdAt || "",
         updatedAt: template.updatedAt || template.createdAt || "",
         updatedBy: template.updatedBy || "local",
         cycle: {
-          anchor: DATE_PATTERN.test(when) ? when : "",
+          anchor: when,
           weekdayBinding: false,
           days: [{ id: `cycle_day_template_${template.id}`, meals: cloneMealsWithNewIds(template.meals) }],
         },

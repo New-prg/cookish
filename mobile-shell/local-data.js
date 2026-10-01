@@ -40,6 +40,7 @@ export function emptyState() {
 
 export function memoryStorage(initial = null) {
   let value = initial == null ? null : structuredClone(initial);
+  const backups = new Map();
   return {
     read() {
       return value == null ? null : structuredClone(value);
@@ -47,21 +48,41 @@ export function memoryStorage(initial = null) {
     write(state) {
       value = structuredClone(state);
     },
+    backup(state, label) {
+      if (!backups.has(label)) backups.set(label, structuredClone(state));
+    },
+    backups: () => structuredClone(Object.fromEntries(backups)),
   };
 }
 
 export function browserStorage(localStorage, key = STORAGE_KEY) {
+  // Backups are written once per label and never overwritten, so the data an
+  // older build left behind survives a faulty migration or an unreadable blob.
+  function keepOnce(label, raw) {
+    const backupKey = `${key}.backup.${label}`;
+    try {
+      if (localStorage.getItem(backupKey) == null) localStorage.setItem(backupKey, raw);
+    } catch {
+      // A backup must never block opening the app.
+    }
+  }
+
   return {
     read() {
+      let raw = null;
       try {
-        const raw = localStorage.getItem(key);
+        raw = localStorage.getItem(key);
         return raw ? JSON.parse(raw) : null;
       } catch {
+        if (raw) keepOnce("unreadable", raw);
         return null;
       }
     },
     write(state) {
       localStorage.setItem(key, JSON.stringify(state));
+    },
+    backup(state, label) {
+      keepOnce(label, JSON.stringify(state));
     },
   };
 }
@@ -131,7 +152,10 @@ export function openLocalData(storage) {
   return {
     load() {
       const stored = storage.read();
-      current = deepFreeze(prepareState(stored && typeof stored === "object" ? stored : emptyState()));
+      const usable = stored && typeof stored === "object";
+      const version = Number(usable && stored.schemaVersion) || 0;
+      if (usable && version < SCHEMA_VERSION) storage.backup?.(stored, `v${version}`);
+      current = deepFreeze(prepareState(usable ? stored : emptyState()));
       return current;
     },
     commit(nextState) {
@@ -481,6 +505,19 @@ export function openLocalData(storage) {
 
     recordRationDiscrepancy(dateKey, mealId, discrepancy) {
       return runRation({ type: "recordDiscrepancy", date: dateKey, mealId, discrepancy });
+    },
+
+    removeRationDiscrepancy(dateKey, mealId, index) {
+      return runRation({ type: "removeDiscrepancy", date: dateKey, mealId, index });
+    },
+
+    repeatRationDays(from, length) {
+      return runRation({ type: "repeatDays", from, length });
+    },
+
+    undoRationRepeat(undo) {
+      if (undo?.type !== "withdrawRepeat") return { ok: false, reason: "Нечего отменять." };
+      return runRation(undo);
     },
 
     transferRationMeals(dateKey, mealId, minutes, confirmMidnight = false) {
