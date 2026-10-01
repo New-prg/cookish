@@ -145,7 +145,7 @@ On one phone these are the same person at different times.
 | Fixed chrome | Top bar + bottom nav are outside the scrollport; only `main` scrolls |
 | Safe areas | Respect notch / gesture inset top and bottom |
 | Back | Android back: close dialog → leave stack route with save if needed → else system default |
-| Header actions | Contextual: Создать / Добавить / Готово; never ambiguous «Отмена» for primary complete |
+| Header actions | Contextual: Создать / Добавить / Готово / Сохранить; never ambiguous «Отмена» for primary complete. Forms (product, ration profile) save from the header; a back arrow on the left leaves, asking with an in-app dialog when there are unsaved changes |
 | No forced re-render while typing | Background work must not rebuild focused inputs/dialogs |
 
 ### 5.2 Persistence & input
@@ -260,7 +260,7 @@ On one phone these are the same person at different times.
 
 | ID | Requirement |
 |---|---|
-| PRD-1 | List, add, edit, soft-delete |
+| PRD-1 | List, add, edit, soft-delete. The list has search (name, category, barcode), groups by category and shows one compact row per product; tap opens the card, deletion lives in the card |
 | PRD-2 | Fields: name, category, unit, barcode, ingredients, nutrition block; plus kind/genericKey/brand/confirmed |
 | PRD-3 | Barcode scan + Open Food Facts lookup with user confirmation before save |
 | PRD-4 | Name search suggestions: local + catalog + OFF (debounced) |

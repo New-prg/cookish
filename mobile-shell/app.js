@@ -83,6 +83,8 @@ import {
   let requestAutosaveTimer = null;
   let confirmResolve = null;
   let productEditReturn = null;
+  let productQuery = "";
+  let productNewName = "";
   let rationProfileReturn = "profile";
   let requestGestureToken = 0;
   let purchaseDialogViewportFrame = 0;
@@ -91,6 +93,7 @@ import {
   const app = document.getElementById("app");
   const title = document.getElementById("page-title");
   const headerAction = document.getElementById("header-action");
+  const headerBack = document.getElementById("header-back");
   const requestHeaderMenuWrap = document.getElementById("request-header-menu-wrap");
   const headerMore = document.getElementById("header-more");
   const requestHeaderMenu = document.getElementById("request-header-menu");
@@ -116,8 +119,14 @@ import {
       finishRequestAnswer();
     } else if (route === "request-edit") {
       finishRequestEdit();
+    } else if (route === "product-new" || route === "product-edit") {
+      document.getElementById("product-form")?.requestSubmit();
+    } else if (route === "ration-profile") {
+      document.getElementById("ration-profile-form")?.requestSubmit();
     } else attemptBackNavigation();
   });
+
+  headerBack.addEventListener("click", () => attemptBackNavigation());
 
   headerMore.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -241,7 +250,18 @@ import {
       finishRequestEdit();
       return true;
     }
-    if (formDirty && !confirm("Отменить изменения? Несохранённые данные будут потеряны.")) return true;
+    if (formDirty) {
+      askConfirm("Изменения не сохранены.", "Выйти без сохранения").then((leave) => {
+        if (!leave) return;
+        formDirty = false;
+        leaveCurrentRoute();
+      });
+      return true;
+    }
+    return leaveCurrentRoute();
+  }
+
+  function leaveCurrentRoute() {
     draftItems = [];
     if (route === "product-new" || route === "product-edit") {
       const ret = productEditReturn;
@@ -257,7 +277,7 @@ import {
 
   function closeDialogSafely(dialog) {
     if (dialog.id === "app-confirm-dialog") {
-      dialog.close();
+      finishConfirm(false);
       return true;
     }
     if (dialog.id === "answer-action-dialog") {
@@ -276,7 +296,7 @@ import {
     return true;
   }
 
-  function askConfirm(message) {
+  function askConfirm(message, okLabel = "Подтвердить") {
     return new Promise((resolve) => {
       confirmResolve = resolve;
       let dialog = document.getElementById("app-confirm-dialog");
@@ -298,6 +318,7 @@ import {
         document.getElementById("app-confirm-cancel").onclick = () => finishConfirm(false);
       }
       document.getElementById("app-confirm-message").textContent = message;
+      document.getElementById("app-confirm-ok").textContent = okLabel;
       dialog.showModal();
     });
   }
@@ -346,20 +367,21 @@ import {
     const config = {
       summary: ["Сводка", "", false],
       products: ["Продукты", "Добавить", false],
-      "product-new": ["Новый продукт", "Отмена", true],
-      "product-edit": ["Редактирование", productEditReturn ? "Назад" : "Отмена", true],
+      "product-new": ["Новый продукт", "Сохранить", true],
+      "product-edit": ["Продукт", "Сохранить", true],
       requests: ["Запросы", "Создать", false],
       "request-edit": ["", "Готово", true],
       "request-detail": ["Запрос", "Назад", false],
       "request-answer": ["Отметить покупки", "Готово", true],
       ration: ["Рацион", "", false],
-      "ration-profile": ["Профиль рациона", "Отмена", true],
+      "ration-profile": ["Профиль рациона", "Сохранить", true],
       profile: ["Профиль", "", false],
     }[route];
     const editedRequest = route === "request-edit" ? getRequest(routeId) : null;
     title.textContent = editedRequest ? date(editedRequest.createdAt) : config[0];
     headerAction.textContent = config[1];
     headerAction.hidden = !config[1];
+    headerBack.hidden = !["products", "product-new", "product-edit", "ration-profile"].includes(route);
     requestHeaderMenuWrap.hidden = route !== "request-edit";
     closeRequestHeaderMenu();
     rationHeaderPicker.hidden = route !== "ration";
@@ -594,6 +616,7 @@ import {
     }
     const ingredients = product.ingredients_text_ru || product.ingredients_text || "";
     if (ingredients) form.elements.ingredients.value = ingredients.trim();
+    if (ingredients || nutrition?.vitamins || nutrition?.minerals) document.getElementById("product-more")?.setAttribute("open", "");
     return Boolean(nutrition);
   }
 
@@ -605,47 +628,107 @@ import {
 
   function renderProducts() {
     const products = state.products.filter((product) => !product.deletedAt);
-    app.innerHTML = products.length
-      ? products.map((product) => `
-          <div class="row product-row">
-            <div class="row-main">
-              <strong>${escapeHtml(product.name)}</strong>
-              <span>${escapeHtml(product.category || "Без категории")} · ${escapeHtml(product.unit)}${product.barcode ? ` · ${escapeHtml(product.barcode)}` : ""}</span>
-              ${nutritionLine(product.nutrition)}
-            </div>
-            <div class="product-actions">
-              <button class="text-button edit-product" data-id="${product.id}" type="button" aria-label="Изменить ${escapeAttr(product.name)}">Изменить</button>
-              <button class="text-button delete-product" data-id="${product.id}" type="button" aria-label="Удалить ${escapeAttr(product.name)}">Удалить</button>
-            </div>
-          </div>
-        `).join("")
-      : `<section class="section"><div class="empty-state">
+    if (!products.length) {
+      app.innerHTML = `<section class="section"><div class="empty-state">
           <p class="empty">Каталог пока пуст</p>
           <p class="muted">Добавьте продукт вручную, сканером или при создании запроса.</p>
           <button id="products-empty-add" class="button full" type="button">Добавить продукт</button>
         </div></section>`;
-
-    document.getElementById("products-empty-add")?.addEventListener("click", () => navigate("product-new"));
-    document.querySelectorAll(".delete-product").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const product = state.products.find((item) => item.id === button.dataset.id);
-        if (!product) return;
-        if (!await askConfirm(`Удалить продукт «${product.name}»?`)) return;
-        const removed = localData.removeProduct(product.id);
-        if (!removed.ok) return showToast(removed.reason);
-        state = localData.snapshot();
-        renderProducts();
-        showToast(`Продукт «${product.name}» удалён.`, "Отменить", () => {
-          const restored = localData.restoreProduct(product.id);
-          if (!restored.ok) return showToast(restored.reason);
-          state = localData.snapshot();
-          renderProducts();
-          showToast(`Продукт «${product.name}» восстановлен.`);
-        });
-      });
+      document.getElementById("products-empty-add").addEventListener("click", () => navigate("product-new"));
+      return;
+    }
+    app.innerHTML = `
+      <div class="product-catalog">
+        <div class="product-search">
+          <input id="product-search" type="search" placeholder="Найти продукт" autocomplete="off" aria-label="Найти продукт" value="${escapeAttr(productQuery)}">
+        </div>
+        <div id="product-list"></div>
+      </div>`;
+    const search = document.getElementById("product-search");
+    search.addEventListener("input", () => {
+      productQuery = search.value;
+      renderProductList();
     });
-    document.querySelectorAll(".edit-product").forEach((button) => {
+    renderProductList();
+  }
+
+  function renderProductList() {
+    const list = document.getElementById("product-list");
+    if (!list) return;
+    const query = normalizeProductName(productQuery);
+    const products = state.products
+      .filter((product) => !product.deletedAt)
+      .filter((product) => !query
+        || normalizeProductName(product.name).includes(query)
+        || normalizeProductName(product.category || "").includes(query)
+        || String(product.barcode || "").includes(query));
+    if (!products.length) {
+      list.innerHTML = `<div class="product-search-empty">
+          <p class="muted">Ничего не найдено.</p>
+          <button id="product-search-add" class="text-button" type="button">Добавить «${escapeHtml(productQuery.trim())}»</button>
+        </div>`;
+      document.getElementById("product-search-add").addEventListener("click", () => {
+        productNewName = productQuery.trim();
+        navigate("product-new");
+      });
+      return;
+    }
+    const groups = new Map();
+    products.forEach((product) => {
+      const category = String(product.category || "").trim() || "Без категории";
+      if (!groups.has(category)) groups.set(category, []);
+      groups.get(category).push(product);
+    });
+    const byName = (left, right) => left.localeCompare(right, "ru");
+    const categories = [...groups.keys()].sort((left, right) =>
+      Number(left === "Без категории") - Number(right === "Без категории") || byName(left, right)
+    );
+    list.innerHTML = categories.map((category) => `
+      <section class="product-group">
+        <h2 class="product-group-title">${escapeHtml(category)} <span>${groups.get(category).length}</span></h2>
+        ${groups.get(category).sort((left, right) => byName(left.name, right.name)).map(productCatalogRow).join("")}
+      </section>`).join("");
+    list.querySelectorAll(".product-link").forEach((button) => {
       button.addEventListener("click", () => navigate("product-edit", button.dataset.id));
+    });
+  }
+
+  function productCatalogRow(product) {
+    const nutrition = product.nutrition;
+    const details = [
+      product.unit,
+      nutrition
+        ? `${number(Math.round(Number(nutrition.calories) || 0))} ккал · Б ${number(nutrition.protein)} · Ж ${number(nutrition.fat)} · У ${number(nutrition.carbs)}`
+        : "КБЖУ не указано",
+    ].filter(Boolean).join(" · ");
+    return `
+      <button class="product-link" data-id="${product.id}" type="button">
+        <span class="product-link-main">
+          <strong>${escapeHtml(product.name)}</strong>
+          <span>${escapeHtml(details)}</span>
+        </span>
+        <svg class="product-link-chevron" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>`;
+  }
+
+  async function deleteProductWithUndo(product) {
+    if (!product) return;
+    if (!await askConfirm(`Удалить продукт «${product.name}»?`, "Удалить")) return;
+    const removed = localData.removeProduct(product.id);
+    if (!removed.ok) return showToast(removed.reason);
+    state = localData.snapshot();
+    formDirty = false;
+    const ret = productEditReturn;
+    productEditReturn = null;
+    // A product opened from a request chip goes back to that request.
+    if (ret?.route) navigate(ret.route, ret.id || null);
+    else navigate("products");
+    showToast(`Продукт «${product.name}» удалён.`, "Отменить", () => {
+      const restored = localData.restoreProduct(product.id);
+      if (!restored.ok) return showToast(restored.reason);
+      state = localData.snapshot();
+      if (route === "products") renderProducts();
+      showToast(`Продукт «${product.name}» восстановлен.`);
     });
   }
 
@@ -663,7 +746,7 @@ import {
           </div>
         </label>
         <p id="barcode-status" class="muted barcode-status">Данные предоставляет Open Food Facts. Проверьте их перед сохранением.</p>
-        <label class="field"><span>Наименование</span><input name="name" required autocomplete="off" value="${escapeAttr(product?.name || "")}"></label>
+        <label class="field"><span>Наименование</span><input name="name" required autocomplete="off" value="${escapeAttr(product?.name || productNewName)}"></label>
         <label class="field"><span>Категория</span><input name="category" autocomplete="off" value="${escapeAttr(product?.category || "")}"></label>
         <label class="field"><span>Единица измерения</span>
           <select name="unit">
@@ -681,13 +764,18 @@ import {
             ${nutritionField("Углеводы, г", "carbs", product?.nutrition?.carbs)}
             ${nutritionField("Клетчатка, г", "fiber", product?.nutrition?.fiber)}
           </div>
+        </section>
+        <details id="product-more" class="product-more" ${product?.nutrition?.vitamins || product?.nutrition?.minerals || product?.ingredients ? "open" : ""}>
+          <summary>Витамины, минералы, состав</summary>
           <label class="field"><span>Витамины</span><input name="vitamins" value="${escapeAttr(product?.nutrition?.vitamins || "")}" placeholder="Например: C: 10 мг; B6: 0,2 мг"></label>
           <label class="field"><span>Минералы и другие элементы</span><input name="minerals" value="${escapeAttr(product?.nutrition?.minerals || "")}" placeholder="Например: кальций: 120 мг"></label>
           <label class="field"><span>Состав</span><textarea name="ingredients" rows="3" placeholder="Состав с этикетки">${escapeHtml(product?.ingredients || "")}</textarea></label>
-        </section>
-        <button class="button full" type="submit">Сохранить</button>
+        </details>
+        ${editing ? `<button id="delete-product" class="text-button danger-text-button" type="button">Удалить продукт</button>` : ""}
       </form>
     `;
+    productNewName = "";
+    document.getElementById("delete-product")?.addEventListener("click", () => deleteProductWithUndo(product));
     document.getElementById("lookup-barcode").addEventListener("click", lookupProductBarcode);
     document.getElementById("scan-barcode").addEventListener("click", () => {
       if (!window.NativeCookish?.scanBarcode) return setBarcodeStatus("Сканирование доступно в Android-приложении.", true);
@@ -1125,9 +1213,9 @@ import {
   }
 
   function cancelDraftProduct(row) {
-    if (!row) return;
+    if (!row) return false;
     const key = row.dataset.key;
-    if (!key) return;
+    if (!key) return false;
     const focusTarget = row.previousElementSibling || row.nextElementSibling;
     draftItems = draftItems.filter((item) => item.key !== key);
     row.remove();
@@ -1135,9 +1223,10 @@ import {
     if (!persistRequestDraft({ silent: true })) {
       draftItems = [];
       renderRequestForm();
-      return;
+      return false;
     }
     if (focusTarget?.isConnected) focusRequestLine(focusTarget, Boolean(focusTarget.querySelector(".product-chip")));
+    return true;
   }
 
   function isRemovableEmptyRow(row) {
@@ -1390,8 +1479,10 @@ import {
         try {
           navigator.vibrate?.(12);
         } catch {}
+        const name = (row.querySelector(".product-chip, .product-candidate")?.textContent || "").trim();
         window.setTimeout(() => {
-          if (token === requestGestureToken && row.isConnected) cancelDraftProduct(row);
+          if (token !== requestGestureToken || !row.isConnected) return;
+          if (cancelDraftProduct(row) && name) showToast(`Позиция «${name}» удалена.`);
         }, 160);
       };
 
@@ -3090,6 +3181,7 @@ import {
     app.innerHTML = `
       <form id="ration-profile-form" class="form">
         <p class="muted">Профиль задаёт цели для КБЖУ и хранится только на этом устройстве.</p>
+        <p id="ration-profile-status" class="muted" role="status"></p>
         ${selectField("Возрастная группа", "ageGroup", RATION_AGE_GROUPS)}
         ${selectField("Цель", "goal", RATION_GOALS)}
         <div class="nutrition-grid">
@@ -3110,8 +3202,6 @@ import {
             ${numberField("Углеводы, г", "targetCarbs", 'min="0" step="0.1"')}
           </div>
         </section>
-        <p id="ration-profile-status" class="muted" role="status"></p>
-        <button class="button full" type="submit">Сохранить</button>
       </form>
     `;
     document.getElementById("ration-profile-form").addEventListener("submit", (event) => {
@@ -3124,11 +3214,13 @@ import {
         const status = document.getElementById("ration-profile-status");
         status.className = "error";
         status.textContent = `Проверьте: ${violations.join(", ")}.`;
+        app.scrollTop = 0;
         return;
       }
       const saved = localData.setRationProfile(fields);
       if (!applyLocal(saved)) return;
       const missing = rationProfileLabels(saved.validation.missing);
+      formDirty = false;
       navigate(rationProfileReturn);
       showToast(missing.length ? `Профиль сохранён. Не заполнено: ${missing.join(", ")}.` : "Профиль рациона сохранён.");
     });
