@@ -337,7 +337,7 @@ export function resolveOrCreateProduct(source, draft, changedAt, actor) {
   return product;
 }
 
-export function cloneMealsWithNewIds(meals) {
+function cloneMealsWithNewIds(meals) {
   return (meals || []).map((meal, mealIndex) => ({
     id: createId("meal"),
     name: meal.name || `Приём пищи ${mealIndex + 1}`,
@@ -362,10 +362,6 @@ export function rationMeasure(product) {
 
 export function rationOwner(source) {
   return ownerKey(source?.user?.email || "local");
-}
-
-export function rationDayKey(dateKey, source) {
-  return `${rationOwner(source)}|${dateKey}`;
 }
 
 export function todayDateKey() {
@@ -462,6 +458,7 @@ function runRationCommand(next, command, ctx) {
       const item = day.meals.flatMap((meal) => meal.items || []).find((entry) => entry.id === command.itemId);
       if (!item) return fail("Позиция рациона не найдена.");
       const product = resolveOrCreateProduct(next, { name: command.name, hint: command.hint }, ctx.now, ctx.actor);
+      if (!product) return fail("Название продукта не заполнено.");
       item.productId = product.id;
       item.name = product.name;
       let nextItemId = "";
@@ -503,16 +500,6 @@ function runRationCommand(next, command, ctx) {
       touchSpecialDay(day, ctx);
       return { ok: true, itemId: item.id };
     }
-    case "replaceDays": {
-      const dates = [...new Set((command.dates || []).map(commandDate).filter(Boolean))];
-      if (!dates.length) return fail("Выберите дни для шаблона.");
-      dates.forEach((dateKey) => {
-        const day = ensureSpecialDay(ration, owner, dateKey, ctx, { materialize: false });
-        day.meals = cloneMealsWithNewIds(command.meals);
-        touchSpecialDay(day, ctx);
-      });
-      return { ok: true, dates };
-    }
     case "createCycle":
     case "releaseVersion": {
       return releaseVersion(ration, owner, command, ctx);
@@ -548,9 +535,6 @@ function runRationCommand(next, command, ctx) {
       const next = normalizeProfile({ ...current, ...fields, updatedAt: ctx.now, updatedBy: ctx.actor });
       ration.profile = next;
       return { ok: true, profile: structuredClone(next), validation: validateRationProfile(next) };
-    }
-    case "deleteSelection": {
-      return deleteSelection(next, ration, owner, command, ctx);
     }
     default:
       return fail(`Неизвестная команда рациона: ${type || "(пусто)"}`);
@@ -700,82 +684,6 @@ function releaseVersion(ration, owner, command, ctx) {
   };
   ration.versions.push(version);
   return { ok: true, versionId: version.id, effectiveFrom };
-}
-
-function deleteSelection(next, ration, owner, command, ctx) {
-  const mealIds = new Set((command.mealIds || []).map(String));
-  const itemIds = new Set((command.itemIds || []).map(String));
-  const dates = new Set((command.dates || []).filter((value) => DATE_PATTERN.test(String(value || ""))));
-  if (!mealIds.size && !itemIds.size && !dates.size) return fail("Ничего не выбрано.");
-  const datesToEdit = new Set(dates);
-  const foundMealIds = new Set();
-  const foundItemIds = new Set();
-  Object.values(ration.specialDays).forEach((day) => {
-    (day.meals || []).forEach((meal) => {
-      if (mealIds.has(meal.id)) {
-        foundMealIds.add(meal.id);
-        datesToEdit.add(day.date);
-      }
-      (meal.items || []).forEach((item) => {
-        if (itemIds.has(item.id)) {
-          foundItemIds.add(item.id);
-          datesToEdit.add(day.date);
-        }
-      });
-    });
-  });
-  let changed = false;
-  datesToEdit.forEach((dateKey) => {
-    const day = ensureSpecialDay(ration, owner, dateKey, ctx);
-    let dayChanged = false;
-    if (mealIds.size) {
-      const before = day.meals.length;
-      day.meals = day.meals.filter((meal) => !mealIds.has(meal.id));
-      dayChanged = day.meals.length !== before;
-    } else if (itemIds.size) {
-      day.meals.forEach((meal) => {
-        const before = (meal.items || []).length;
-        meal.items = (meal.items || []).filter((item) => !itemIds.has(item.id));
-        if (meal.items.length !== before) dayChanged = true;
-      });
-    } else if (dates.has(dateKey) && day.meals.length) {
-      day.meals = [];
-      dayChanged = true;
-    }
-    if (dayChanged) {
-      touchSpecialDay(day, ctx);
-      changed = true;
-    }
-  });
-  const leftoverMealIds = [...mealIds].filter((id) => !foundMealIds.has(id));
-  const leftoverItemIds = [...itemIds].filter((id) => !foundItemIds.has(id));
-  if (leftoverMealIds.length || leftoverItemIds.length) {
-    const leftoverMeals = new Set(leftoverMealIds);
-    const leftoverItems = new Set(leftoverItemIds);
-    (ration.versions || []).forEach((version) => {
-      let versionChanged = false;
-      (version.cycle?.days || []).forEach((cycleDay) => {
-        if (leftoverMeals.size) {
-          const before = cycleDay.meals.length;
-          cycleDay.meals = cycleDay.meals.filter((meal) => !leftoverMeals.has(meal.id));
-          if (cycleDay.meals.length !== before) versionChanged = true;
-        } else {
-          (cycleDay.meals || []).forEach((meal) => {
-            const before = (meal.items || []).length;
-            meal.items = (meal.items || []).filter((item) => !leftoverItems.has(item.id));
-            if (meal.items.length !== before) versionChanged = true;
-          });
-        }
-      });
-      if (versionChanged) {
-        version.updatedAt = ctx.now;
-        version.updatedBy = ctx.actor;
-        changed = true;
-      }
-    });
-  }
-  if (!changed) return fail("В сохранённом рационе нечего удалять.");
-  return { ok: true };
 }
 
 function ensureSpecialDay(ration, owner, dateKey, ctx, { materialize = true } = {}) {

@@ -2,7 +2,6 @@ import {
   RATION_DISCREPANCY_KINDS,
   RATION_MEAL_STATES,
   RATION_SCHEMA_VERSION,
-  cloneMealsWithNewIds,
   createId,
   emptyRation,
   executeRationCommand,
@@ -12,7 +11,6 @@ import {
   normalizeProductName,
   parseRationDate,
   plannedRationRequestItems,
-  rationDayKey,
   rationMeasure,
   rationOwner,
   readRationDay,
@@ -24,7 +22,7 @@ import {
   validateRationProfile,
 } from "./ration-domain.js";
 
-export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationDayKey, rationMeasure, rationOwner, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
+export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationMeasure, rationOwner, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
 export const STORAGE_KEY = "cookish.android.data.v1";
 export const SCHEMA_VERSION = RATION_SCHEMA_VERSION;
@@ -35,9 +33,6 @@ export function emptyState() {
     products: [],
     requests: [],
     ration: emptyRation(),
-    rationTemplates: [],
-    rationView: "week",
-    rationAnchor: "",
     user: null,
     onboardingCompleted: true,
   };
@@ -416,36 +411,28 @@ export function openLocalData(storage) {
       });
     },
 
-    setRationCalendar({ view, anchor } = {}) {
-      return apply((next) => {
-        if (view) next.rationView = view;
-        if (anchor) next.rationAnchor = anchor;
-        return { ok: true };
-      });
-    },
-
     addRationMeal(dateKey) {
-      return runRation({ type: "addMeal", date: dateKey }, dateKey);
+      return runRation({ type: "addMeal", date: dateKey });
     },
 
     updateRationMeal(dateKey, mealId, fields) {
-      return runRation({ type: "updateMeal", date: dateKey, mealId, fields }, dateKey);
+      return runRation({ type: "updateMeal", date: dateKey, mealId, fields });
     },
 
     removeRationMeal(dateKey, mealId) {
-      return runRation({ type: "removeMeal", date: dateKey, mealId }, dateKey);
+      return runRation({ type: "removeMeal", date: dateKey, mealId });
     },
 
     addRationFood(dateKey, mealId) {
-      return runRation({ type: "addItem", date: dateKey, mealId }, dateKey);
+      return runRation({ type: "addItem", date: dateKey, mealId });
     },
 
     saveRationFood(dateKey, mealId, itemId, { name, hint, addNext } = {}) {
-      return runRation({ type: "saveItem", date: dateKey, mealId, itemId, name, hint, addNext }, dateKey);
+      return runRation({ type: "saveItem", date: dateKey, mealId, itemId, name, hint, addNext });
     },
 
     removeRationFood(dateKey, mealId, itemId) {
-      return runRation({ type: "removeItem", date: dateKey, mealId, itemId }, dateKey);
+      return runRation({ type: "removeItem", date: dateKey, mealId, itemId });
     },
 
     setRationPortion(dateKey, mealId, itemId, { portionSize, packageSize, measureUnit } = {}) {
@@ -466,65 +453,6 @@ export function openLocalData(storage) {
 
     transferRationMeals(dateKey, mealId, minutes, confirmMidnight = false) {
       return runRation({ type: "transferMeals", date: dateKey, mealId, minutes, confirmMidnight });
-    },
-
-    saveRationTemplateFromDay(dateKey, name) {
-      return apply((next, { now, actor }) => {
-        const title = String(name || "").trim();
-        if (!title) return { ok: false, reason: "Название шаблона не заполнено." };
-        const day = readRationDay(next, dateKey);
-        if (!day?.meals?.length) return { ok: false, reason: "День больше не содержит приёмов пищи." };
-        next.rationTemplates = next.rationTemplates || [];
-        const template = {
-          id: createId("ration_template"),
-          name: title,
-          owner: rationOwner(next),
-          meals: cloneMealsWithNewIds(day.meals),
-          createdAt: now,
-          updatedAt: now,
-          updatedBy: actor,
-        };
-        next.rationTemplates.push(template);
-        return { ok: true, templateId: template.id };
-      });
-    },
-
-    renameRationTemplate(templateId, name) {
-      return apply((next, { now }) => {
-        const title = String(name || "").trim();
-        if (!title) return { ok: false, reason: "Название шаблона не заполнено." };
-        const template = (next.rationTemplates || []).find((item) => item.id === templateId);
-        if (!template) return { ok: false, reason: "Шаблон не найден." };
-        template.name = title;
-        template.updatedAt = now;
-        return { ok: true, templateId };
-      });
-    },
-
-    removeRationTemplate(templateId) {
-      return apply((next) => {
-        const before = (next.rationTemplates || []).length;
-        next.rationTemplates = (next.rationTemplates || []).filter((item) => item.id !== templateId);
-        if (next.rationTemplates.length === before) return { ok: false, reason: "Шаблон не найден." };
-        return { ok: true };
-      });
-    },
-
-    applyRationTemplate(templateId, dates) {
-      return apply((next, context) => {
-        const template = (next.rationTemplates || []).find((item) => item.id === templateId);
-        if (!template) return { ok: false, reason: "Шаблон не найден." };
-        const keys = [...new Set(dates || [])];
-        if (!keys.length) return { ok: false, reason: "Выберите дни для шаблона." };
-        const result = executeRationCommand(next, { type: "replaceDays", dates: keys, meals: template.meals }, context);
-        if (result.ok === false) return result;
-        replaceStateInPlace(next, result.state);
-        return { ok: true, dates: keys };
-      });
-    },
-
-    deleteRationSelection({ mealIds, itemIds, dates } = {}) {
-      return runRation({ type: "deleteSelection", mealIds, itemIds, dates });
     },
 
     createRequestFromRation({ dates, itemIds } = {}) {
@@ -549,11 +477,10 @@ export function openLocalData(storage) {
     },
   };
 
-  function runRation(command, anchor = "") {
+  function runRation(command) {
     return apply((next, context) => {
       const result = executeRationCommand(next, command, context);
       if (result.ok === false) return { ok: false, reason: result.reason };
-      if (anchor) next.rationAnchor = anchor;
       const { state: commandState, ...payload } = result;
       replaceStateInPlace(next, commandState);
       return payload;
@@ -569,9 +496,9 @@ function replaceStateInPlace(target, source) {
 export function prepareState(source) {
   const result = { ...emptyState(), ...structuredClone(source && typeof source === "object" ? source : {}) };
   result.onboardingCompleted = true;
-  result.rationView = ["day", "week", "month"].includes(result.rationView) ? result.rationView : "week";
-  result.rationAnchor = /^\d{4}-\d{2}-\d{2}$/.test(result.rationAnchor || "") ? result.rationAnchor : todayDateKey();
-  result.rationTemplates = Array.isArray(result.rationTemplates) ? result.rationTemplates : [];
+  // Calendar view preferences of the retired ration editor (PRD 6.5.5).
+  delete result.rationView;
+  delete result.rationAnchor;
   result.products = mergeVersioned([], (result.products || []).map((product) => {
     const normalized = normalizeProductRecord({
       ...product,
@@ -797,13 +724,6 @@ function liveProduct(source, productId) {
   return (source.products || []).find((product) => product.id === productId && !product.deletedAt) || null;
 }
 
-export function rationTemplatesForUser(source) {
-  const owner = rationOwner(source);
-  return (source.rationTemplates || [])
-    .filter((template) => String(template.owner || "local").trim().toLowerCase() === owner)
-    .sort((a, b) => timestamp(b.updatedAt) - timestamp(a.updatedAt));
-}
-
 export function timestamp(value) {
   const result = Date.parse(value || "");
   return Number.isFinite(result) ? result : 0;
@@ -878,16 +798,18 @@ function finiteNutrient(value) {
   return value === "" || value == null || !Number.isFinite(result) ? null : result;
 }
 
-function openFoodFactsUnit(product) {
+export function openFoodFactsUnit(product) {
   const water = (product.categories_tags || []).some((tag) => /water/i.test(tag));
   const quantity = String(product.quantity || "").toLowerCase();
-  if (water || /\b(ml|мл|l|л)\b/.test(quantity)) return "л";
-  if (/\b(kg|кг)\b/.test(quantity)) return "кг";
-  if (/\b(g|г)\b/.test(quantity)) return "г";
+  // `\b` treats Cyrillic letters as non-word characters, so match unit tokens explicitly.
+  const hasUnit = (units) => new RegExp(`(^|[^a-zа-яё])(${units})($|[^a-zа-яё])`).test(quantity);
+  if (water || hasUnit("ml|мл|l|л")) return "л";
+  if (hasUnit("kg|кг")) return "кг";
+  if (hasUnit("g|г")) return "г";
   return "шт.";
 }
 
-function openFoodFactsCategory(product) {
+export function openFoodFactsCategory(product) {
   const tags = (product.categories_tags || []).join(" ").toLowerCase();
   const categories = String(product.categories || "").toLowerCase();
   const value = `${tags} ${categories}`;
@@ -908,7 +830,7 @@ function openFoodFactsNutrientText(nutriments, definitions) {
   }).join("; ");
 }
 
-function openFoodFactsNutrition(product) {
+export function openFoodFactsNutrition(product) {
   const nutriments = product.nutriments || {};
   const water = (product.categories_tags || []).some((tag) => /water/i.test(tag));
   const calories = finiteNutrient(nutriments["energy-kcal_100g"])

@@ -5,7 +5,10 @@ import {
   isProductConfirmed,
   isRequestFulfilled,
   normalizeProductName,
+  openFoodFactsCategory,
+  openFoodFactsNutrition,
   openFoodFactsSuggestion,
+  openFoodFactsUnit,
   openLocalData,
   parseRationDate,
   productPurchasedTotal,
@@ -580,32 +583,6 @@ import {
     const ingredients = product.ingredients_text_ru || product.ingredients_text || "";
     if (ingredients) form.elements.ingredients.value = ingredients.trim();
     return Boolean(nutrition);
-  }
-
-  function openFoodFactsCategory(product) {
-    const tags = (product.categories_tags || []).join(" ").toLowerCase();
-    const categories = String(product.categories || "").toLowerCase();
-    const value = `${tags} ${categories}`;
-    if (/water|beverage|drink/.test(value)) return "Напитки";
-    if (/milk|dairy|cheese|yogurt|кефир|молоч/.test(value)) return "Молочные продукты";
-    if (/fruit/.test(value)) return "Фрукты";
-    if (/vegetable/.test(value)) return "Овощи";
-    if (/meat|poultry/.test(value)) return "Мясо и птица";
-    if (/fish|seafood/.test(value)) return "Рыба и морепродукты";
-    if (/bread|bakery/.test(value)) return "Хлеб и выпечка";
-    return product.categories ? String(product.categories).split(",")[0].trim() : "";
-  }
-
-  function openFoodFactsNutrientText(nutriments, definitions) {
-    return Object.entries(definitions).flatMap(([key, [label, multiplier, unit]]) => {
-      const value = finiteNutrient(nutriments[key]);
-      return value == null ? [] : [`${label}: ${number(value * multiplier)} ${unit}`];
-    }).join("; ");
-  }
-
-  function finiteNutrient(value) {
-    const result = Number(value);
-    return value === "" || value == null || !Number.isFinite(result) ? null : result;
   }
 
   function setBarcodeStatus(message, error = false) {
@@ -2384,7 +2361,7 @@ import {
         </header>
         ${(meal.items || []).length ? `<ul class="ration-today-items">${rows}</ul>` : ""}
         <div class="ration-history-states">
-          ${["eaten", "changed", "skipped", "unmarked"].map((value) => `<button class="ration-state-set ${stateKey === value ? "active" : ""}" data-meal-id="${meal.id}" data-state="${value}" type="button">${RATION_STATE_LABELS[value]}</button>`).join("")}
+          ${["eaten", "changed", "skipped", "unmarked"].map((value) => `<button class="ration-state-set ${stateKey === value ? "active" : ""}" data-date="${dateKey}" data-meal-id="${meal.id}" data-state="${value}" type="button">${RATION_STATE_LABELS[value]}</button>`).join("")}
         </div>
         ${(mealRecord.discrepancies || []).length ? `<ul class="ration-history-discrepancies">${discrepancies}</ul>` : ""}
       </article>`;
@@ -2410,7 +2387,7 @@ import {
 
   function rationMealDialog(dateKey) {
     if (!routeSubId) return "";
-    const day = rationDayFor(state, dateKey) || { date: dateKey, meals: defaultRationMeals(dateKey) };
+    const day = rationDayFor(state, dateKey) || { date: dateKey, meals: [] };
     const meal = day.meals.find((value) => value.id === routeSubId);
     if (!meal) return "";
     const record = readRationHistoryDay(state, dateKey)?.meals?.[meal.id] || { state: "unmarked", discrepancies: [] };
@@ -2419,7 +2396,7 @@ import {
     return `<dialog id="ration-meal-dialog" class="ration-meal-dialog">
       <header><div><span>${rationLongDate(dateKey)}</span><h2>${escapeHtml(meal.name)}</h2></div><button id="close-ration-meal" type="button" aria-label="Закрыть">×</button></header>
       <div class="ration-meal-states">
-        ${["eaten", "changed", "skipped", "unmarked"].map((value) => `<button class="ration-state-set ${stateKey === value ? "active" : ""}" data-meal-id="${meal.id}" data-state="${value}" type="button">${RATION_STATE_LABELS[value]}</button>`).join("")}
+        ${["eaten", "changed", "skipped", "unmarked"].map((value) => `<button class="ration-state-set ${stateKey === value ? "active" : ""}" data-date="${dateKey}" data-meal-id="${meal.id}" data-state="${value}" type="button">${RATION_STATE_LABELS[value]}</button>`).join("")}
       </div>
       <div class="ration-meal-transfer">
         <span>Перенести</span>
@@ -2442,7 +2419,7 @@ import {
   }
 
   function rationDayEditor(dateKey, showHeading) {
-    const day = rationDayFor(state, dateKey) || { date: dateKey, meals: defaultRationMeals(dateKey) };
+    const day = rationDayFor(state, dateKey) || { date: dateKey, meals: [] };
     return `
       <div class="ration-day-editor" data-date="${dateKey}">
         ${showHeading ? `<h2 class="ration-day-title">${rationLongDate(dateKey)}</h2>` : ""}
@@ -2530,7 +2507,7 @@ import {
     });
     document.querySelectorAll(".ration-state-set").forEach((button) => {
       button.onclick = () => {
-        const result = localData.markRationMeal(today, button.dataset.mealId, button.dataset.state);
+        const result = localData.markRationMeal(button.dataset.date, button.dataset.mealId, button.dataset.state);
         if (!applyLocal(result)) return showToast(result.reason);
         renderRation();
       };
@@ -2769,10 +2746,6 @@ import {
     });
     if (!applyLocal(saved)) return;
     renderRation(saved.nextItemId || "");
-  }
-
-  function defaultRationMeals(dateKey) {
-    return [];
   }
 
   function addRationDays(value, count) {

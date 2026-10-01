@@ -206,29 +206,6 @@ test("cycle day computation is stable across long distances", () => {
   assert.equal(cycleDayFor(version.cycle, "2027-08-03").meals[0].id, "meal_2");
 });
 
-test("deleteSelection removes cycle content when no special day holds it", () => {
-  const data = openLocalData(memoryStorage(v11Blob()));
-  data.load();
-  const state = data.snapshot();
-  const specialItemId = rationDayFor(state, "2026-08-03").meals[0].items[0].id;
-  const cycleItemId = rationDayFor(state, "2026-08-05").meals[0].items[0].id;
-  assert.equal(cycleItemId, specialItemId);
-
-  const first = data.deleteRationSelection({ itemIds: [specialItemId] });
-  assert.equal(first.ok, true);
-  const afterFirst = data.snapshot();
-  assert.equal(rationDayFor(afterFirst, "2026-08-03").meals[0].items.length, 0);
-  assert.equal(rationDayFor(afterFirst, "2026-08-05").meals[0].items.length, 1);
-
-  const second = data.deleteRationSelection({ itemIds: [specialItemId] });
-  assert.equal(second.ok, true);
-  const afterSecond = data.snapshot();
-  assert.equal(rationDayFor(afterSecond, "2026-08-05").meals[0].items.length, 0);
-  assert.equal(rationDayFor(afterSecond, "2026-08-07").meals[0].items.length, 0);
-  assert.equal(rationDayFor(afterSecond, "2026-08-06").meals[0].items.length, 1);
-  assert.equal(rationDayFor(afterSecond, "2026-08-04").meals[0].items.length, 1);
-});
-
 test("template fallback seeds the initial version when only templates exist", () => {
   const blob = v11Blob();
   delete blob.rationDays;
@@ -648,4 +625,16 @@ test("history survives re-migration", () => {
 
   assert.deepEqual(migrated, marked.state);
   assert.equal(readRationHistoryDay(migrated, "2026-08-03").meals[mealId].state, "eaten");
+});
+
+test("saving a ration item without a product name fails without changing state", () => {
+  const data = openLocalData(memoryStorage());
+  data.load();
+  const meal = data.addRationMeal("2026-08-03");
+  const item = data.addRationFood("2026-08-03", meal.mealId);
+  const before = data.snapshot();
+  const saved = data.saveRationFood("2026-08-03", meal.mealId, item.itemId, { name: "   " });
+  assert.equal(saved.ok, false);
+  assert.match(saved.reason, /Название продукта/);
+  assert.deepEqual(data.snapshot(), before);
 });

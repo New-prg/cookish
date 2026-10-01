@@ -207,3 +207,109 @@ test("smoke: action elements stay visible at 360 px width", async () => {
     await context.close();
   }
 });
+
+function dateKey(offsetDays) {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+async function seedState(page, state) {
+  await page.evaluate((value) => localStorage.setItem("cookish.android.data.v1", JSON.stringify(value)), state);
+  await page.reload({ waitUntil: "load" });
+}
+
+function storedState(page) {
+  return page.evaluate(() => JSON.parse(localStorage.getItem("cookish.android.data.v1")));
+}
+
+test("smoke: history overlay marks the selected past day, not today", async () => {
+  const { context, page } = await openPage();
+  try {
+    const anchor = dateKey(-30);
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [],
+      requests: [],
+      ration: {
+        versions: [{
+          id: "version_1",
+          owner: "local",
+          effectiveFrom: anchor,
+          cycle: { anchor, weekdayBinding: false, days: [{ id: "cycle_1", meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [] }] }] },
+        }],
+        specialDays: {},
+        history: {},
+      },
+    });
+    await openRoute(page, "ration");
+    await page.click('.ration-rail-flag[data-overlay="history"]');
+    const pastDay = page.locator(".ration-overlay-day").nth(2);
+    const pastDate = await pastDay.getAttribute("data-date");
+    await pastDay.click();
+    await page.click('.ration-overlay-editor .ration-state-set[data-state="skipped"]');
+    await page.waitForTimeout(80);
+
+    const { history } = (await storedState(page)).ration;
+    assert.deepEqual(Object.keys(history), [`local|${pastDate}`]);
+    assert.equal(history[`local|${pastDate}`].meals.meal_1.state, "skipped");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: saving an empty ration product shows a reason instead of crashing", async () => {
+  const { context, page } = await openPage();
+  try {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await openRoute(page, "ration");
+    await page.click("#ration-add-meal");
+    await page.waitForSelector("#ration-meal-dialog[open]");
+    await page.click("#ration-meal-dialog .add-ration-food");
+    await page.locator("#ration-meal-dialog .save-ration-food").last().click();
+    await page.waitForTimeout(80);
+
+    assert.deepEqual(errors, []);
+    assert.match(await page.locator("#toast-message").innerText(), /Название продукта не заполнено/);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: barcode lookup fills the product form from Open Food Facts", async () => {
+  const { context, page } = await openPage();
+  try {
+    await page.route("https://world.openfoodfacts.org/**", (route) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: 1,
+        product: {
+          code: "4600000000001",
+          product_name_ru: "Кефир 1%",
+          quantity: "900 мл",
+          categories_tags: ["en:fermented-milks"],
+          nutriments: { "energy-kcal_100g": 40, proteins_100g: 3, fat_100g: 1, carbohydrates_100g: 4 },
+          ingredients_text_ru: "молоко нормализованное",
+        },
+      }),
+    }));
+    await openRoute(page, "profile");
+    await page.click("#manage-products");
+    await page.click("#header-action");
+    await page.waitForSelector("#product-form");
+    await page.fill("#product-form [name=barcode]", "4600000000001");
+    await page.click("#lookup-barcode");
+    await page.waitForFunction(() => document.querySelector("#product-form [name=name]").value !== "");
+
+    const form = page.locator("#product-form");
+    assert.equal(await form.locator("[name=name]").inputValue(), "Кефир 1%");
+    assert.equal(await form.locator("[name=category]").inputValue(), "Молочные продукты");
+    assert.equal(await form.locator("[name=unit]").inputValue(), "л");
+    assert.equal(await form.locator("[name=calories]").inputValue(), "40");
+    assert.equal(await form.locator("[name=ingredients]").inputValue(), "молоко нормализованное");
+    assert.doesNotMatch(await page.locator("#barcode-status").innerText(), /not defined/);
+  } finally {
+    await context.close();
+  }
+});

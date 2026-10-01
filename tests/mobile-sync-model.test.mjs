@@ -565,8 +565,8 @@ test("ration sync preserves an arbitrary number of meals and their products", ()
   });
 
   assert.equal(result.schemaVersion, 12);
-  assert.equal(result.rationView, "month");
-  assert.equal(result.rationAnchor, date);
+  assert.equal(result.rationView, undefined);
+  assert.equal(result.rationAnchor, undefined);
   const day = rationDayFor(result, date);
   assert.equal(day.meals.length, 4);
   assert.equal(day.meals[3].items[0].productId, "product_snack");
@@ -699,20 +699,6 @@ test("product used in a request cannot be deleted", () => {
   assert.match(removed.reason, /используется/);
 });
 
-test("ration template applies meals to several days", () => {
-  const data = openLocalData(memoryStorage());
-  data.addRationMeal("2026-08-03");
-  const mealId = rationDayFor(data.snapshot(), "2026-08-03").meals[0].id;
-  data.saveRationFood("2026-08-03", mealId, data.addRationFood("2026-08-03", mealId).itemId, { name: "Гречка" });
-  const saved = data.saveRationTemplateFromDay("2026-08-03", "Будний день");
-  assert.equal(saved.ok, true);
-  data.applyRationTemplate(saved.templateId, ["2026-08-04", "2026-08-05"]);
-  const state = data.snapshot();
-  assert.equal(rationDayFor(state, "2026-08-04").meals.length, 1);
-  assert.equal(rationDayFor(state, "2026-08-05").meals[0].items[0].name, "Гречка");
-  assert.notEqual(rationDayFor(state, "2026-08-04").meals[0].id, mealId);
-});
-
 test("ration request merges the same product across days and rounds packages", () => {
   const data = openLocalData(memoryStorage());
   const first = data.addRationMeal("2026-08-03");
@@ -736,19 +722,13 @@ test("ration request merges the same product across days and rounds packages", (
   assert.equal(request.items[0].quantity, 1);
 });
 
-test("ration selection delete removes meals and items", () => {
-  const data = openLocalData(memoryStorage());
-  const meal = data.addRationMeal("2026-08-03");
-  const kept = data.addRationFood("2026-08-03", meal.mealId);
-  const gone = data.addRationFood("2026-08-03", meal.mealId);
-  data.saveRationFood("2026-08-03", meal.mealId, kept.itemId, { name: "Рис" });
-  data.saveRationFood("2026-08-03", meal.mealId, gone.itemId, { name: "Огурцы" });
-  const deleted = data.deleteRationSelection({ itemIds: [gone.itemId] });
-  assert.equal(deleted.ok, true);
-  let day = rationDayFor(data.snapshot(), "2026-08-03");
-  assert.equal(day.meals[0].items.length, 1);
-  assert.equal(day.meals[0].items[0].name, "Рис");
-  data.deleteRationSelection({ mealIds: [meal.mealId] });
-  day = rationDayFor(data.snapshot(), "2026-08-03");
-  assert.equal(day.meals.length, 0);
+test("Open Food Facts units are recognised in Cyrillic and Latin quantities", () => {
+  const unit = (quantity) => openFoodFactsSuggestion({ code: "1", product_name: "Товар", quantity }).unit;
+  assert.equal(unit("900 мл"), "л");
+  assert.equal(unit("1 л"), "л");
+  assert.equal(unit("330ml"), "л");
+  assert.equal(unit("1 кг"), "кг");
+  assert.equal(unit("500 г"), "г");
+  assert.equal(unit("500 g"), "г");
+  assert.equal(unit("10 шт"), "шт.");
 });
