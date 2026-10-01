@@ -592,3 +592,17 @@ test("smoke: without an account the app only talks to the product catalog", asyn
     await context.close();
   }
 });
+
+test("smoke: Android back closes an open ration overlay instead of leaving the app", async () => {
+  const { context, page } = await openPage();
+  try {
+    await openRoute(page, "ration");
+    await page.click('.ration-rail-flag[data-overlay="plan"]');
+    await page.waitForSelector(".ration-overlay");
+    assert.equal(await page.evaluate(() => window.__handleNativeBack()), true);
+    assert.equal(await page.locator(".ration-overlay").count(), 0);
+    assert.equal(await page.evaluate(() => window.__handleNativeBack()), false);
+  } finally {
+    await context.close();
+  }
+});

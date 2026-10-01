@@ -226,6 +226,12 @@ import {
       closeDialogSafely(openDialog);
       return true;
     }
+    if (route === "ration" && rationOverlay) {
+      rationOverlay = "";
+      rationOverlayDate = "";
+      renderRation();
+      return true;
+    }
     if (route === "request-answer") {
       finishRequestAnswer();
       return true;
