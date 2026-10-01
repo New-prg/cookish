@@ -606,3 +606,85 @@ test("smoke: Android back closes an open ration overlay instead of leaving the a
     await context.close();
   }
 });
+
+test("smoke: a tap on the check marks a request line bought and a second tap unmarks it", async () => {
+  const { context, page } = await openPage();
+  try {
+    const now = new Date().toISOString();
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [{ id: "product_milk", name: "Молоко", unit: "л" }],
+      requests: [{ id: "request_1", status: "open", createdAt: now, updatedAt: now, items: [{ productId: "product_milk", quantity: 2, unit: "л" }], responses: [] }],
+    });
+    await openRoute(page, "requests");
+    await page.locator(".request-link").first().click();
+    const check = page.locator('#request-items .request-item:not(.is-blank) .request-swipe-handle[role="checkbox"]');
+    assert.equal(await check.getAttribute("aria-checked"), "false");
+    await check.click();
+    await page.waitForTimeout(120);
+    assert.equal(await check.getAttribute("aria-checked"), "true");
+    assert.equal(await page.locator("#answer-action-dialog[open]").count(), 0);
+    let stored = await storedState(page);
+    let lines = stored.requests[0].responses.filter((response) => !response.deletedAt).flatMap((response) => response.items);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].quantity, 2);
+
+    await check.click();
+    await page.waitForTimeout(120);
+    assert.equal(await check.getAttribute("aria-checked"), "false");
+    stored = await storedState(page);
+    lines = stored.requests[0].responses.filter((response) => !response.deletedAt).flatMap((response) => response.items);
+    assert.equal(lines.length, 0);
+
+    await page.click("#toast-action");
+    await page.waitForTimeout(120);
+    assert.equal(await check.getAttribute("aria-checked"), "true");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: opening another screen starts it from the top", async () => {
+  const { context, page } = await openPage({ width: 412, height: 500 });
+  try {
+    await openRoute(page, "profile");
+    await page.locator("main").evaluate((main) => main.scrollTo(0, 9999));
+    assert.ok(await page.locator("main").evaluate((main) => main.scrollTop) > 0);
+    await page.click("#manage-products");
+    await page.waitForTimeout(80);
+    assert.equal(await page.locator("main").evaluate((main) => main.scrollTop), 0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: unchecking a product in the meal card records that it was not eaten", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, planState(dateKey(-5), {
+      products: [{ id: "product_tea", name: "Чай", unit: "г" }],
+      meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [{ id: "item_1", productId: "product_tea", name: "Чай" }] }],
+    }));
+    await openRoute(page, "ration");
+    await page.click('.ration-today-meal-open[data-meal-id="meal_1"]');
+    await page.waitForSelector("#ration-meal-dialog[open]");
+    const check = () => page.locator('#ration-meal-dialog .ration-food-row[data-item-id="item_1"] .ration-item-check');
+    assert.equal(await check().isChecked(), true);
+    await check().uncheck();
+    await page.waitForTimeout(80);
+    let meal = Object.values((await storedState(page)).ration.history)[0].meals.meal_1;
+    assert.deepEqual(meal.discrepancies.map((item) => [item.kind, item.productId]), [["excluded", "product_tea"]]);
+    assert.equal(await check().isChecked(), false);
+    await check().check();
+    await page.waitForTimeout(80);
+    meal = Object.values((await storedState(page)).ration.history)[0].meals.meal_1;
+    assert.equal(meal.discrepancies.length, 0);
+
+    await page.click("#close-ration-meal");
+    await page.click('.ration-rail-flag[data-overlay="plan"]');
+    await page.waitForSelector(".ration-overlay");
+    assert.equal(await page.locator(".ration-overlay .ration-item-check").count(), 0);
+  } finally {
+    await context.close();
+  }
+});

@@ -3,7 +3,7 @@
 **Product name:** Cookish
 **Platform:** Android (Capacitor WebView, native barcode scan, in-app APK update)
 **Primary language:** Russian UI
-**Updated:** 2026-08-29
+**Updated:** 2026-10-01
 **Package id:** `ru.listok.purchases`
 
 This file is the source of truth for **what problems the app must solve** and
@@ -168,13 +168,13 @@ On one phone these are the same person at different times.
 | ＋ Позиция | Tappable text aligned with list content, not a misaligned block button |
 | One product once | Duplicate product in same request is rejected with clear message |
 | Name-only text input | Line text is product name only (no qty/unit parsing from free text) |
-| Qty control | Compact stepper on the line after the product is present; default `1` |
+| No qty on the line | The note line shows no quantity control; quantity is a legacy field, defaults to `1` and is only edited in the purchase sheet |
 | Line unit | Taken from product card default; not a separate always-visible input |
 | Product chip | Resolved product becomes a tappable chip → product card; long-press/dblclick renames line |
 | Remove × | Visible for every non-empty line; hidden (space reserved) for blank trailing line |
-| Check = bought | Checkbox on main request list marks remaining quantity purchased |
-| Uncheck = undo latest mark | Unchecking removes latest purchase contribution for that product when possible |
-| Purchase sheet | Swipe or long-press row opens price / bought qty / barcode sheet (no ··· button) |
+| Check = bought | Tap on the check at the end of the row marks the line bought with a short confirmation animation; the check is a real `role=checkbox` control |
+| Uncheck = undo latest mark | Unchecking removes latest purchase contribution for that product when possible; a toast offers Отменить |
+| Purchase sheet | Swipe left opens price / bought qty / barcode sheet (no ··· button); on a bought row the same swipe unmarks it |
 | Unconfirmed update | Barcode/OFF may rewrite only **unconfirmed** products; confirmed products get a separate purchased SKU |
 | Bought styling | Minimal check vs filled details (price / other SKU) are visually distinct |
 
@@ -246,7 +246,7 @@ On one phone these are the same person at different times.
 | REQ-3 | Open always = Keep note editor (same as create) |
 | REQ-4 | One product id once per request |
 | REQ-5 | Autosave of structure on field commit (see 5.2), not on every key |
-| REQ-6 | Checkbox purchase flow on the note (see 5.3) |
+| REQ-6 | Check purchase flow on the note: tap or swipe (see 5.3) |
 | REQ-7 | Optional purchase details via swipe/long-press sheet (qty, price, scan); no ··· button |
 | REQ-8 | Partial fulfillment keeps request open until all quantities met |
 | REQ-9 | Local history + rollback on the note |
@@ -360,8 +360,8 @@ editor. This is a product decision; implementation removes them in #27/#28.
 
 ```
 [ Status · date ]
-[ ✓ ] [ product chip / name text ] [ qty stepper ] [×]
-[ ✓ ] [ ... ]
+[×] [ product chip / name text ]                  [ ✓ ]
+[×] [ ... ]                                       [ ✓ ]
 [ ＋ Позиция ]
 
 [ History optional ]
@@ -370,12 +370,12 @@ editor. This is a product decision; implementation removes them in #27/#28.
 
 **Interactions**
 
-- Type product name only → suggestions; qty defaults to 1; unit from product card.
+- Type product name only → suggestions; no quantity on the line; unit from product card.
 - Blur/Enter → persist lines + create unconfirmed product if new; show chip.
 - Tap chip → product card (return to note).
-- Check → mark remaining qty bought (partial row update).
+- Tap ✓ → mark the line bought (partial row update, short animation).
 - Uncheck → undo latest mark for that product if possible.
-- Swipe / long-press row → purchase sheet (price, bought qty, barcode).
+- Swipe left → purchase sheet (price, bought qty, barcode).
 - Готово / back → commit pending field edits, return to list.
 
 ### 7.2 Ration today screen and overlays (canonical)
@@ -434,9 +434,9 @@ Track qualitatively in early household use; instrument later if needed:
 A build may ship for household use only if:
 
 - [ ] Create request is empty note; multi-line add works after Enter/blur commit
-- [ ] Qty via compact stepper; unit from product (no free-text unit field on line)
+- [ ] No quantity control on the note line; unit from product (no free-text unit field on line)
 - [ ] No product spam while typing names
-- [ ] Checkbox buy/unbuy on request note; swipe/long-press for purchase details (no ···)
+- [ ] Tap-or-swipe buy/unbuy on request note; swipe for purchase details (no ···)
 - [ ] Confirmed product is not rewritten when a different SKU is scanned
 - [ ] Bottom nav stable on Profile and long Ration
 - [ ] Ration opens on today; meal states and overlays usable on ≤360 px width

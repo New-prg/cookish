@@ -204,7 +204,8 @@ import {
     routeId = id;
     routeSubId = subId;
     formDirty = false;
-    window.scrollTo(0, 0);
+    // The page itself never scrolls: only <main> does (see styles.css).
+    app.scrollTop = 0;
     render();
   }
 
@@ -851,7 +852,7 @@ import {
               </div>
             </div>
           </div>
-          <span class="request-swipe-handle" aria-hidden="true"><span class="request-swipe-arrow">&lt;</span><span class="request-swipe-dots"></span></span>
+          <span class="request-swipe-handle" ${isBlank ? 'aria-hidden="true"' : `role="checkbox" tabindex="0" aria-checked="${fullyBought}" aria-label="Куплено: ${escapeAttr(productName)}"`}><span class="request-swipe-arrow" aria-hidden="true">&lt;</span><span class="request-swipe-dots" aria-hidden="true"></span></span>
         </div>
       </div>`;
   }
@@ -1299,6 +1300,7 @@ import {
       let horizontal = false;
       let pointerId = null;
       let tapPreviewTimer = 0;
+      let startedOnHandle = false;
 
       const clearTapPreview = () => {
         window.clearTimeout(tapPreviewTimer);
@@ -1393,8 +1395,23 @@ import {
         }, 160);
       };
 
+      const toggleBought = () => {
+        if (token !== requestGestureToken || !row.isConnected || row.classList.contains("is-blank")) return;
+        clearTapPreview();
+        if (row.classList.contains("is-bought")) unmarkRowBought(request, row);
+        else quickMarkRowBought(request, row);
+      };
+
+      const handle = row.querySelector(".request-swipe-handle[role=checkbox]");
+      handle?.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        toggleBought();
+      });
+
       const onPointerDown = (event) => {
         if (event.pointerType === "mouse" && event.button !== 0) return;
+        startedOnHandle = Boolean(handle && handle.contains(event.target));
         // Allow swipe from chip, input, main — any point on the tile.
         tracking = true;
         horizontal = false;
@@ -1448,6 +1465,9 @@ import {
         }
         if (!horizontal) {
           surface.classList.remove("is-dragging");
+          // Pointer capture retargets the click to the surface, so a tap on
+          // the check handle is detected here instead of with a click listener.
+          if (startedOnHandle) toggleBought();
           return;
         }
         resetSurface({ animate: true });
@@ -1482,7 +1502,6 @@ import {
       });
       [
         [row.querySelector(".keep-remove-item"), row.querySelector(".keep-remove-cross"), "is-delete-tap-preview"],
-        [row.querySelector(".request-swipe-handle"), row.querySelector(".request-swipe-arrow"), "is-fill-tap-preview"],
       ].forEach(([hitArea, icon, previewClass]) => {
         hitArea?.addEventListener("pointerdown", (event) => {
           if (!icon || row.dataset.swiped === "1" || (event.pointerType === "mouse" && event.button !== 0)) return;
@@ -1495,6 +1514,62 @@ import {
         });
       });
     });
+  }
+
+  function quickMarkRowBought(request, row) {
+    clearTimeout(requestAutosaveTimer);
+    syncDraftFromForm();
+    if (!persistRequestDraft({ silent: false })) return;
+    const productId = ensureRowProductId(row);
+    if (!productId) return showToast("Сначала укажите продукт.");
+    const current = getRequest(request.id);
+    if (!current) return;
+    // Keep price and SKU already entered in the purchase sheet; only close the line.
+    const line = receiptLine(current, productId);
+    const requested = Number(current.items.find((item) => item.productId === productId)?.quantity || 0);
+    const marked = localData.markBought(request.id, productId, line ? {
+      quantity: requested || line.quantity,
+      price: line.price,
+      purchasedProductId: line.purchasedProductId,
+      completionMode: line.completionMode,
+    } : {});
+    if (!marked.ok) return showToast(marked.reason);
+    state = localData.snapshot();
+    formDirty = false;
+    try {
+      navigator.vibrate?.(12);
+    } catch {}
+    patchRequestItemRow(request.id, marked.productId || productId);
+    playRowPurchaseAnimation(marked.productId || productId, "is-just-bought");
+  }
+
+  function unmarkRowBought(request, row) {
+    clearTimeout(requestAutosaveTimer);
+    const productId = ensureRowProductId(row);
+    if (!productId) return;
+    const current = getRequest(request.id);
+    const line = current ? receiptLine(current, productId) : null;
+    const unmarked = localData.unmarkBought(request.id, productId);
+    if (!unmarked.ok) return showToast(unmarked.reason);
+    state = localData.snapshot();
+    formDirty = false;
+    patchRequestItemRow(request.id, productId);
+    playRowPurchaseAnimation(productId, "is-just-unbought");
+    if (!line) return;
+    const saved = { ...line };
+    showToast("Отметка покупки снята.", "Отменить", () => {
+      applyInlinePurchase(request.id, productId, saved);
+      playRowPurchaseAnimation(productId, "is-just-bought");
+    });
+  }
+
+  function playRowPurchaseAnimation(productId, className) {
+    const row = [...document.querySelectorAll(".request-item")].find((element) => element.dataset.productId === productId);
+    if (!row) return;
+    row.classList.remove("is-just-bought", "is-just-unbought");
+    void row.offsetWidth;
+    row.classList.add(className);
+    window.setTimeout(() => row.classList.remove(className), 700);
   }
 
   function openPurchaseDetailsForRow(request, row) {
@@ -1623,6 +1698,7 @@ import {
     const filled = Boolean(line && isPurchaseDetailsFilled(line, productId));
     row.classList.toggle("is-bought", fullyBought);
     row.classList.toggle("is-purchase-filled", filled);
+    row.querySelector(".request-swipe-handle[role=checkbox]")?.setAttribute("aria-checked", String(fullyBought));
     row.dataset.productId = productId;
     const swipeLabel = row.querySelector(".request-swipe-label");
     if (swipeLabel) swipeLabel.textContent = fullyBought ? "Снять" : "Заполнить";
@@ -2486,6 +2562,32 @@ import {
     return { discrepancy };
   }
 
+  function bindRationEatenChecks() {
+    document.querySelectorAll("#ration-meal-dialog .ration-item-check").forEach((input) => {
+      input.addEventListener("change", (event) => {
+        // A recorded discrepancy is saved at once; it is not an unsaved dialog edit.
+        event.stopPropagation();
+        const row = input.closest(".ration-food-row");
+        const mealNode = input.closest(".ration-meal");
+        const date = mealNode?.dataset.date;
+        const mealId = mealNode?.dataset.mealId;
+        const item = rationDayFor(state, date)?.meals.find((value) => value.id === mealId)?.items?.find((value) => value.id === row?.dataset.itemId);
+        if (!item?.productId) return;
+        const name = getProduct(item.productId)?.name || item.name || "";
+        const record = readRationHistoryDay(state, date)?.meals?.[mealId];
+        const result = input.checked
+          ? localData.removeRationDiscrepancy(date, mealId, rationExcludedIndex(record, item.productId))
+          : localData.recordRationDiscrepancy(date, mealId, { kind: "excluded", productId: item.productId, name });
+        if (!applyLocal(result)) {
+          input.checked = !input.checked;
+          return;
+        }
+        renderRation();
+        showToast(input.checked ? `«${name}» съеден по плану.` : `Записано: не ел «${name}».`);
+      });
+    });
+  }
+
   function bindRationDiscrepancies() {
     document.querySelectorAll(".ration-discrepancy-form").forEach((form) => {
       syncRationDiscrepancyForm(form);
@@ -2539,7 +2641,7 @@ import {
       </div>
       ${!isToday ? `<p class="muted">Прошлые отметки можно исправить; план этого дня не меняется.</p>` : ""}
       ${rationDiscrepancyEditor(dateKey, meal, record)}
-      ${rationMealEditor(dateKey, meal, day.meals.length)}
+      ${rationMealEditor(dateKey, meal, day.meals.length, record)}
     </dialog>`;
   }
 
@@ -2564,7 +2666,9 @@ import {
       </div>`;
   }
 
-  function rationMealEditor(dateKey, meal, mealCount) {
+  // `record` is the meal's history entry. It is passed only where the meal
+  // already happened or happens today, so rows can offer the "ate it" checkbox.
+  function rationMealEditor(dateKey, meal, mealCount, record = null) {
     const mealIndex = (rationDayFor(state, dateKey)?.meals || []).findIndex((value) => value.id === meal.id);
     return `
       <article class="ration-meal" data-date="${dateKey}" data-meal-id="${meal.id}">
@@ -2574,26 +2678,37 @@ import {
           <button class="remove-ration-meal" type="button" aria-label="Удалить приём пищи ${escapeAttr(meal.name)}">×</button>
         </header>
         <div class="ration-food-list">
-          ${(meal.items || []).map((item) => rationFoodRow(dateKey, meal.id, item)).join("")}
+          ${(meal.items || []).map((item) => rationFoodRow(dateKey, meal.id, item, record)).join("")}
         </div>
         <button class="add-ration-food keep-add-item" type="button"><span>＋</span> Добавить продукт</button>
       </article>`;
   }
 
-  function rationFoodRow(dateKey, mealId, item) {
+  function rationExcludedIndex(record, productId) {
+    if (!productId) return -1;
+    return (record?.discrepancies || []).findIndex((value) => value.kind === "excluded" && value.productId === productId);
+  }
+
+  function rationEatenCheck(record, item, name) {
+    if (!record) return "";
+    if (!item.productId) return `<span aria-hidden="true"></span>`;
+    const eaten = rationExcludedIndex(record, item.productId) < 0;
+    return `<input class="ration-item-check" type="checkbox" ${eaten ? "checked" : ""} aria-label="Съел: ${escapeAttr(name || "продукт")}">`;
+  }
+
+  function rationFoodRow(dateKey, mealId, item, record = null) {
     const product = getProduct(item.productId);
     const value = product?.name || item.name || "";
     const listId = `ration-products-${item.id}`;
     const measure = rationMeasure(product);
     const portion = Number(item.portionSize) || measure.defaultPortion;
-    const packageSize = Number(item.packageSize) || measure.defaultPackage;
     return `
-      <div class="ration-food-row" data-item-id="${item.id}">
-        <span class="list-checkbox" aria-hidden="true"></span>
+      <div class="ration-food-row${record ? "" : " no-check"}" data-item-id="${item.id}">
+        ${rationEatenCheck(record, item, value)}
         <input class="ration-food-input" list="${listId}" value="${escapeAttr(value)}" placeholder="Продукт" autocomplete="off">
         <datalist id="${listId}">${productSuggestionOptions(value)}</datalist>
         <button class="save-ration-food" type="button" aria-label="Сохранить ${escapeAttr(value || "продукт")}">✓</button>
-        <button class="ration-portion-button" type="button" aria-label="Настроить порцию ${escapeAttr(product?.name || item.query || "продукта")}">${number(portion)} ${measure.unit}<small>из ${number(packageSize)} ${measure.unit}</small></button>
+        <button class="ration-portion-button" type="button" aria-label="Настроить порцию ${escapeAttr(product?.name || item.query || "продукта")}">${number(portion)} ${measure.unit}</button>
         <button class="remove-ration-food" type="button" aria-label="Удалить ${escapeAttr(product?.name || item.query || "продукт")}">×</button>
       </div>`;
   }
@@ -2688,6 +2803,7 @@ import {
       showToast("Продукты рациона добавлены в запрос.");
     });
     bindRationDiscrepancies();
+    bindRationEatenChecks();
     document.querySelectorAll(".ration-repeat-button").forEach((button) => {
       button.onclick = async () => {
         const { date: from } = button.dataset;
