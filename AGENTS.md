@@ -16,9 +16,10 @@ The plan lives in GitHub issues, not in repo files. Source of truth is epic #21
 (`gh issue view 21`): phased checklist with the execution order.
 
 - Active slice: milestone «Рацион: локальный срез», in order
-  #22 → #23 → #24/#25 (#26 in parallel) → #27 → #28 → #38 → #37.
+  #22 → #23 → #24/#25 (#26 in parallel) → #27 → #28 → #38 → #39/#40/#41 → #37.
 - #37 is the release gate: issues in milestone «После локального среза»
-  (#29–#36) must not start until #37 is done.
+  (#29–#36, #42) must not start until #37 is done. #42 is the end-to-end QA of
+  account, sync and AI and comes last.
 - Milestone «Бэклог» issues are parked; do not reopen them without the user.
 - When starting implementation, read the epic, then the first open issue of the
   slice; close issues as their scope lands and push `master` after each session.
