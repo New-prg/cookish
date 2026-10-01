@@ -4,7 +4,7 @@ import {
   RATION_SCHEMA_VERSION,
   createId,
   emptyRation,
-  executeRationCommand,
+  applyRationCommand,
   formatRationDate,
   genericKeyFromParts,
   migrateRationState,
@@ -67,14 +67,50 @@ export function browserStorage(localStorage, key = STORAGE_KEY) {
 }
 
 export function openLocalData(storage) {
-  let current = emptyState();
+  // `current` is always normalized and deep-frozen, so it is shared with callers
+  // without copying. Commands mutate a private draft and replace `current` only
+  // after the storage write succeeds. Normalization (`prepareState`) runs only
+  // for data that comes from outside: storage on load and `commit`.
+  let current = deepFreeze(prepareState(emptyState()));
 
   function snapshot() {
-    return structuredClone(current);
+    return current;
   }
 
-  function apply(mutator) {
-    const next = structuredClone(current);
+  function persist(next) {
+    try {
+      storage.write(next);
+    } catch (error) {
+      return { ok: false, storageFailed: true, reason: storageFailureReason(error) };
+    }
+    current = deepFreeze(next);
+    return { ok: true };
+  }
+
+  function replaceAll(source) {
+    const saved = persist(prepareState(source));
+    if (!saved.ok) throw new Error(saved.reason);
+    return current;
+  }
+
+  // A command copies only the parts of the state it may change; the rest stays
+  // shared and frozen, so an out-of-scope write throws instead of leaking.
+  function draft(scope) {
+    const next = { ...current };
+    if (scope.products) next.products = structuredClone(current.products);
+    if (scope.ration) next.ration = structuredClone(current.ration);
+    if (scope.requestId) {
+      next.requests = current.requests.map((request) =>
+        request.id === scope.requestId ? structuredClone(request) : request
+      );
+    } else if (scope.addRequest) {
+      next.requests = current.requests.slice();
+    }
+    return next;
+  }
+
+  function apply(scope, mutator) {
+    const next = draft(scope);
     const context = {
       now: new Date().toISOString(),
       actor: String(next.user?.email || "local"),
@@ -82,44 +118,32 @@ export function openLocalData(storage) {
     };
     const result = mutator(next, context) || { ok: false };
     if (result.ok === false) return result;
-    if (result.changed === false) {
-      result.request = result.requestId
-        ? snapshot().requests.find((item) => item.id === result.requestId)
-        : undefined;
-      result.product = result.productId
-        ? snapshot().products.find((item) => item.id === result.productId)
-        : undefined;
-      return result;
+    if (result.changed !== false) {
+      const saved = persist(next);
+      if (!saved.ok) return saved;
+      result.state = current;
     }
-    current = prepareState(next);
-    storage.write(current);
-    const view = snapshot();
-    if (result.requestId) result.request = view.requests.find((item) => item.id === result.requestId);
-    if (result.productId) result.product = view.products.find((item) => item.id === result.productId);
-    result.state = view;
+    result.request = result.requestId ? current.requests.find((item) => item.id === result.requestId) : undefined;
+    result.product = result.productId ? current.products.find((item) => item.id === result.productId) : undefined;
     return result;
   }
 
   return {
     load() {
       const stored = storage.read();
-      current = prepareState(stored && typeof stored === "object" ? stored : emptyState());
-      return snapshot();
+      current = deepFreeze(prepareState(stored && typeof stored === "object" ? stored : emptyState()));
+      return current;
     },
     commit(nextState) {
-      current = prepareState(nextState);
-      storage.write(current);
-      return snapshot();
+      return replaceAll(nextState);
     },
     snapshot,
     clear() {
-      current = prepareState(emptyState());
-      storage.write(current);
-      return snapshot();
+      return replaceAll(emptyState());
     },
 
     saveProduct(fields) {
-      return apply((next, { now, actor }) => {
+      return apply({ products: true }, (next, { now, actor }) => {
         const name = String(fields.name || "").trim();
         if (!name) return { ok: false, reason: "Название продукта не заполнено." };
         const category = String(fields.category || "").trim();
@@ -152,7 +176,7 @@ export function openLocalData(storage) {
     },
 
     removeProduct(productId) {
-      return apply((next, { now, actor }) => {
+      return apply({ products: true }, (next, { now, actor }) => {
         const used = (next.requests || []).some((request) =>
           !request.deletedAt && (
             (request.items || []).some((item) => item.productId === productId)
@@ -172,7 +196,7 @@ export function openLocalData(storage) {
     },
 
     restoreProduct(productId) {
-      return apply((next, { now, actor }) => {
+      return apply({ products: true }, (next, { now, actor }) => {
         const product = next.products.find((item) => item.id === productId);
         if (!product) return { ok: false, reason: "Продукт не найден." };
         if (!product.deletedAt) return { ok: true, changed: false, productId };
@@ -184,11 +208,13 @@ export function openLocalData(storage) {
     },
 
     createRequest() {
-      return apply((next, { now, actor }) => {
+      return apply({ addRequest: true }, (next, { now, actor }) => {
         const request = {
           id: createId("request"),
           createdAt: now,
           status: "open",
+          completedAt: "",
+          deletedAt: "",
           items: [],
           responses: [],
           createdBy: actor,
@@ -203,7 +229,7 @@ export function openLocalData(storage) {
     },
 
     saveRequestItems(requestId, lines) {
-      return apply((next, { now, actor }) => {
+      return apply({ products: true, requestId }, (next, { now, actor }) => {
         const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
         if (!request) return { ok: false, reason: "Запрос не найден." };
         const items = [];
@@ -254,7 +280,7 @@ export function openLocalData(storage) {
     },
 
     removeRequest(requestId) {
-      return apply((next, { now, actor }) => {
+      return apply({ requestId }, (next, { now, actor }) => {
         const request = (next.requests || []).find((item) => item.id === requestId);
         if (!request || request.deletedAt) return { ok: false, reason: "Запрос не найден." };
         request.deletedAt = now;
@@ -270,7 +296,7 @@ export function openLocalData(storage) {
     },
 
     markBought(requestId, productId, details = {}) {
-      return apply((next, { now, actor }) => {
+      return apply({ products: true, requestId }, (next, { now, actor }) => {
         const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
         if (!request) return { ok: false, reason: "Запрос не найден." };
         const requestItem = (request.items || []).find((item) => item.productId === productId)
@@ -345,7 +371,7 @@ export function openLocalData(storage) {
     },
 
     unmarkBought(requestId, productId) {
-      return apply((next, { now, actor }) => {
+      return apply({ requestId }, (next, { now, actor }) => {
         const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
         if (!request) return { ok: false, reason: "Запрос не найден." };
         if (!receiptLine(request, productId)) return { ok: true, changed: false, requestId };
@@ -365,7 +391,7 @@ export function openLocalData(storage) {
     },
 
     saveReceipt(requestId, items, responseId = "") {
-      return apply((next, { now, actor }) => {
+      return apply({ products: true, requestId }, (next, { now, actor }) => {
         const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
         if (!request) return { ok: false, reason: "Запрос не найден." };
         const sourceItems = (items || []).filter((item) => item.productId);
@@ -401,7 +427,7 @@ export function openLocalData(storage) {
     },
 
     restoreVersion(requestId, historyId) {
-      return apply((next, { now, actor }) => {
+      return apply({ requestId }, (next, { now, actor }) => {
         const request = (next.requests || []).find((item) => item.id === requestId && !item.deletedAt);
         if (!request) return { ok: false, reason: "Запрос не найден." };
         const transaction = (request.history || []).find((item) => item.id === historyId);
@@ -435,6 +461,12 @@ export function openLocalData(storage) {
       return runRation({ type: "removeItem", date: dateKey, mealId, itemId });
     },
 
+    // `undo` is the payload returned by removeRationMeal/removeRationFood.
+    undoRationRemoval(undo) {
+      if (!["restoreMeal", "restoreItem"].includes(undo?.type)) return { ok: false, reason: "Нечего отменять." };
+      return runRation(undo);
+    },
+
     setRationPortion(dateKey, mealId, itemId, { portionSize, packageSize, measureUnit } = {}) {
       return runRation({ type: "setPortion", date: dateKey, mealId, itemId, portionSize, packageSize, measureUnit });
     },
@@ -456,14 +488,16 @@ export function openLocalData(storage) {
     },
 
     createRequestFromRation({ dates, itemIds } = {}) {
-      return apply((next, { now, actor }) => {
+      return apply({ addRequest: true }, (next, { now, actor }) => {
         const requestItems = plannedRationRequestItems(next, [...(dates || [])].sort(), new Set(itemIds || []));
         if (!requestItems.length) return { ok: false, reason: "Выберите хотя бы одну позицию рациона." };
         const request = {
           id: createId("request"),
           createdAt: now,
           status: "open",
-          items: requestItems,
+          completedAt: "",
+          deletedAt: "",
+          items: requestItems.map((item) => ({ ...item, note: "" })),
           responses: [],
           createdBy: actor,
           updatedBy: actor,
@@ -478,19 +512,23 @@ export function openLocalData(storage) {
   };
 
   function runRation(command) {
-    return apply((next, context) => {
-      const result = executeRationCommand(next, command, context);
-      if (result.ok === false) return { ok: false, reason: result.reason };
-      const { state: commandState, ...payload } = result;
-      replaceStateInPlace(next, commandState);
-      return payload;
-    });
+    return apply({ ration: true, products: true }, (next, context) => applyRationCommand(next, command, context));
   }
 }
 
-function replaceStateInPlace(target, source) {
-  Object.keys(target).forEach((key) => delete target[key]);
-  Object.assign(target, source);
+function deepFreeze(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    Object.values(value).forEach(deepFreeze);
+  }
+  return value;
+}
+
+function storageFailureReason(error) {
+  const quota = error?.name === "QuotaExceededError" || error?.code === 22 || error?.code === 1014;
+  return quota
+    ? "Память приложения заполнена: изменение не сохранено."
+    : "Не удалось сохранить данные на устройстве: изменение не сохранено.";
 }
 
 export function prepareState(source) {
@@ -740,16 +778,43 @@ export function updateRequestStatus(request, changedAt = request.updatedAt) {
   return request;
 }
 
+// Each history entry stores a full request snapshot, so the journal is bounded:
+// repeated edits of one kind by one person within a short window update the
+// latest entry (autosave while typing), and only the newest entries are kept.
+export const REQUEST_HISTORY_LIMIT = 30;
+const REQUEST_HISTORY_MERGE_MS = 10 * 60 * 1000;
+const MERGEABLE_REQUEST_ACTIONS = new Set(["Запрос изменён", "Детали покупки обновлены"]);
+
 export function appendRequestVersion(request, action, createdAt, actor, transactionId = createId("transaction")) {
   request.history = request.history || [];
+  const writer = actor || "local";
+  const latest = request.history[request.history.length - 1];
+  if (
+    latest
+    && MERGEABLE_REQUEST_ACTIONS.has(action)
+    && latest.action === action
+    && latest.createdBy === writer
+    && timestamp(createdAt) - timestamp(latest.updatedAt) <= REQUEST_HISTORY_MERGE_MS
+  ) {
+    latest.updatedAt = createdAt;
+    latest.snapshot = requestSnapshot(request);
+    return;
+  }
   request.history.push({
     id: transactionId,
     action,
     createdAt,
     updatedAt: createdAt,
-    createdBy: actor || "local",
+    createdBy: writer,
     snapshot: requestSnapshot(request),
   });
+  trimRequestHistory(request);
+}
+
+function trimRequestHistory(request) {
+  if (request.history.length > REQUEST_HISTORY_LIMIT) {
+    request.history.splice(0, request.history.length - REQUEST_HISTORY_LIMIT);
+  }
 }
 
 export function restoreRequestVersion(request, transaction, changedAt, actor) {
@@ -775,6 +840,7 @@ export function restoreRequestVersion(request, transaction, changedAt, actor) {
   Object.keys(request).forEach((key) => delete request[key]);
   Object.assign(request, restored, {
     history,
+    deletedAt: "",
     updatedAt: changedAt,
     updatedBy: actor || "local",
   });
@@ -950,6 +1016,7 @@ function normalizeRequest(request) {
     createdBy: transaction.createdBy || request.updatedBy || request.createdBy || "local",
     snapshot: normalizeRequestSnapshot(transaction.snapshot || request, request.id),
   })));
+  trimRequestHistory(normalized);
   if (!normalized.history.length) {
     appendRequestVersion(
       normalized,
@@ -983,7 +1050,7 @@ function normalizeResponse(response, requestId) {
     id: response.id || `response_legacy_${requestId}`,
     requestId,
     items: dedupeByProduct(response.items || []).map((item) => ({
-      ...withoutLegacyStock(item),
+      ...withoutStockAtRequest(item),
       purchasedProductId: item.purchasedProductId || item.productId,
       completionMode: item.completionMode || "filled",
     })),
@@ -996,7 +1063,11 @@ function normalizeResponse(response, requestId) {
 }
 
 function withoutLegacyStock(item) {
-  const normalized = { ...item, note: String(item?.note || "") };
+  return { ...withoutStockAtRequest(item), note: String(item?.note || "") };
+}
+
+function withoutStockAtRequest(item) {
+  const normalized = { ...item };
   delete normalized.stockAtRequest;
   return normalized;
 }

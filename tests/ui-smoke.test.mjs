@@ -313,3 +313,87 @@ test("smoke: barcode lookup fills the product form from Open Food Facts", async 
     await context.close();
   }
 });
+
+test("smoke: a full device storage shows a reason and keeps the screen unchanged", async () => {
+  const { context, page } = await openPage();
+  try {
+    await openRoute(page, "ration");
+    await page.evaluate(() => {
+      Storage.prototype.setItem = () => {
+        throw new DOMException("full", "QuotaExceededError");
+      };
+    });
+    await page.click("#ration-add-meal");
+    await page.waitForTimeout(80);
+
+    assert.match(await page.locator("#toast-message").innerText(), /Память приложения заполнена/);
+    assert.equal(await page.locator(".ration-today-meal").count(), 0);
+    assert.equal(await page.locator("#ration-meal-dialog[open]").count(), 0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: undo after removing a ration product returns the day to its plan", async () => {
+  const { context, page } = await openPage();
+  try {
+    const today = dateKey(0);
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [{ id: "product_tea", name: "Чай", unit: "г" }],
+      requests: [],
+      ration: {
+        versions: [{
+          id: "version_1",
+          owner: "local",
+          effectiveFrom: today,
+          cycle: {
+            anchor: today,
+            weekdayBinding: false,
+            days: [{ id: "cycle_1", meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [{ id: "item_1", productId: "product_tea", name: "Чай" }] }] }],
+          },
+        }],
+        specialDays: {},
+        history: {},
+      },
+    });
+    await openRoute(page, "ration");
+    await page.click('.ration-today-meal-open[data-meal-id="meal_1"]');
+    await page.waitForSelector("#ration-meal-dialog[open]");
+    await page.click('#ration-meal-dialog .ration-food-row[data-item-id="item_1"] .remove-ration-food');
+    await page.waitForTimeout(80);
+    assert.equal(Object.keys((await storedState(page)).ration.specialDays).length, 1);
+
+    await page.click("#toast-action");
+    await page.waitForTimeout(80);
+    const { ration } = await storedState(page);
+    assert.deepEqual(ration.specialDays, {});
+    assert.equal(await page.locator('#ration-meal-dialog .ration-food-row[data-item-id="item_1"]').count(), 1);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: undo in a toast restores a deleted product", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [{ id: "product_tea", name: "Чай", unit: "г" }],
+      requests: [],
+    });
+    await openRoute(page, "profile");
+    await page.click("#manage-products");
+    await page.click('.delete-product[data-id="product_tea"]');
+    await page.click("#app-confirm-ok");
+    await page.waitForTimeout(80);
+    assert.ok((await storedState(page)).products[0].deletedAt);
+
+    await page.click("#toast-action");
+    await page.waitForTimeout(80);
+    assert.equal((await storedState(page)).products[0].deletedAt, "");
+    assert.equal(await page.locator('.delete-product[data-id="product_tea"]').count(), 1);
+  } finally {
+    await context.close();
+  }
+});

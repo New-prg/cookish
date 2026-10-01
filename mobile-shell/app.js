@@ -625,7 +625,7 @@ import {
         renderProducts();
         showToast(`Продукт «${product.name}» удалён.`, "Отменить", () => {
           const restored = localData.restoreProduct(product.id);
-          if (!restored.ok) return;
+          if (!restored.ok) return showToast(restored.reason);
           state = localData.snapshot();
           renderProducts();
           showToast(`Продукт «${product.name}» восстановлен.`);
@@ -1572,7 +1572,7 @@ import {
       completionMode: draftItem.completionMode,
       query: draftItem.query,
     });
-    if (!marked.ok) return;
+    if (!marked.ok) return showToast(marked.reason);
     state = localData.snapshot();
     formDirty = false;
     patchRequestItemRow(requestId, marked.productId || productId);
@@ -1580,7 +1580,7 @@ import {
 
   function undoLatestPurchaseForProduct(requestId, productId) {
     const unmarked = localData.unmarkBought(requestId, productId);
-    if (!unmarked.ok) return;
+    if (!unmarked.ok) return showToast(unmarked.reason);
     state = localData.snapshot();
     formDirty = false;
     patchRequestItemRow(requestId, productId);
@@ -1712,7 +1712,7 @@ import {
       hint: suggestionByName(draft.query),
     })));
     if (!saved.ok) {
-      if (!silent) showToast(saved.reason);
+      if (!silent || saved.storageFailed) showToast(saved.reason);
       return false;
     }
     state = localData.snapshot();
@@ -2701,12 +2701,12 @@ import {
     const currentDay = rationDayFor(state, card.dataset.date);
     const currentMeal = currentDay?.meals.find((meal) => meal.id === card.dataset.mealId);
     if (!currentMeal || !await askConfirm(`Удалить приём пищи «${currentMeal.name}» и все его продукты?`)) return;
-    const previous = localData.snapshot();
-    if (!applyLocal(localData.removeRationMeal(card.dataset.date, card.dataset.mealId))) return;
+    const removed = localData.removeRationMeal(card.dataset.date, card.dataset.mealId);
+    if (!applyLocal(removed)) return;
     routeSubId = null;
     renderRation();
     showToast(`Приём пищи «${currentMeal.name}» удалён.`, "Отменить", () => {
-      state = localData.commit(previous);
+      if (!applyLocal(localData.undoRationRemoval(removed.undo))) return;
       routeSubId = currentMeal.id;
       renderRation();
     });
@@ -2726,11 +2726,11 @@ import {
       .find((meal) => meal.id === card.dataset.mealId)?.items
       .find((item) => item.id === row.dataset.itemId);
     const removedName = getProduct(removedItem?.productId)?.name || removedItem?.name || "Продукт";
-    const previous = localData.snapshot();
-    if (!applyLocal(localData.removeRationFood(card.dataset.date, card.dataset.mealId, row.dataset.itemId))) return;
+    const removed = localData.removeRationFood(card.dataset.date, card.dataset.mealId, row.dataset.itemId);
+    if (!applyLocal(removed)) return;
     renderRation();
     showToast(`«${removedName}» удалён из рациона.`, "Отменить", () => {
-      state = localData.commit(previous);
+      if (!applyLocal(localData.undoRationRemoval(removed.undo))) return;
       routeSubId = card.dataset.mealId;
       renderRation();
     });
@@ -2855,7 +2855,11 @@ import {
     });
     document.getElementById("clear-data")?.addEventListener("click", async () => {
       if (!await askConfirm("Удалить продукты, запросы и настройки с этого устройства?")) return;
-      state = localData.clear();
+      try {
+        state = localData.clear();
+      } catch (error) {
+        return showToast(error.message);
+      }
       navigate("summary");
     });
   }
@@ -2936,26 +2940,38 @@ import {
     return state.requests.find((request) => request.id === requestId && !request.deletedAt);
   }
 
+  // A modal dialog makes the rest of the page inert, so while one is open the
+  // toast moves into it to keep «Отменить» clickable. Dialogs with a transform
+  // would become the toast's containing block, so they are skipped.
+  const toast = document.getElementById("toast");
+  const toastMessage = document.getElementById("toast-message");
+  const toastAction = document.getElementById("toast-action");
+
+  function toastHost() {
+    const dialog = [...document.querySelectorAll("dialog[open]")].pop();
+    return dialog && getComputedStyle(dialog).transform === "none" ? dialog : document.body;
+  }
+
+  function hideToast() {
+    clearTimeout(toastTimer);
+    toast.classList.remove("show");
+    toastAction.hidden = true;
+    toastAction.onclick = null;
+    document.body.append(toast);
+  }
+
   function showToast(message, actionLabel = "", action = null) {
-    const toast = document.getElementById("toast");
-    const messageElement = document.getElementById("toast-message");
-    const actionButton = document.getElementById("toast-action");
-    messageElement.textContent = message;
-    actionButton.hidden = !actionLabel || typeof action !== "function";
-    actionButton.textContent = actionLabel;
-    actionButton.onclick = actionButton.hidden ? null : () => {
-      clearTimeout(toastTimer);
-      toast.classList.remove("show");
-      actionButton.hidden = true;
+    toastHost().append(toast);
+    toastMessage.textContent = message;
+    toastAction.hidden = !actionLabel || typeof action !== "function";
+    toastAction.textContent = actionLabel;
+    toastAction.onclick = toastAction.hidden ? null : () => {
+      hideToast();
       action();
     };
     toast.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-      toast.classList.remove("show");
-      actionButton.hidden = true;
-      actionButton.onclick = null;
-    }, action ? 6000 : 3200);
+    toastTimer = setTimeout(hideToast, action ? 6000 : 3200);
   }
 
   function id(prefix) {

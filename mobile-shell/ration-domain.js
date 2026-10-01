@@ -261,14 +261,23 @@ export function cycleDayFor(cycle, dateKey) {
 
 export function executeRationCommand(state, command, context = {}) {
   const next = structuredClone(state && typeof state === "object" ? state : {});
-  if (!next.ration || typeof next.ration !== "object") next.ration = emptyRation();
-  const ctx = {
-    now: context.now || new Date().toISOString(),
-    actor: context.actor || rationOwner(next),
-  };
-  const payload = runRationCommand(next, command, ctx);
+  const payload = applyRationCommand(next, command, context);
   if (payload.ok === false) return payload;
   return { ...payload, state: next };
+}
+
+// Mutates `draft` in place. The caller owns the draft and must discard it when
+// the result is not ok: a failed command may leave partial changes behind.
+export function applyRationCommand(draft, command, context = {}) {
+  if (!draft.ration || typeof draft.ration !== "object") draft.ration = emptyRation();
+  const ctx = {
+    now: context.now || new Date().toISOString(),
+    actor: context.actor || rationOwner(draft),
+    today: DATE_PATTERN.test(context.today || "")
+      ? context.today
+      : (context.now ? String(context.now).slice(0, 10) : todayDateKey()),
+  };
+  return runRationCommand(draft, command, ctx);
 }
 
 export function plannedRationRequestItems(state, dates, selectedItemIds) {
@@ -431,12 +440,16 @@ function runRationCommand(next, command, ctx) {
       const date = commandDate(command.date);
       if (!date) return fail("Некорректная дата.");
       if (!projectionHasMeal(next, date, command.mealId)) return fail("Приём пищи не найден.");
+      const materialized = !ration.specialDays[`${owner}|${date}`];
       const day = ensureSpecialDay(ration, owner, date, ctx);
-      const before = day.meals.length;
-      day.meals = day.meals.filter((item) => item.id !== command.mealId);
-      if (day.meals.length === before) return fail("Приём пищи не найден.");
+      const index = day.meals.findIndex((item) => item.id === command.mealId);
+      if (index < 0) return fail("Приём пищи не найден.");
+      const [meal] = day.meals.splice(index, 1);
       touchSpecialDay(day, ctx);
-      return { ok: true };
+      return {
+        ok: true,
+        undo: { type: "restoreMeal", date, meal: structuredClone(meal), index, materialized, mealsAfter: structuredClone(day.meals) },
+      };
     }
     case "addItem": {
       const date = commandDate(command.date);
@@ -476,16 +489,22 @@ function runRationCommand(next, command, ctx) {
       const date = commandDate(command.date);
       if (!date) return fail("Некорректная дата.");
       if (!projectionHasItem(next, date, command.itemId)) return fail("Позиция рациона не найдена.");
+      const materialized = !ration.specialDays[`${owner}|${date}`];
       const day = ensureSpecialDay(ration, owner, date, ctx);
-      let removed = false;
-      day.meals.forEach((meal) => {
-        const before = (meal.items || []).length;
-        meal.items = (meal.items || []).filter((item) => item.id !== command.itemId);
-        if (meal.items.length !== before) removed = true;
-      });
-      if (!removed) return fail("Позиция рациона не найдена.");
+      const meal = day.meals.find((entry) => (entry.items || []).some((item) => item.id === command.itemId));
+      if (!meal) return fail("Позиция рациона не найдена.");
+      const index = meal.items.findIndex((item) => item.id === command.itemId);
+      const [item] = meal.items.splice(index, 1);
       touchSpecialDay(day, ctx);
-      return { ok: true, mealId: command.mealId };
+      return {
+        ok: true,
+        mealId: meal.id,
+        undo: { type: "restoreItem", date, mealId: meal.id, item: structuredClone(item), index, materialized, mealsAfter: structuredClone(day.meals) },
+      };
+    }
+    case "restoreMeal":
+    case "restoreItem": {
+      return restoreRemoved(ration, owner, command, ctx);
     }
     case "setPortion": {
       const date = commandDate(command.date);
@@ -542,8 +561,7 @@ function runRationCommand(next, command, ctx) {
 }
 
 function historyWritable(ctx, date) {
-  const today = DATE_PATTERN.test(ctx.today || "") ? ctx.today : String(ctx.now || "").slice(0, 10);
-  if (date > today) return fail("Нельзя менять Историю питания будущего дня.");
+  if (date > ctx.today) return fail("Нельзя менять Историю питания будущего дня.");
   if (ctx.actor === "ai") return fail("ИИ не может записывать Историю питания.");
   return null;
 }
@@ -684,6 +702,46 @@ function releaseVersion(ration, owner, command, ctx) {
   };
   ration.versions.push(version);
   return { ok: true, versionId: version.id, effectiveFrom };
+}
+
+// Undo of removeMeal/removeItem. When the removal turned a computed day into a
+// Особый день and the day still holds exactly what the removal left, the Особый
+// день is dropped so the date follows the Цикл again; otherwise the removed
+// entry goes back to its place. Content is compared rather than timestamps:
+// two edits can share one millisecond.
+function restoreRemoved(ration, owner, command, ctx) {
+  const date = commandDate(command.date);
+  if (!date) return fail("Некорректная дата.");
+  const key = `${owner}|${date}`;
+  const day = ration.specialDays[key];
+  if (!day) return fail("День изменился, удаление нельзя отменить.");
+  if (command.materialized && JSON.stringify(day.meals) === JSON.stringify(command.mealsAfter)) {
+    delete ration.specialDays[key];
+    return { ok: true, date };
+  }
+  if (command.type === "restoreMeal") {
+    const meal = command.meal;
+    if (!meal?.id) return fail("Нечего восстанавливать.");
+    if (!day.meals.some((entry) => entry.id === meal.id)) {
+      day.meals.splice(clampIndex(command.index, day.meals.length), 0, structuredClone(meal));
+    }
+  } else {
+    const item = command.item;
+    if (!item?.id) return fail("Нечего восстанавливать.");
+    const meal = day.meals.find((entry) => entry.id === command.mealId);
+    if (!meal) return fail("Приём пищи удалён, продукт нельзя вернуть.");
+    meal.items = meal.items || [];
+    if (!meal.items.some((entry) => entry.id === item.id)) {
+      meal.items.splice(clampIndex(command.index, meal.items.length), 0, structuredClone(item));
+    }
+  }
+  touchSpecialDay(day, ctx);
+  return { ok: true, date };
+}
+
+function clampIndex(value, length) {
+  const index = Number(value);
+  return Number.isInteger(index) ? Math.min(Math.max(index, 0), length) : length;
 }
 
 function ensureSpecialDay(ration, owner, dateKey, ctx, { materialize = true } = {}) {

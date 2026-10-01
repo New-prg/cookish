@@ -1913,8 +1913,17 @@ textarea { resize: vertical; }
   font-weight: 700;
 }
 
-#toast.show { opacity: 1; transform: translateY(0); }
+#toast.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
 body.nav-hidden #toast { bottom: calc(16px + env(safe-area-inset-bottom)); }
+/* Inside an open modal dialog the toast sticks to the bottom of the dialog's
+   scroll area: fixed positioning would be clipped by the dialog. */
+dialog > #toast,
+body.nav-hidden dialog > #toast {
+  position: sticky;
+  bottom: 12px;
+  margin: 12px 0 0;
+  max-width: none;
+}
 
 @media (min-width: 721px) {
   main { border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
