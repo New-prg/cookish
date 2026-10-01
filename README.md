@@ -34,6 +34,10 @@ npm run android:apk
 
 Готовый файл: `output/Cookish-debug.apk`.
 
+Каждый push в `master` и `refactor/*` и каждый PR в `master` запускает
+workflow `Test`: `npm test` (unit- и UI smoke-тесты в Chromium) и Android
+unit-тесты.
+
 ## Выпуск Android-релиза
 
 Релизы публикуются из ветки `master` скриптом `scripts/release-android.ps1`.
