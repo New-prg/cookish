@@ -384,7 +384,8 @@ test("smoke: undo in a toast restores a deleted product", async () => {
     });
     await openRoute(page, "profile");
     await page.click("#manage-products");
-    await page.click('.delete-product[data-id="product_tea"]');
+    await page.click('.product-link[data-id="product_tea"]');
+    await page.click("#delete-product");
     await page.click("#app-confirm-ok");
     await page.waitForTimeout(80);
     assert.ok((await storedState(page)).products[0].deletedAt);
@@ -392,7 +393,7 @@ test("smoke: undo in a toast restores a deleted product", async () => {
     await page.click("#toast-action");
     await page.waitForTimeout(80);
     assert.equal((await storedState(page)).products[0].deletedAt, "");
-    assert.equal(await page.locator('.delete-product[data-id="product_tea"]').count(), 1);
+    assert.equal(await page.locator('.product-link[data-id="product_tea"]').count(), 1);
   } finally {
     await context.close();
   }
@@ -425,7 +426,7 @@ test("smoke: ration profile form saves targets and the today screen shows the go
     assert.equal(await page.locator("nav.bottom-nav").isVisible(), false);
 
     await page.fill("#ration-profile-form [name=heightCm]", "400");
-    await page.click("#ration-profile-form button[type=submit]");
+    await page.click("#header-action");
     assert.equal(await page.locator("#ration-profile-form [name=heightCm]").evaluate((input) => input.validity.rangeOverflow), true);
     assert.equal((await storedState(page))?.ration?.profile?.heightCm ?? null, null);
 
@@ -434,14 +435,14 @@ test("smoke: ration profile form saves targets and the today screen shows the go
     await page.fill("#ration-profile-form [name=targetProtein]", "10");
     await page.fill("#ration-profile-form [name=targetFat]", "10");
     await page.fill("#ration-profile-form [name=targetCarbs]", "10");
-    await page.click("#ration-profile-form button[type=submit]");
+    await page.click("#header-action");
     assert.match(await page.locator("#ration-profile-status").innerText(), /БЖУ расходятся с калориями/);
     for (const name of ["targetProtein", "targetFat", "targetCarbs"]) await page.fill(`#ration-profile-form [name=${name}]`, "");
 
     await page.selectOption("#ration-profile-form [name=goal]", "Поддержание веса");
     await page.fill("#ration-profile-form [name=targetCalories]", "2100");
     await page.fill("#ration-profile-form [name=excludedProducts]", "арахис, кинза");
-    await page.click("#ration-profile-form button[type=submit]");
+    await page.click("#header-action");
     await page.waitForSelector(".ration-today");
 
     assert.match(await page.locator(".ration-today-totals").innerText(), /Цель 2[\s ]?100 ккал/);
@@ -602,6 +603,175 @@ test("smoke: Android back closes an open ration overlay instead of leaving the a
     assert.equal(await page.evaluate(() => window.__handleNativeBack()), true);
     assert.equal(await page.locator(".ration-overlay").count(), 0);
     assert.equal(await page.evaluate(() => window.__handleNativeBack()), false);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a tap on the check marks a request line bought and a second tap unmarks it", async () => {
+  const { context, page } = await openPage();
+  try {
+    const now = new Date().toISOString();
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [{ id: "product_milk", name: "Молоко", unit: "л" }],
+      requests: [{ id: "request_1", status: "open", createdAt: now, updatedAt: now, items: [{ productId: "product_milk", quantity: 2, unit: "л" }], responses: [] }],
+    });
+    await openRoute(page, "requests");
+    await page.locator(".request-link").first().click();
+    const check = page.locator('#request-items .request-item:not(.is-blank) .request-swipe-handle[role="checkbox"]');
+    assert.equal(await check.getAttribute("aria-checked"), "false");
+    await check.click();
+    await page.waitForTimeout(120);
+    assert.equal(await check.getAttribute("aria-checked"), "true");
+    assert.equal(await page.locator("#answer-action-dialog[open]").count(), 0);
+    let stored = await storedState(page);
+    let lines = stored.requests[0].responses.filter((response) => !response.deletedAt).flatMap((response) => response.items);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].quantity, 2);
+
+    await check.click();
+    await page.waitForTimeout(120);
+    assert.equal(await check.getAttribute("aria-checked"), "false");
+    stored = await storedState(page);
+    lines = stored.requests[0].responses.filter((response) => !response.deletedAt).flatMap((response) => response.items);
+    assert.equal(lines.length, 0);
+
+    await page.click("#toast-action");
+    await page.waitForTimeout(120);
+    assert.equal(await check.getAttribute("aria-checked"), "true");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: opening another screen starts it from the top", async () => {
+  const { context, page } = await openPage({ width: 412, height: 500 });
+  try {
+    await openRoute(page, "profile");
+    await page.locator("main").evaluate((main) => main.scrollTo(0, 9999));
+    assert.ok(await page.locator("main").evaluate((main) => main.scrollTop) > 0);
+    await page.click("#manage-products");
+    await page.waitForTimeout(80);
+    assert.equal(await page.locator("main").evaluate((main) => main.scrollTop), 0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: unchecking a product in the meal card records that it was not eaten", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, planState(dateKey(-5), {
+      products: [{ id: "product_tea", name: "Чай", unit: "г" }],
+      meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [{ id: "item_1", productId: "product_tea", name: "Чай" }] }],
+    }));
+    await openRoute(page, "ration");
+    await page.click('.ration-today-meal-open[data-meal-id="meal_1"]');
+    await page.waitForSelector("#ration-meal-dialog[open]");
+    const check = () => page.locator('#ration-meal-dialog .ration-food-row[data-item-id="item_1"] .ration-item-check');
+    assert.equal(await check().isChecked(), true);
+    await check().uncheck();
+    await page.waitForTimeout(80);
+    let meal = Object.values((await storedState(page)).ration.history)[0].meals.meal_1;
+    assert.deepEqual(meal.discrepancies.map((item) => [item.kind, item.productId]), [["excluded", "product_tea"]]);
+    assert.equal(await check().isChecked(), false);
+    await check().check();
+    await page.waitForTimeout(80);
+    meal = Object.values((await storedState(page)).ration.history)[0].meals.meal_1;
+    assert.equal(meal.discrepancies.length, 0);
+
+    await page.click("#close-ration-meal");
+    await page.click('.ration-rail-flag[data-overlay="plan"]');
+    await page.waitForSelector(".ration-overlay");
+    assert.equal(await page.locator(".ration-overlay .ration-item-check").count(), 0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: product catalog groups by category and filters by search", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [
+        { id: "product_milk", name: "Молоко", unit: "л", category: "Молочное", nutrition: { calories: 52, protein: 2.8, fat: 2.5, carbs: 4.7 } },
+        { id: "product_kefir", name: "Кефир", unit: "л", category: "Молочное" },
+        { id: "product_rice", name: "Рис", unit: "г", category: "Крупы" },
+        { id: "product_salt", name: "Соль", unit: "г" },
+      ],
+      requests: [],
+    });
+    await openRoute(page, "profile");
+    await page.click("#manage-products");
+    const titles = await page.locator(".product-group-title").allInnerTexts();
+    assert.deepEqual(titles.map((text) => text.replace(/\s+\d+$/, "").toLowerCase()), ["крупы", "молочное", "без категории"]);
+    assert.deepEqual(await page.locator('.product-group:nth-child(2) .product-link strong').allInnerTexts(), ["Кефир", "Молоко"]);
+    assert.match(await page.locator('.product-link[data-id="product_milk"]').innerText(), /52 ккал/);
+
+    await page.fill("#product-search", "молок");
+    assert.deepEqual(await page.locator(".product-link strong").allInnerTexts(), ["Молоко"]);
+    await page.fill("#product-search", "сыр");
+    await page.click("#product-search-add");
+    await page.waitForSelector("#product-form");
+    assert.equal(await page.locator("#product-form [name=name]").inputValue(), "сыр");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: product form saves from the header and asks before leaving unsaved changes", async () => {
+  const { context, page } = await openPage();
+  try {
+    await openRoute(page, "profile");
+    await page.click("#manage-products");
+    await page.click("#header-action");
+    await page.waitForSelector("#product-form");
+    assert.equal(await page.locator("#header-action").innerText(), "Сохранить");
+    assert.equal(await page.locator("#header-back").isVisible(), true);
+
+    await page.fill("#product-form [name=name]", "Гречка");
+    await page.click("#header-back");
+    await page.waitForSelector("#app-confirm-dialog[open]");
+    await page.click("#app-confirm-cancel");
+    assert.equal(await page.locator("#product-form [name=name]").inputValue(), "Гречка");
+
+    await page.click("#header-action");
+    await page.waitForTimeout(80);
+    assert.equal(await page.locator('.product-link strong').innerText(), "Гречка");
+
+    await page.click(".product-link");
+    await page.fill("#product-form [name=name]", "Гречка ядрица");
+    assert.equal(await page.evaluate(() => window.__handleNativeBack()), true);
+    await page.click("#app-confirm-ok");
+    await page.waitForTimeout(80);
+    assert.equal(await page.locator('.product-link strong').innerText(), "Гречка");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: swiping a request line away says which item was removed", async () => {
+  const { context, page } = await openPage();
+  try {
+    const now = new Date().toISOString();
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [{ id: "product_milk", name: "Молоко", unit: "л" }, { id: "product_bread", name: "Хлеб", unit: "шт." }],
+      requests: [{ id: "request_1", status: "open", createdAt: now, updatedAt: now, items: [{ productId: "product_milk", quantity: 1 }, { productId: "product_bread", quantity: 1 }], responses: [] }],
+    });
+    await openRoute(page, "requests");
+    await page.locator(".request-link").first().click();
+    const row = page.locator("#request-items .request-item:not(.is-blank)").first();
+    const box = await row.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 180, box.y + box.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator("#toast-message").innerText(), "Позиция «Молоко» удалена.");
+    assert.deepEqual((await storedState(page)).requests[0].items.map((item) => item.productId), ["product_bread"]);
   } finally {
     await context.close();
   }

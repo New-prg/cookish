@@ -83,6 +83,8 @@ import {
   let requestAutosaveTimer = null;
   let confirmResolve = null;
   let productEditReturn = null;
+  let productQuery = "";
+  let productNewName = "";
   let rationProfileReturn = "profile";
   let requestGestureToken = 0;
   let purchaseDialogViewportFrame = 0;
@@ -91,6 +93,7 @@ import {
   const app = document.getElementById("app");
   const title = document.getElementById("page-title");
   const headerAction = document.getElementById("header-action");
+  const headerBack = document.getElementById("header-back");
   const requestHeaderMenuWrap = document.getElementById("request-header-menu-wrap");
   const headerMore = document.getElementById("header-more");
   const requestHeaderMenu = document.getElementById("request-header-menu");
@@ -116,8 +119,14 @@ import {
       finishRequestAnswer();
     } else if (route === "request-edit") {
       finishRequestEdit();
+    } else if (route === "product-new" || route === "product-edit") {
+      document.getElementById("product-form")?.requestSubmit();
+    } else if (route === "ration-profile") {
+      document.getElementById("ration-profile-form")?.requestSubmit();
     } else attemptBackNavigation();
   });
+
+  headerBack.addEventListener("click", () => attemptBackNavigation());
 
   headerMore.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -204,7 +213,8 @@ import {
     routeId = id;
     routeSubId = subId;
     formDirty = false;
-    window.scrollTo(0, 0);
+    // The page itself never scrolls: only <main> does (see styles.css).
+    app.scrollTop = 0;
     render();
   }
 
@@ -240,7 +250,18 @@ import {
       finishRequestEdit();
       return true;
     }
-    if (formDirty && !confirm("Отменить изменения? Несохранённые данные будут потеряны.")) return true;
+    if (formDirty) {
+      askConfirm("Изменения не сохранены.", "Выйти без сохранения").then((leave) => {
+        if (!leave) return;
+        formDirty = false;
+        leaveCurrentRoute();
+      });
+      return true;
+    }
+    return leaveCurrentRoute();
+  }
+
+  function leaveCurrentRoute() {
     draftItems = [];
     if (route === "product-new" || route === "product-edit") {
       const ret = productEditReturn;
@@ -256,7 +277,7 @@ import {
 
   function closeDialogSafely(dialog) {
     if (dialog.id === "app-confirm-dialog") {
-      dialog.close();
+      finishConfirm(false);
       return true;
     }
     if (dialog.id === "answer-action-dialog") {
@@ -275,7 +296,7 @@ import {
     return true;
   }
 
-  function askConfirm(message) {
+  function askConfirm(message, okLabel = "Подтвердить") {
     return new Promise((resolve) => {
       confirmResolve = resolve;
       let dialog = document.getElementById("app-confirm-dialog");
@@ -297,6 +318,7 @@ import {
         document.getElementById("app-confirm-cancel").onclick = () => finishConfirm(false);
       }
       document.getElementById("app-confirm-message").textContent = message;
+      document.getElementById("app-confirm-ok").textContent = okLabel;
       dialog.showModal();
     });
   }
@@ -345,20 +367,21 @@ import {
     const config = {
       summary: ["Сводка", "", false],
       products: ["Продукты", "Добавить", false],
-      "product-new": ["Новый продукт", "Отмена", true],
-      "product-edit": ["Редактирование", productEditReturn ? "Назад" : "Отмена", true],
+      "product-new": ["Новый продукт", "Сохранить", true],
+      "product-edit": ["Продукт", "Сохранить", true],
       requests: ["Запросы", "Создать", false],
       "request-edit": ["", "Готово", true],
       "request-detail": ["Запрос", "Назад", false],
       "request-answer": ["Отметить покупки", "Готово", true],
       ration: ["Рацион", "", false],
-      "ration-profile": ["Профиль рациона", "Отмена", true],
+      "ration-profile": ["Профиль рациона", "Сохранить", true],
       profile: ["Профиль", "", false],
     }[route];
     const editedRequest = route === "request-edit" ? getRequest(routeId) : null;
     title.textContent = editedRequest ? date(editedRequest.createdAt) : config[0];
     headerAction.textContent = config[1];
     headerAction.hidden = !config[1];
+    headerBack.hidden = !["products", "product-new", "product-edit", "ration-profile"].includes(route);
     requestHeaderMenuWrap.hidden = route !== "request-edit";
     closeRequestHeaderMenu();
     rationHeaderPicker.hidden = route !== "ration";
@@ -593,6 +616,7 @@ import {
     }
     const ingredients = product.ingredients_text_ru || product.ingredients_text || "";
     if (ingredients) form.elements.ingredients.value = ingredients.trim();
+    if (ingredients || nutrition?.vitamins || nutrition?.minerals) document.getElementById("product-more")?.setAttribute("open", "");
     return Boolean(nutrition);
   }
 
@@ -604,47 +628,107 @@ import {
 
   function renderProducts() {
     const products = state.products.filter((product) => !product.deletedAt);
-    app.innerHTML = products.length
-      ? products.map((product) => `
-          <div class="row product-row">
-            <div class="row-main">
-              <strong>${escapeHtml(product.name)}</strong>
-              <span>${escapeHtml(product.category || "Без категории")} · ${escapeHtml(product.unit)}${product.barcode ? ` · ${escapeHtml(product.barcode)}` : ""}</span>
-              ${nutritionLine(product.nutrition)}
-            </div>
-            <div class="product-actions">
-              <button class="text-button edit-product" data-id="${product.id}" type="button" aria-label="Изменить ${escapeAttr(product.name)}">Изменить</button>
-              <button class="text-button delete-product" data-id="${product.id}" type="button" aria-label="Удалить ${escapeAttr(product.name)}">Удалить</button>
-            </div>
-          </div>
-        `).join("")
-      : `<section class="section"><div class="empty-state">
+    if (!products.length) {
+      app.innerHTML = `<section class="section"><div class="empty-state">
           <p class="empty">Каталог пока пуст</p>
           <p class="muted">Добавьте продукт вручную, сканером или при создании запроса.</p>
           <button id="products-empty-add" class="button full" type="button">Добавить продукт</button>
         </div></section>`;
-
-    document.getElementById("products-empty-add")?.addEventListener("click", () => navigate("product-new"));
-    document.querySelectorAll(".delete-product").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const product = state.products.find((item) => item.id === button.dataset.id);
-        if (!product) return;
-        if (!await askConfirm(`Удалить продукт «${product.name}»?`)) return;
-        const removed = localData.removeProduct(product.id);
-        if (!removed.ok) return showToast(removed.reason);
-        state = localData.snapshot();
-        renderProducts();
-        showToast(`Продукт «${product.name}» удалён.`, "Отменить", () => {
-          const restored = localData.restoreProduct(product.id);
-          if (!restored.ok) return showToast(restored.reason);
-          state = localData.snapshot();
-          renderProducts();
-          showToast(`Продукт «${product.name}» восстановлен.`);
-        });
-      });
+      document.getElementById("products-empty-add").addEventListener("click", () => navigate("product-new"));
+      return;
+    }
+    app.innerHTML = `
+      <div class="product-catalog">
+        <div class="product-search">
+          <input id="product-search" type="search" placeholder="Найти продукт" autocomplete="off" aria-label="Найти продукт" value="${escapeAttr(productQuery)}">
+        </div>
+        <div id="product-list"></div>
+      </div>`;
+    const search = document.getElementById("product-search");
+    search.addEventListener("input", () => {
+      productQuery = search.value;
+      renderProductList();
     });
-    document.querySelectorAll(".edit-product").forEach((button) => {
+    renderProductList();
+  }
+
+  function renderProductList() {
+    const list = document.getElementById("product-list");
+    if (!list) return;
+    const query = normalizeProductName(productQuery);
+    const products = state.products
+      .filter((product) => !product.deletedAt)
+      .filter((product) => !query
+        || normalizeProductName(product.name).includes(query)
+        || normalizeProductName(product.category || "").includes(query)
+        || String(product.barcode || "").includes(query));
+    if (!products.length) {
+      list.innerHTML = `<div class="product-search-empty">
+          <p class="muted">Ничего не найдено.</p>
+          <button id="product-search-add" class="text-button" type="button">Добавить «${escapeHtml(productQuery.trim())}»</button>
+        </div>`;
+      document.getElementById("product-search-add").addEventListener("click", () => {
+        productNewName = productQuery.trim();
+        navigate("product-new");
+      });
+      return;
+    }
+    const groups = new Map();
+    products.forEach((product) => {
+      const category = String(product.category || "").trim() || "Без категории";
+      if (!groups.has(category)) groups.set(category, []);
+      groups.get(category).push(product);
+    });
+    const byName = (left, right) => left.localeCompare(right, "ru");
+    const categories = [...groups.keys()].sort((left, right) =>
+      Number(left === "Без категории") - Number(right === "Без категории") || byName(left, right)
+    );
+    list.innerHTML = categories.map((category) => `
+      <section class="product-group">
+        <h2 class="product-group-title">${escapeHtml(category)} <span>${groups.get(category).length}</span></h2>
+        ${groups.get(category).sort((left, right) => byName(left.name, right.name)).map(productCatalogRow).join("")}
+      </section>`).join("");
+    list.querySelectorAll(".product-link").forEach((button) => {
       button.addEventListener("click", () => navigate("product-edit", button.dataset.id));
+    });
+  }
+
+  function productCatalogRow(product) {
+    const nutrition = product.nutrition;
+    const details = [
+      product.unit,
+      nutrition
+        ? `${number(Math.round(Number(nutrition.calories) || 0))} ккал · Б ${number(nutrition.protein)} · Ж ${number(nutrition.fat)} · У ${number(nutrition.carbs)}`
+        : "КБЖУ не указано",
+    ].filter(Boolean).join(" · ");
+    return `
+      <button class="product-link" data-id="${product.id}" type="button">
+        <span class="product-link-main">
+          <strong>${escapeHtml(product.name)}</strong>
+          <span>${escapeHtml(details)}</span>
+        </span>
+        <svg class="product-link-chevron" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>`;
+  }
+
+  async function deleteProductWithUndo(product) {
+    if (!product) return;
+    if (!await askConfirm(`Удалить продукт «${product.name}»?`, "Удалить")) return;
+    const removed = localData.removeProduct(product.id);
+    if (!removed.ok) return showToast(removed.reason);
+    state = localData.snapshot();
+    formDirty = false;
+    const ret = productEditReturn;
+    productEditReturn = null;
+    // A product opened from a request chip goes back to that request.
+    if (ret?.route) navigate(ret.route, ret.id || null);
+    else navigate("products");
+    showToast(`Продукт «${product.name}» удалён.`, "Отменить", () => {
+      const restored = localData.restoreProduct(product.id);
+      if (!restored.ok) return showToast(restored.reason);
+      state = localData.snapshot();
+      if (route === "products") renderProducts();
+      showToast(`Продукт «${product.name}» восстановлен.`);
     });
   }
 
@@ -662,7 +746,7 @@ import {
           </div>
         </label>
         <p id="barcode-status" class="muted barcode-status">Данные предоставляет Open Food Facts. Проверьте их перед сохранением.</p>
-        <label class="field"><span>Наименование</span><input name="name" required autocomplete="off" value="${escapeAttr(product?.name || "")}"></label>
+        <label class="field"><span>Наименование</span><input name="name" required autocomplete="off" value="${escapeAttr(product?.name || productNewName)}"></label>
         <label class="field"><span>Категория</span><input name="category" autocomplete="off" value="${escapeAttr(product?.category || "")}"></label>
         <label class="field"><span>Единица измерения</span>
           <select name="unit">
@@ -680,13 +764,18 @@ import {
             ${nutritionField("Углеводы, г", "carbs", product?.nutrition?.carbs)}
             ${nutritionField("Клетчатка, г", "fiber", product?.nutrition?.fiber)}
           </div>
+        </section>
+        <details id="product-more" class="product-more" ${product?.nutrition?.vitamins || product?.nutrition?.minerals || product?.ingredients ? "open" : ""}>
+          <summary>Витамины, минералы, состав</summary>
           <label class="field"><span>Витамины</span><input name="vitamins" value="${escapeAttr(product?.nutrition?.vitamins || "")}" placeholder="Например: C: 10 мг; B6: 0,2 мг"></label>
           <label class="field"><span>Минералы и другие элементы</span><input name="minerals" value="${escapeAttr(product?.nutrition?.minerals || "")}" placeholder="Например: кальций: 120 мг"></label>
           <label class="field"><span>Состав</span><textarea name="ingredients" rows="3" placeholder="Состав с этикетки">${escapeHtml(product?.ingredients || "")}</textarea></label>
-        </section>
-        <button class="button full" type="submit">Сохранить</button>
+        </details>
+        ${editing ? `<button id="delete-product" class="text-button danger-text-button" type="button">Удалить продукт</button>` : ""}
       </form>
     `;
+    productNewName = "";
+    document.getElementById("delete-product")?.addEventListener("click", () => deleteProductWithUndo(product));
     document.getElementById("lookup-barcode").addEventListener("click", lookupProductBarcode);
     document.getElementById("scan-barcode").addEventListener("click", () => {
       if (!window.NativeCookish?.scanBarcode) return setBarcodeStatus("Сканирование доступно в Android-приложении.", true);
@@ -851,7 +940,7 @@ import {
               </div>
             </div>
           </div>
-          <span class="request-swipe-handle" aria-hidden="true"><span class="request-swipe-arrow">&lt;</span><span class="request-swipe-dots"></span></span>
+          <span class="request-swipe-handle" ${isBlank ? 'aria-hidden="true"' : `role="checkbox" tabindex="0" aria-checked="${fullyBought}" aria-label="Куплено: ${escapeAttr(productName)}"`}><span class="request-swipe-arrow" aria-hidden="true">&lt;</span><span class="request-swipe-dots" aria-hidden="true"></span></span>
         </div>
       </div>`;
   }
@@ -1124,9 +1213,9 @@ import {
   }
 
   function cancelDraftProduct(row) {
-    if (!row) return;
+    if (!row) return false;
     const key = row.dataset.key;
-    if (!key) return;
+    if (!key) return false;
     const focusTarget = row.previousElementSibling || row.nextElementSibling;
     draftItems = draftItems.filter((item) => item.key !== key);
     row.remove();
@@ -1134,9 +1223,10 @@ import {
     if (!persistRequestDraft({ silent: true })) {
       draftItems = [];
       renderRequestForm();
-      return;
+      return false;
     }
     if (focusTarget?.isConnected) focusRequestLine(focusTarget, Boolean(focusTarget.querySelector(".product-chip")));
+    return true;
   }
 
   function isRemovableEmptyRow(row) {
@@ -1299,6 +1389,7 @@ import {
       let horizontal = false;
       let pointerId = null;
       let tapPreviewTimer = 0;
+      let startedOnHandle = false;
 
       const clearTapPreview = () => {
         window.clearTimeout(tapPreviewTimer);
@@ -1388,13 +1479,30 @@ import {
         try {
           navigator.vibrate?.(12);
         } catch {}
+        const name = (row.querySelector(".product-chip, .product-candidate")?.textContent || "").trim();
         window.setTimeout(() => {
-          if (token === requestGestureToken && row.isConnected) cancelDraftProduct(row);
+          if (token !== requestGestureToken || !row.isConnected) return;
+          if (cancelDraftProduct(row) && name) showToast(`Позиция «${name}» удалена.`);
         }, 160);
       };
 
+      const toggleBought = () => {
+        if (token !== requestGestureToken || !row.isConnected || row.classList.contains("is-blank")) return;
+        clearTapPreview();
+        if (row.classList.contains("is-bought")) unmarkRowBought(request, row);
+        else quickMarkRowBought(request, row);
+      };
+
+      const handle = row.querySelector(".request-swipe-handle[role=checkbox]");
+      handle?.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        toggleBought();
+      });
+
       const onPointerDown = (event) => {
         if (event.pointerType === "mouse" && event.button !== 0) return;
+        startedOnHandle = Boolean(handle && handle.contains(event.target));
         // Allow swipe from chip, input, main — any point on the tile.
         tracking = true;
         horizontal = false;
@@ -1448,6 +1556,9 @@ import {
         }
         if (!horizontal) {
           surface.classList.remove("is-dragging");
+          // Pointer capture retargets the click to the surface, so a tap on
+          // the check handle is detected here instead of with a click listener.
+          if (startedOnHandle) toggleBought();
           return;
         }
         resetSurface({ animate: true });
@@ -1482,7 +1593,6 @@ import {
       });
       [
         [row.querySelector(".keep-remove-item"), row.querySelector(".keep-remove-cross"), "is-delete-tap-preview"],
-        [row.querySelector(".request-swipe-handle"), row.querySelector(".request-swipe-arrow"), "is-fill-tap-preview"],
       ].forEach(([hitArea, icon, previewClass]) => {
         hitArea?.addEventListener("pointerdown", (event) => {
           if (!icon || row.dataset.swiped === "1" || (event.pointerType === "mouse" && event.button !== 0)) return;
@@ -1495,6 +1605,62 @@ import {
         });
       });
     });
+  }
+
+  function quickMarkRowBought(request, row) {
+    clearTimeout(requestAutosaveTimer);
+    syncDraftFromForm();
+    if (!persistRequestDraft({ silent: false })) return;
+    const productId = ensureRowProductId(row);
+    if (!productId) return showToast("Сначала укажите продукт.");
+    const current = getRequest(request.id);
+    if (!current) return;
+    // Keep price and SKU already entered in the purchase sheet; only close the line.
+    const line = receiptLine(current, productId);
+    const requested = Number(current.items.find((item) => item.productId === productId)?.quantity || 0);
+    const marked = localData.markBought(request.id, productId, line ? {
+      quantity: requested || line.quantity,
+      price: line.price,
+      purchasedProductId: line.purchasedProductId,
+      completionMode: line.completionMode,
+    } : {});
+    if (!marked.ok) return showToast(marked.reason);
+    state = localData.snapshot();
+    formDirty = false;
+    try {
+      navigator.vibrate?.(12);
+    } catch {}
+    patchRequestItemRow(request.id, marked.productId || productId);
+    playRowPurchaseAnimation(marked.productId || productId, "is-just-bought");
+  }
+
+  function unmarkRowBought(request, row) {
+    clearTimeout(requestAutosaveTimer);
+    const productId = ensureRowProductId(row);
+    if (!productId) return;
+    const current = getRequest(request.id);
+    const line = current ? receiptLine(current, productId) : null;
+    const unmarked = localData.unmarkBought(request.id, productId);
+    if (!unmarked.ok) return showToast(unmarked.reason);
+    state = localData.snapshot();
+    formDirty = false;
+    patchRequestItemRow(request.id, productId);
+    playRowPurchaseAnimation(productId, "is-just-unbought");
+    if (!line) return;
+    const saved = { ...line };
+    showToast("Отметка покупки снята.", "Отменить", () => {
+      applyInlinePurchase(request.id, productId, saved);
+      playRowPurchaseAnimation(productId, "is-just-bought");
+    });
+  }
+
+  function playRowPurchaseAnimation(productId, className) {
+    const row = [...document.querySelectorAll(".request-item")].find((element) => element.dataset.productId === productId);
+    if (!row) return;
+    row.classList.remove("is-just-bought", "is-just-unbought");
+    void row.offsetWidth;
+    row.classList.add(className);
+    window.setTimeout(() => row.classList.remove(className), 700);
   }
 
   function openPurchaseDetailsForRow(request, row) {
@@ -1623,6 +1789,7 @@ import {
     const filled = Boolean(line && isPurchaseDetailsFilled(line, productId));
     row.classList.toggle("is-bought", fullyBought);
     row.classList.toggle("is-purchase-filled", filled);
+    row.querySelector(".request-swipe-handle[role=checkbox]")?.setAttribute("aria-checked", String(fullyBought));
     row.dataset.productId = productId;
     const swipeLabel = row.querySelector(".request-swipe-label");
     if (swipeLabel) swipeLabel.textContent = fullyBought ? "Снять" : "Заполнить";
@@ -2486,6 +2653,32 @@ import {
     return { discrepancy };
   }
 
+  function bindRationEatenChecks() {
+    document.querySelectorAll("#ration-meal-dialog .ration-item-check").forEach((input) => {
+      input.addEventListener("change", (event) => {
+        // A recorded discrepancy is saved at once; it is not an unsaved dialog edit.
+        event.stopPropagation();
+        const row = input.closest(".ration-food-row");
+        const mealNode = input.closest(".ration-meal");
+        const date = mealNode?.dataset.date;
+        const mealId = mealNode?.dataset.mealId;
+        const item = rationDayFor(state, date)?.meals.find((value) => value.id === mealId)?.items?.find((value) => value.id === row?.dataset.itemId);
+        if (!item?.productId) return;
+        const name = getProduct(item.productId)?.name || item.name || "";
+        const record = readRationHistoryDay(state, date)?.meals?.[mealId];
+        const result = input.checked
+          ? localData.removeRationDiscrepancy(date, mealId, rationExcludedIndex(record, item.productId))
+          : localData.recordRationDiscrepancy(date, mealId, { kind: "excluded", productId: item.productId, name });
+        if (!applyLocal(result)) {
+          input.checked = !input.checked;
+          return;
+        }
+        renderRation();
+        showToast(input.checked ? `«${name}» съеден по плану.` : `Записано: не ел «${name}».`);
+      });
+    });
+  }
+
   function bindRationDiscrepancies() {
     document.querySelectorAll(".ration-discrepancy-form").forEach((form) => {
       syncRationDiscrepancyForm(form);
@@ -2539,7 +2732,7 @@ import {
       </div>
       ${!isToday ? `<p class="muted">Прошлые отметки можно исправить; план этого дня не меняется.</p>` : ""}
       ${rationDiscrepancyEditor(dateKey, meal, record)}
-      ${rationMealEditor(dateKey, meal, day.meals.length)}
+      ${rationMealEditor(dateKey, meal, day.meals.length, record)}
     </dialog>`;
   }
 
@@ -2564,7 +2757,9 @@ import {
       </div>`;
   }
 
-  function rationMealEditor(dateKey, meal, mealCount) {
+  // `record` is the meal's history entry. It is passed only where the meal
+  // already happened or happens today, so rows can offer the "ate it" checkbox.
+  function rationMealEditor(dateKey, meal, mealCount, record = null) {
     const mealIndex = (rationDayFor(state, dateKey)?.meals || []).findIndex((value) => value.id === meal.id);
     return `
       <article class="ration-meal" data-date="${dateKey}" data-meal-id="${meal.id}">
@@ -2574,26 +2769,37 @@ import {
           <button class="remove-ration-meal" type="button" aria-label="Удалить приём пищи ${escapeAttr(meal.name)}">×</button>
         </header>
         <div class="ration-food-list">
-          ${(meal.items || []).map((item) => rationFoodRow(dateKey, meal.id, item)).join("")}
+          ${(meal.items || []).map((item) => rationFoodRow(dateKey, meal.id, item, record)).join("")}
         </div>
         <button class="add-ration-food keep-add-item" type="button"><span>＋</span> Добавить продукт</button>
       </article>`;
   }
 
-  function rationFoodRow(dateKey, mealId, item) {
+  function rationExcludedIndex(record, productId) {
+    if (!productId) return -1;
+    return (record?.discrepancies || []).findIndex((value) => value.kind === "excluded" && value.productId === productId);
+  }
+
+  function rationEatenCheck(record, item, name) {
+    if (!record) return "";
+    if (!item.productId) return `<span aria-hidden="true"></span>`;
+    const eaten = rationExcludedIndex(record, item.productId) < 0;
+    return `<input class="ration-item-check" type="checkbox" ${eaten ? "checked" : ""} aria-label="Съел: ${escapeAttr(name || "продукт")}">`;
+  }
+
+  function rationFoodRow(dateKey, mealId, item, record = null) {
     const product = getProduct(item.productId);
     const value = product?.name || item.name || "";
     const listId = `ration-products-${item.id}`;
     const measure = rationMeasure(product);
     const portion = Number(item.portionSize) || measure.defaultPortion;
-    const packageSize = Number(item.packageSize) || measure.defaultPackage;
     return `
-      <div class="ration-food-row" data-item-id="${item.id}">
-        <span class="list-checkbox" aria-hidden="true"></span>
+      <div class="ration-food-row${record ? "" : " no-check"}" data-item-id="${item.id}">
+        ${rationEatenCheck(record, item, value)}
         <input class="ration-food-input" list="${listId}" value="${escapeAttr(value)}" placeholder="Продукт" autocomplete="off">
         <datalist id="${listId}">${productSuggestionOptions(value)}</datalist>
         <button class="save-ration-food" type="button" aria-label="Сохранить ${escapeAttr(value || "продукт")}">✓</button>
-        <button class="ration-portion-button" type="button" aria-label="Настроить порцию ${escapeAttr(product?.name || item.query || "продукта")}">${number(portion)} ${measure.unit}<small>из ${number(packageSize)} ${measure.unit}</small></button>
+        <button class="ration-portion-button" type="button" aria-label="Настроить порцию ${escapeAttr(product?.name || item.query || "продукта")}">${number(portion)} ${measure.unit}</button>
         <button class="remove-ration-food" type="button" aria-label="Удалить ${escapeAttr(product?.name || item.query || "продукт")}">×</button>
       </div>`;
   }
@@ -2688,6 +2894,7 @@ import {
       showToast("Продукты рациона добавлены в запрос.");
     });
     bindRationDiscrepancies();
+    bindRationEatenChecks();
     document.querySelectorAll(".ration-repeat-button").forEach((button) => {
       button.onclick = async () => {
         const { date: from } = button.dataset;
@@ -2974,6 +3181,7 @@ import {
     app.innerHTML = `
       <form id="ration-profile-form" class="form">
         <p class="muted">Профиль задаёт цели для КБЖУ и хранится только на этом устройстве.</p>
+        <p id="ration-profile-status" class="muted" role="status"></p>
         ${selectField("Возрастная группа", "ageGroup", RATION_AGE_GROUPS)}
         ${selectField("Цель", "goal", RATION_GOALS)}
         <div class="nutrition-grid">
@@ -2994,8 +3202,6 @@ import {
             ${numberField("Углеводы, г", "targetCarbs", 'min="0" step="0.1"')}
           </div>
         </section>
-        <p id="ration-profile-status" class="muted" role="status"></p>
-        <button class="button full" type="submit">Сохранить</button>
       </form>
     `;
     document.getElementById("ration-profile-form").addEventListener("submit", (event) => {
@@ -3008,11 +3214,13 @@ import {
         const status = document.getElementById("ration-profile-status");
         status.className = "error";
         status.textContent = `Проверьте: ${violations.join(", ")}.`;
+        app.scrollTop = 0;
         return;
       }
       const saved = localData.setRationProfile(fields);
       if (!applyLocal(saved)) return;
       const missing = rationProfileLabels(saved.validation.missing);
+      formDirty = false;
       navigate(rationProfileReturn);
       showToast(missing.length ? `Профиль сохранён. Не заполнено: ${missing.join(", ")}.` : "Профиль рациона сохранён.");
     });
