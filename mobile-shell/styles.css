@@ -1997,9 +1997,11 @@ body.root-page dialog > #toast {
   .request-swipe-delete-label { font-size: 13px; }
 }
 
-/* Ration: today screen, right rail and overlays */
+/* Ration: Учёт and План feeds. Учёт starts with the «Сегодня» card and goes
+   into the past; План starts with tomorrow and goes into the future. */
 
-.ration-today { padding: 14px 52px 24px 14px; }
+.ration-feed { display: grid; gap: 12px; padding: 14px 14px 24px; }
+.ration-today { padding: 0 0 10px; border-bottom: 1px solid #e6e9e6; }
 .ration-today-header { display: flex; justify-content: space-between; gap: 14px; align-items: start; margin: 2px 0 16px; }
 .ration-today-date span { color: var(--muted); font-size: 12px; text-transform: capitalize; }
 .ration-today-date h2 { margin: 2px 0 0; font-size: 20px; }
@@ -2030,45 +2032,12 @@ body.root-page dialog > #toast {
 .ration-today-items li { display: flex; justify-content: space-between; gap: 10px; color: #3c4043; font-size: 13px; }
 .ration-today-items li small { color: var(--muted); }
 
-.ration-rail { position: fixed; z-index: 25; top: calc(84px + env(safe-area-inset-top)); right: 6px; display: grid; gap: 8px; }
-.ration-rail-flag { min-height: 44px; writing-mode: vertical-rl; padding: 10px 6px; border: 1px solid #dce2dd; border-radius: 12px; background: rgba(255, 255, 255, .92); color: var(--accent); font-size: 12px; font-weight: 700; box-shadow: 0 1px 3px rgb(60 64 67 / 12%); }
-.ration-rail-flag.active { background: var(--accent); color: #fff; }
-
-.ration-overlay { position: fixed; z-index: 30; top: 0; right: 0; bottom: 0; width: min(400px, 94vw); display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding: calc(14px + env(safe-area-inset-top)) 14px 90px; background: #fff; border-left: 1px solid #dce2dd; box-shadow: -8px 0 24px rgb(60 64 67 / 18%); }
-.ration-overlay-header { display: flex; justify-content: space-between; align-items: center; }
-.ration-overlay-header h2 { margin: 0; font-size: 19px; }
-.ration-overlay > p.muted { margin: 0; font-size: 12px; }
-.ration-overlay-days { display: grid; gap: 6px; }
-.ration-overlay-day { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: baseline; min-height: 44px; padding: 8px 10px; border: 1px solid #e1e5e2; border-radius: 10px; background: #fff; text-align: left; }
-.ration-overlay-day.active { border-color: var(--accent); background: #f3faf5; }
-.ration-overlay-day strong { font-size: 13px; }
-.ration-overlay-day span { color: var(--muted); font-size: 11px; }
-.ration-overlay-day small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.ration-overlay-editor { display: grid; gap: 10px; margin-top: 4px; padding: 12px 0; border-top: 1px solid #eef0ee; }
-.ration-overlay-editor h3 { margin: 0; font-size: 15px; }
-.ration-overlay-editor .ration-meal { margin: 0; }
-.ration-overlay-request { display: grid; gap: 8px; margin-top: 8px; padding: 12px; border: 1px solid #dce2dd; border-radius: 12px; background: #f8faf8; }
-.ration-overlay-request h3 { margin: 0; font-size: 15px; }
-.ration-overlay-request-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.ration-overlay-request-fields label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
-.ration-overlay-request-fields input { min-height: 40px; padding: 6px 8px; border: 1px solid #dce2dd; border-radius: 8px; font-size: 14px; }
-
-.ration-history-meal { display: grid; gap: 8px; padding: 10px; border: 1px solid #e1e5e2; border-radius: 10px; }
-.ration-history-meal header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.ration-history-meal header strong { font-size: 14px; }
-.ration-history-meal .ration-today-items { padding: 0; }
-.ration-history-states { display: flex; flex-wrap: wrap; gap: 6px; }
 .ration-state-set { min-height: 36px; padding: 4px 10px; border: 1px solid #dce2dd; border-radius: 18px; background: #fff; color: #3c4043; font-size: 12px; font-weight: 600; }
 .ration-state-set.active { border-color: var(--accent); background: var(--accent); color: #fff; }
 .ration-history-discrepancies { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
-.ration-history-empty { margin: 4px 0; }
 
-.ration-overlay-day { grid-template-columns: auto auto minmax(0, 1fr) auto; }
-.ration-overlay-kcal { color: var(--accent); font-size: 11px; font-style: normal; font-weight: 650; white-space: nowrap; }
-.ration-overlay-nutrition { margin: 0; font-size: 12px; }
 .ration-repeat { display: grid; gap: 8px; }
 .ration-discrepancies { display: grid; gap: 8px; margin: 0 14px; }
-.ration-history-meal .ration-discrepancies { margin: 0; }
 .ration-discrepancies h3 { margin: 4px 0 0; font-size: 13px; }
 .ration-discrepancies p { margin: 0; font-size: 12px; }
 .ration-history-discrepancies li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -2085,6 +2054,42 @@ body.root-page dialog > #toast {
 .ration-meal-dialog > p { margin-left: 14px; margin-right: 14px; }
 .ration-transfer-button { min-width: 44px; min-height: 40px; border: 1px solid #dce2dd; border-radius: 10px; background: #fff; color: var(--accent); font-size: 13px; font-weight: 700; }
 
-@media (prefers-reduced-motion: reduce) {
-  .ration-overlay { transition: none; }
-}
+.ration-day-card:not(.ration-today) { display: grid; gap: 8px; padding: 12px; border: 1px solid #dce2dd; border-radius: var(--radius-md); background: #fff; }
+.ration-day-card-header { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.ration-day-card-date span { color: var(--muted); font-size: 12px; }
+.ration-day-card-date h3 { margin: 2px 0 0; font-size: 17px; }
+.ration-day-card-summary { color: var(--muted); font-size: 12px; text-align: right; }
+.ration-day-card-totals { display: flex; flex-direction: column; align-items: end; text-align: right; }
+.ration-day-card-totals strong { color: var(--accent); font-size: 15px; }
+.ration-day-card-totals span { color: var(--muted); font-size: 12px; }
+.ration-day-card-empty { margin: 0; font-size: 13px; }
+
+.ration-past-meals { display: grid; gap: 6px; }
+.ration-past-meal { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; min-height: 44px; padding: 6px 10px; border: 1px solid #e1e5e2; border-left: 4px solid #cfd6d1; border-radius: 10px; background: #fff; color: inherit; text-align: left; }
+.ration-past-meal.state-eaten { border-left-color: #1f5d3b; }
+.ration-past-meal.state-changed { border-left-color: #e4a832; }
+.ration-past-meal.state-skipped { border-left-color: #c25b4e; }
+.ration-past-meal .meal-event-time { color: var(--accent); font-size: 13px; font-weight: 700; }
+.ration-past-meal strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.ration-past-meal small { grid-column: 2 / -1; color: #8b5e00; font-size: 12px; }
+
+.ration-plan-meals { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ration-plan-meals li { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; }
+.ration-plan-meals .meal-event-time { color: var(--accent); font-size: 13px; font-weight: 700; }
+.ration-plan-meals strong { font-size: 14px; }
+.ration-plan-meals small { display: block; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.ration-plan-meals em { color: var(--accent); font-size: 12px; font-style: normal; font-weight: 650; white-space: nowrap; }
+.ration-plan-day.expanded { border-color: var(--accent); box-shadow: inset 4px 0 0 var(--accent); }
+.ration-plan-day .ration-day-editor .ration-meal { margin: 0; }
+.ration-plan-gaps { margin: 0; font-size: 12px; }
+.ration-plan-edit { justify-self: end; }
+
+.ration-request-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
+.ration-request-fields label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); font-size: 12px; }
+.ration-request-fields input { min-height: 44px; padding: 6px 8px; border: 1px solid #dce2dd; border-radius: 8px; }
+
+.ration-meal-past { margin: 0 14px 14px; }
+.ration-food-row-past { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 40px; }
+.ration-food-row-past small { color: var(--muted); font-size: 12px; }
+
+.feed-more { min-height: 44px; border: 1px dashed #cfd6d1; border-radius: var(--radius-md); background: #fff; color: var(--accent); font-weight: 600; }

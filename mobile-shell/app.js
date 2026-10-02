@@ -66,6 +66,10 @@ import {
   let route = "ration";
   // Pages with modes remember them for the session; Покупки has none.
   const pageModes = { ration: "log", sport: "log" };
+  // Each mode keeps its feed length and scroll position until the end of the session.
+  const FEED_STEP = 14;
+  const feedDays = { ration: { log: FEED_STEP, plan: FEED_STEP }, sport: { log: FEED_STEP, plan: FEED_STEP } };
+  const modeScroll = { ration: { log: 0, plan: 0 }, sport: { log: 0, plan: 0 } };
   let lastRootPage = "ration";
   let profileReturn = "ration";
   let routeId = null;
@@ -85,8 +89,10 @@ import {
   let barcodeScanTarget = "product";
   let answerDraftItems = new Map();
   let purchaseFillProduct = null;
-  let rationOverlay = "";
-  let rationOverlayDate = "";
+  // The future day whose plan is open for editing in План, and the date of the
+  // meal card opened from Учёт.
+  let rationPlanDate = "";
+  let rationMealDate = "";
   let rationPortionTarget = null;
   let formDirty = false;
   let requestAutosaveTimer = null;
@@ -116,8 +122,10 @@ import {
   pageSlider.addEventListener("click", () => {
     // The slider only switches the mode; pages change with a swipe.
     if (!pageModes[route]) return;
+    rememberModeScroll();
     pageModes[route] = pageModes[route] === "log" ? "plan" : "log";
-    renderPageSlider();
+    render();
+    restoreModeScroll();
   });
 
   bindPageSwipe();
@@ -139,6 +147,8 @@ import {
       document.getElementById("product-form")?.requestSubmit();
     } else if (route === "ration-profile") {
       document.getElementById("ration-profile-form")?.requestSubmit();
+    } else if (route === "ration" && pageModes.ration === "plan") {
+      openRationRequestDialog();
     } else attemptBackNavigation();
   });
 
@@ -221,17 +231,24 @@ import {
       if (document.getElementById("request-items") && !persistRequestDraft({ silent: false })) return;
       draftItems = [];
     }
-    if (route === "ration" && next !== "ration") {
-      rationOverlay = "";
-      rationOverlayDate = "";
-    }
+    rememberModeScroll();
     route = next;
     routeId = id;
     routeSubId = subId;
+    rationMealDate = "";
     formDirty = false;
     // The page itself never scrolls: only <main> does (see styles.css).
     app.scrollTop = 0;
     render();
+    restoreModeScroll();
+  }
+
+  function rememberModeScroll() {
+    if (pageModes[route]) modeScroll[route][pageModes[route]] = app.scrollTop;
+  }
+
+  function restoreModeScroll() {
+    if (pageModes[route]) app.scrollTop = modeScroll[route][pageModes[route]] || 0;
   }
 
   function finishRequestEdit() {
@@ -250,12 +267,6 @@ import {
     const openDialog = document.querySelector("dialog[open]");
     if (openDialog) {
       closeDialogSafely(openDialog);
-      return true;
-    }
-    if (route === "ration" && rationOverlay) {
-      rationOverlay = "";
-      rationOverlayDate = "";
-      renderRation();
       return true;
     }
     if (route === "request-answer") {
@@ -301,6 +312,10 @@ import {
   function closeDialogSafely(dialog) {
     if (dialog.id === "app-confirm-dialog") {
       finishConfirm(false);
+      return true;
+    }
+    if (dialog.id === "ration-request-dialog") {
+      dialog.close();
       return true;
     }
     if (dialog.id === "answer-action-dialog") {
@@ -378,7 +393,7 @@ import {
 
   function configureHeader() {
     const config = {
-      ration: [PAGE_TITLES.ration, ""],
+      ration: [PAGE_TITLES.ration, pageModes.ration === "plan" ? "Запросить" : ""],
       sport: [PAGE_TITLES.sport, ""],
       requests: [PAGE_TITLES.requests, "Создать"],
       "product-edit": ["Продукт", "Сохранить"],
@@ -428,17 +443,17 @@ import {
   }
 
   function pageSwipeAllowed(event) {
-    if (!ROOT_PAGES.includes(route) || (route === "ration" && rationOverlay)) return false;
+    if (!ROOT_PAGES.includes(route)) return false;
     if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return false;
     if (document.querySelector("dialog[open]")) return false;
     // Screen edges belong to the system back gesture.
     if (event.clientX < 24 || event.clientX > window.innerWidth - 24) return false;
-    return !event.target.closest("input, textarea, select, [contenteditable], .ration-overlay");
+    return !event.target.closest("input, textarea, select, [contenteditable]");
   }
 
   // Root pages switch with a horizontal swipe over the content. Screens over a
-  // page (request note, product card, Profile, forms), dialogs and ration
-  // overlays keep horizontal gestures for themselves.
+  // page (request note, product card, Profile, forms) and dialogs keep
+  // horizontal gestures for themselves.
   function bindPageSwipe() {
     let start = null;
     let dragging = false;
@@ -2347,18 +2362,37 @@ import {
   };
 
   function renderRation(focusItemId = "") {
+    // Marking a meal or editing a day re-renders the feed in place: keep its scroll.
+    const top = app.scrollTop;
     const today = todayDateKey();
+    const mode = pageModes.ration;
+    rationHeaderPicker.innerHTML = "";
+    app.innerHTML = `
+      <div class="ration-feed" data-mode="${mode}">
+        ${mode === "plan" ? rationPlanFeed(today) : rationLogFeed(today)}
+      </div>
+      ${mode === "log" ? rationMealDialog(rationMealDate || today) : ""}
+      ${rationPortionDialog()}
+      ${mode === "plan" ? rationRequestDialog(today) : ""}
+    `;
+    app.scrollTop = top;
+    bindRation(today);
+    if (focusItemId) document.querySelector(`.ration-food-row[data-item-id="${focusItemId}"] .ration-food-input`)?.focus();
+  }
+
+  // Учёт: the «Сегодня» card, then past days in reverse order.
+  function rationLogFeed(today) {
     const day = rationDayFor(state, today) || { date: today, meals: [] };
     const historyDay = readRationHistoryDay(state, today);
     const nutrition = readRationDayNutrition(state, today);
     const profile = state.ration?.profile || {};
-    const meals = [...(day.meals || [])].sort((a, b) => rationMealTime(a).localeCompare(rationMealTime(b)));
-    rationHeaderPicker.innerHTML = "";
-    app.innerHTML = `
-      <section class="ration-today">
+    const meals = rationSortedMeals(day);
+    const pastDates = Array.from({ length: feedDays.ration.log }, (_, index) => addRationDays(today, -(index + 1)));
+    return `
+      <section class="ration-today ration-day-card" data-date="${today}">
         <header class="ration-today-header">
           <div class="ration-today-date">
-            <span>${rationWeekday(today)}</span>
+            <span>Сегодня · ${rationWeekday(today)}</span>
             <h2>${rationDayMonth(today)}</h2>
           </div>
           <div class="ration-today-totals">
@@ -2370,20 +2404,124 @@ import {
           </div>
         </header>
         <div class="ration-today-meals">
-          ${meals.length ? meals.map((meal) => rationTodayMealCard(today, meal, historyDay, nutrition)).join("") : `<p class="ration-today-empty muted">На сегодня приёмов пока нет. Добавьте первый приём пищи или откройте План.</p>`}
+          ${meals.length ? meals.map((meal) => rationTodayMealCard(today, meal, historyDay, nutrition)).join("") : `<p class="ration-today-empty muted">На сегодня приёмов пока нет. Добавьте первый приём пищи или переключитесь на План.</p>`}
         </div>
         <button id="ration-add-meal" class="keep-add-item" type="button"><span>＋</span> Добавить приём пищи</button>
       </section>
-      <aside class="ration-rail" aria-label="Оверлеи рациона">
-        <button class="ration-rail-flag ${rationOverlay === "plan" ? "active" : ""}" data-overlay="plan" type="button" aria-label="Открыть План">План</button>
-        <button class="ration-rail-flag ${rationOverlay === "history" ? "active" : ""}" data-overlay="history" type="button" aria-label="Открыть Историю">История</button>
-      </aside>
-      ${rationOverlayPanel()}
-      ${rationMealDialog(today)}
-      ${rationPortionDialog()}
+      ${pastDates.map((dateKey) => rationPastDayCard(dateKey, today)).join("")}
+      <button class="feed-more" data-page="ration" type="button">Показать ещё</button>
     `;
-    bindRation(today);
-    if (focusItemId) document.querySelector(`.ration-food-row[data-item-id="${focusItemId}"] .ration-food-input`)?.focus();
+  }
+
+  // План: tomorrow first, then the following days.
+  function rationPlanFeed(today) {
+    const dates = Array.from({ length: feedDays.ration.plan }, (_, index) => addRationDays(today, index + 1));
+    return `
+      ${dates.map((dateKey) => rationPlanDayCard(dateKey, today)).join("")}
+      <button class="feed-more" data-page="ration" type="button">Показать ещё</button>
+    `;
+  }
+
+  function rationSortedMeals(day) {
+    return [...(day?.meals || [])].sort((a, b) => rationMealTime(a).localeCompare(rationMealTime(b)));
+  }
+
+  function rationDayLabel(dateKey, today) {
+    if (dateKey === addRationDays(today, 1)) return `Завтра · ${rationWeekday(dateKey)}`;
+    if (dateKey === addRationDays(today, -1)) return `Вчера · ${rationWeekday(dateKey)}`;
+    return rationWeekday(dateKey);
+  }
+
+  function rationPastDayCard(dateKey, today) {
+    const day = rationDayFor(state, dateKey);
+    const record = readRationHistoryDay(state, dateKey);
+    const meals = rationSortedMeals(day);
+    const counts = { eaten: 0, changed: 0, skipped: 0 };
+    meals.forEach((meal) => {
+      const mealState = record?.meals?.[meal.id]?.state;
+      if (counts[mealState] != null) counts[mealState] += 1;
+    });
+    const summary = counts.eaten + counts.changed + counts.skipped
+      ? `Съедено ${counts.eaten} · изменено ${counts.changed} · не съедено ${counts.skipped}`
+      : "Нет отметок";
+    const rows = meals.map((meal) => {
+      const mealRecord = record?.meals?.[meal.id] || {};
+      const stateKey = RATION_STATE_LABELS[mealRecord.state] ? mealRecord.state : "unmarked";
+      const shift = Number(mealRecord.transferredMinutes) || 0;
+      const discrepancies = (mealRecord.discrepancies || []).length;
+      return `<button class="ration-past-meal state-${stateKey}" data-date="${dateKey}" data-meal-id="${meal.id}" type="button" aria-label="Открыть приём пищи ${escapeAttr(meal.name)}, ${rationDayMonth(dateKey)}">
+        <span class="meal-event-time">${shiftedRationMealTime(rationMealTime(meal), shift)}</span>
+        <strong>${escapeHtml(meal.name)}</strong>
+        <span class="ration-state-chip">${RATION_STATE_LABELS[stateKey]}</span>
+        ${discrepancies ? `<small>Расхождений: ${discrepancies}</small>` : ""}
+      </button>`;
+    }).join("");
+    return `<article class="ration-day-card ration-past-day" data-date="${dateKey}">
+      <header class="ration-day-card-header">
+        <div class="ration-day-card-date"><span>${rationDayLabel(dateKey, today)}</span><h3>${rationDayMonth(dateKey)}</h3></div>
+        ${meals.length ? `<small class="ration-day-card-summary">${summary}</small>` : ""}
+      </header>
+      ${meals.length ? `<div class="ration-past-meals">${rows}</div>` : `<p class="muted ration-day-card-empty">Приёмов пищи не было.</p>`}
+    </article>`;
+  }
+
+  function rationPlanDayCard(dateKey, today) {
+    const day = rationDayFor(state, dateKey);
+    const meals = rationSortedMeals(day);
+    const nutrition = meals.length ? readRationDayNutrition(state, dateKey) : null;
+    const expanded = rationPlanDate === dateKey;
+    const summary = meals.map((meal) => {
+      const kcal = nutrition.perMeal.find((entry) => entry.mealId === meal.id)?.calories || 0;
+      const products = (meal.items || []).map((item) => getProduct(item.productId)?.name || item.name).filter(Boolean).join(", ");
+      return `<li>
+        <span class="meal-event-time">${rationMealTime(meal)}</span>
+        <div><strong>${escapeHtml(meal.name)}</strong>${products ? `<small>${escapeHtml(products)}</small>` : ""}</div>
+        ${kcal ? `<em>${number(kcal)} ккал</em>` : ""}
+      </li>`;
+    }).join("");
+    const body = expanded
+      ? `${rationNutritionGaps(dateKey)}${rationDayEditor(dateKey, false)}${rationRepeatActions(dateKey)}`
+      : meals.length ? `<ul class="ration-plan-meals">${summary}</ul>` : `<p class="muted ration-day-card-empty">Приёмов пока нет.</p>`;
+    return `<article class="ration-day-card ration-plan-day${expanded ? " expanded" : ""}" data-date="${dateKey}">
+      <header class="ration-day-card-header">
+        <div class="ration-day-card-date">
+          <span>${rationDayLabel(dateKey, today)}${day?.source === "special" ? " · Особый день" : ""}</span>
+          <h3>${rationDayMonth(dateKey)}</h3>
+        </div>
+        ${nutrition?.totals.calories ? `<div class="ration-day-card-totals">
+          <strong>${number(nutrition.totals.calories)} ккал</strong>
+          <span>Б ${number(nutrition.totals.protein)} · Ж ${number(nutrition.totals.fat)} · У ${number(nutrition.totals.carbs)}</span>
+        </div>` : ""}
+      </header>
+      ${body}
+      <button class="ration-plan-edit text-button" data-date="${dateKey}" type="button" aria-expanded="${expanded}">${expanded ? "Готово" : "Изменить"}</button>
+    </article>`;
+  }
+
+  function rationNutritionGaps(dateKey) {
+    const gaps = new Set(readRationDayNutrition(state, dateKey).missing.map((entry) => entry.itemId)).size;
+    return gaps ? `<p class="muted ration-plan-gaps">Нет данных о КБЖУ для ${gaps} поз.</p>` : "";
+  }
+
+  function rationRequestDialog(today) {
+    return `<dialog id="ration-request-dialog" class="answer-dialog ration-request-dialog">
+      <form id="ration-plan-request">
+        <h2>Запросить продукты</h2>
+        <p class="muted">Продукты выбранных дней попадут в новый запрос, количества округлятся до упаковок.</p>
+        <div class="ration-request-fields">
+          <label><span>С</span><input id="ration-request-from" type="date" value="${addRationDays(today, 1)}"></label>
+          <label><span>По</span><input id="ration-request-to" type="date" value="${addRationDays(today, 7)}"></label>
+        </div>
+        <button class="button full" type="submit">Создать запрос</button>
+        <button id="cancel-ration-request" class="text-button dialog-cancel" type="button">Отмена</button>
+      </form>
+    </dialog>`;
+  }
+
+  function openRationRequestDialog() {
+    const dialog = document.getElementById("ration-request-dialog");
+    if (!dialog || dialog.open) return;
+    dialog.showModal();
   }
 
   function shiftedRationMealTime(time, minutes) {
@@ -2425,59 +2563,6 @@ import {
     </article>`;
   }
 
-  function rationOverlayPanel() {
-    if (!rationOverlay) return "";
-    if (rationOverlay === "plan") return rationPlanOverlay();
-    return rationHistoryOverlay();
-  }
-
-  function rationOverlayDates(fromKey, count) {
-    return Array.from({ length: count }, (_, index) => addRationDays(fromKey, index));
-  }
-
-  function rationPlanOverlay() {
-    const today = todayDateKey();
-    const rows = rationOverlayDates(addRationDays(today, 1), 14).map((dateKey) => {
-      const day = rationDayFor(state, dateKey);
-      const labels = (day?.meals || []).map((meal) => meal.name).filter(Boolean).slice(0, 3).join(" · ");
-      const calories = day?.meals?.length ? readRationDayNutrition(state, dateKey).totals.calories : 0;
-      return `<button class="ration-overlay-day ${rationOverlayDate === dateKey ? "active" : ""}" data-date="${dateKey}" type="button">
-        <strong>${rationShortDate(dateKey)}</strong><span>${rationShortWeekday(dateKey)}</span>
-        <small>${escapeHtml(labels || "Нет приёмов")}</small>
-        ${calories ? `<em class="ration-overlay-kcal">${number(calories)} ккал</em>` : ""}
-      </button>`;
-    }).join("");
-    const editor = rationOverlayDate ? rationDayEditor(rationOverlayDate, false) : "";
-    return `<section class="ration-overlay" data-overlay="plan">
-      <header class="ration-overlay-header">
-        <h2>План</h2>
-        <button id="close-ration-overlay" class="text-button" type="button" aria-label="Закрыть оверлей">×</button>
-      </header>
-      <p class="muted">Ближайшие две недели. Нажмите на день, чтобы задать Особый день или изменить приёмы.</p>
-      <div class="ration-overlay-days">${rows}</div>
-      ${editor ? `<section class="ration-overlay-editor">
-        <h3>${capitalize(rationLongDate(rationOverlayDate))}</h3>
-        ${rationNutritionLine(rationOverlayDate)}
-        ${editor}
-        ${rationRepeatActions(rationOverlayDate)}
-      </section>` : ""}
-      <form id="ration-plan-request" class="ration-overlay-request">
-        <h3>Запросить продукты</h3>
-        <div class="ration-overlay-request-fields">
-          <label><span>С</span><input id="ration-request-from" type="date" value="${addRationDays(today, 1)}"></label>
-          <label><span>По</span><input id="ration-request-to" type="date" value="${addRationDays(today, 7)}"></label>
-        </div>
-        <button class="button full" type="submit">Создать запрос</button>
-      </form>
-    </section>`;
-  }
-
-  function rationNutritionLine(dateKey) {
-    const { totals, missing } = readRationDayNutrition(state, dateKey);
-    const gaps = new Set(missing.map((entry) => entry.itemId)).size;
-    return `<p class="muted ration-overlay-nutrition">${number(totals.calories)} ккал · Б ${number(totals.protein)} · Ж ${number(totals.fat)} · У ${number(totals.carbs)}${gaps ? ` · нет данных для ${gaps} поз.` : ""}</p>`;
-  }
-
   function rationRepeatActions(dateKey) {
     return `<div class="ration-repeat">
       <button class="button secondary ration-repeat-button" data-date="${dateKey}" data-length="1" type="button">Повторять этот день каждый день</button>
@@ -2485,61 +2570,22 @@ import {
     </div>`;
   }
 
-  function rationHistoryOverlay() {
-    const today = todayDateKey();
-    const rows = rationOverlayDates(addRationDays(today, -13), 13).reverse().map((dateKey) => {
-      const record = readRationHistoryDay(state, dateKey);
-      const counts = { eaten: 0, changed: 0, skipped: 0 };
-      Object.values(record?.meals || {}).forEach((meal) => {
-        if (counts[meal.state] != null) counts[meal.state] += 1;
-      });
-      const summary = counts.eaten + counts.changed + counts.skipped
-        ? `Съедено ${counts.eaten} · изменено ${counts.changed} · не съедено ${counts.skipped}`
-        : "Нет отметок";
-      return `<button class="ration-overlay-day ${rationOverlayDate === dateKey ? "active" : ""}" data-date="${dateKey}" type="button">
-        <strong>${rationShortDate(dateKey)}</strong><span>${rationShortWeekday(dateKey)}</span>
-        <small>${escapeHtml(summary)}</small>
-      </button>`;
+  // In a past meal card the plan is read-only: only the ate-it checks remain.
+  function rationPastMealItems(dateKey, meal, record) {
+    const rows = (meal.items || []).map((item) => {
+      const product = getProduct(item.productId);
+      const name = product?.name || item.name || "Продукт";
+      const measure = rationMeasure(product);
+      const portion = Number(item.portionSize) || measure.defaultPortion;
+      return `<div class="ration-food-row ration-food-row-past" data-item-id="${item.id}">
+        ${rationEatenCheck(record, item, name)}
+        <span class="ration-food-name">${escapeHtml(name)}</span>
+        <small>${number(portion)} ${measure.unit}</small>
+      </div>`;
     }).join("");
-    const editor = rationOverlayDate ? rationHistoryDayEditor(rationOverlayDate) : "";
-    return `<section class="ration-overlay" data-overlay="history">
-      <header class="ration-overlay-header">
-        <h2>История питания</h2>
-        <button id="close-ration-overlay" class="text-button" type="button" aria-label="Закрыть оверлей">×</button>
-      </header>
-      <p class="muted">Прошлые две недели. Отметки можно исправить, план прошлого не меняется.</p>
-      <div class="ration-overlay-days">${rows || `<p class="muted">История пока пуста.</p>`}</div>
-      ${editor}
-    </section>`;
-  }
-
-  function rationHistoryDayEditor(dateKey) {
-    const day = rationDayFor(state, dateKey);
-    const record = readRationHistoryDay(state, dateKey);
-    if (!day?.meals?.length) return `<p class="muted ration-history-empty">В этот день не было приёмов пищи.</p>`;
-    const meals = day.meals.map((meal) => {
-      const mealRecord = record?.meals?.[meal.id] || { state: "unmarked", discrepancies: [] };
-      const stateKey = RATION_STATE_LABELS[mealRecord.state] ? mealRecord.state : "unmarked";
-      const rows = (meal.items || []).map((item) => {
-        const product = getProduct(item.productId);
-        return `<li>${escapeHtml(product?.name || item.name || "Продукт")}</li>`;
-      }).join("");
-      return `<article class="ration-history-meal" data-meal-id="${meal.id}">
-        <header>
-          <strong>${escapeHtml(meal.name)}</strong>
-          <span class="ration-state-chip">${RATION_STATE_LABELS[stateKey]}</span>
-        </header>
-        ${(meal.items || []).length ? `<ul class="ration-today-items">${rows}</ul>` : ""}
-        <div class="ration-history-states">
-          ${["eaten", "changed", "skipped", "unmarked"].map((value) => `<button class="ration-state-set ${stateKey === value ? "active" : ""}" data-date="${dateKey}" data-meal-id="${meal.id}" data-state="${value}" type="button">${RATION_STATE_LABELS[value]}</button>`).join("")}
-        </div>
-        ${rationDiscrepancyEditor(dateKey, meal, mealRecord)}
-      </article>`;
-    }).join("");
-    return `<section class="ration-overlay-editor">
-      <h3>${capitalize(rationLongDate(dateKey))}</h3>
-      ${meals}
-    </section>`;
+    return `<article class="ration-meal ration-meal-past" data-date="${dateKey}" data-meal-id="${meal.id}">
+      <div class="ration-food-list">${rows || `<p class="muted">В приёме не было продуктов.</p>`}</div>
+    </article>`;
   }
 
   function rationDiscrepancyLabel(item) {
@@ -2696,19 +2742,18 @@ import {
     if (!meal) return "";
     const record = readRationHistoryDay(state, dateKey)?.meals?.[meal.id] || { state: "unmarked", discrepancies: [] };
     const stateKey = RATION_STATE_LABELS[record.state] ? record.state : "unmarked";
-    const isToday = dateKey === todayDateKey();
-    return `<dialog id="ration-meal-dialog" class="ration-meal-dialog">
+    const isPast = dateKey < todayDateKey();
+    return `<dialog id="ration-meal-dialog" class="ration-meal-dialog" data-date="${dateKey}">
       <header><div><span>${capitalize(rationLongDate(dateKey))}</span><h2>${escapeHtml(meal.name)}</h2></div><button id="close-ration-meal" type="button" aria-label="Закрыть">×</button></header>
       <div class="ration-meal-states">
         ${["eaten", "changed", "skipped", "unmarked"].map((value) => `<button class="ration-state-set ${stateKey === value ? "active" : ""}" data-date="${dateKey}" data-meal-id="${meal.id}" data-state="${value}" type="button">${RATION_STATE_LABELS[value]}</button>`).join("")}
       </div>
-      <div class="ration-meal-transfer">
+      ${isPast ? `<p class="muted">Прошлые отметки можно исправить; план этого дня не меняется.</p>` : `<div class="ration-meal-transfer">
         <span>Перенести</span>
         ${[-60, -15, 15, 60].map((delta) => `<button class="ration-transfer-button" data-meal-id="${meal.id}" data-delta="${delta}" type="button">${delta > 0 ? "+" : ""}${delta}</button>`).join("")}
-      </div>
-      ${!isToday ? `<p class="muted">Прошлые отметки можно исправить; план этого дня не меняется.</p>` : ""}
+      </div>`}
       ${rationDiscrepancyEditor(dateKey, meal, record)}
-      ${rationMealEditor(dateKey, meal, day.meals.length, record)}
+      ${isPast ? rationPastMealItems(dateKey, meal, record) : rationMealEditor(dateKey, meal, day.meals.length, record)}
     </dialog>`;
   }
 
@@ -2795,22 +2840,31 @@ import {
   }
 
   function bindRation(today) {
-    document.querySelectorAll(".ration-rail-flag").forEach((button) => {
-      button.onclick = () => {
-        rationOverlay = rationOverlay === button.dataset.overlay ? "" : button.dataset.overlay;
-        rationOverlayDate = "";
-        renderRation();
-      };
-    });
-    document.getElementById("close-ration-overlay")?.addEventListener("click", () => {
-      rationOverlay = "";
-      rationOverlayDate = "";
-      renderRation();
-    });
     document.querySelectorAll(".ration-today-meal-open").forEach((button) => {
       button.onclick = () => {
         routeSubId = button.dataset.mealId;
+        rationMealDate = today;
         renderRation();
+      };
+    });
+    document.querySelectorAll(".ration-past-meal").forEach((button) => {
+      button.onclick = () => {
+        routeSubId = button.dataset.mealId;
+        rationMealDate = button.dataset.date;
+        renderRation();
+      };
+    });
+    document.querySelectorAll(".ration-plan-edit").forEach((button) => {
+      button.onclick = () => {
+        rationPlanDate = rationPlanDate === button.dataset.date ? "" : button.dataset.date;
+        renderRation();
+      };
+    });
+    document.querySelectorAll(".feed-more").forEach((button) => {
+      button.onclick = () => {
+        const mode = pageModes[button.dataset.page];
+        feedDays[button.dataset.page][mode] = Math.min(feedDays[button.dataset.page][mode] + FEED_STEP, 366);
+        render();
       };
     });
     document.querySelectorAll(".ration-eat-button").forEach((button) => {
@@ -2841,12 +2895,8 @@ import {
         showToast("Приёмы пищи перенесены.");
       };
     });
-    document.querySelectorAll(".ration-overlay-day").forEach((button) => {
-      button.onclick = () => {
-        rationOverlayDate = rationOverlayDate === button.dataset.date ? "" : button.dataset.date;
-        renderRation();
-      };
-    });
+    const requestDialog = document.getElementById("ration-request-dialog");
+    document.getElementById("cancel-ration-request")?.addEventListener("click", () => requestDialog.close());
     document.getElementById("ration-plan-request")?.addEventListener("submit", (event) => {
       event.preventDefault();
       const from = document.getElementById("ration-request-from").value;
@@ -2863,8 +2913,7 @@ import {
       if (!itemIds.length) return showToast("В выбранных днях нет продуктов.");
       const created = localData.createRequestFromRation({ dates, itemIds });
       if (!applyLocal(created)) return showToast(created.reason);
-      rationOverlay = "";
-      rationOverlayDate = "";
+      requestDialog.close();
       draftItems = [];
       navigate("request-edit", created.requestId);
       showToast("Продукты рациона добавлены в запрос.");
@@ -2892,10 +2941,12 @@ import {
       rationProfileReturn = "ration";
       navigate("ration-profile");
     });
-    document.getElementById("ration-add-meal").onclick = () => {
+    const addMeal = document.getElementById("ration-add-meal");
+    if (addMeal) addMeal.onclick = () => {
       const added = localData.addRationMeal(today);
       if (!applyLocal(added)) return;
       routeSubId = added.mealId;
+      rationMealDate = today;
       renderRation();
     };
     document.querySelectorAll(".add-ration-meal").forEach((button) => {
@@ -2942,7 +2993,11 @@ import {
     if (mealDialog) {
       mealDialog.dataset.dirty = "false";
       document.getElementById("close-ration-meal").onclick = () => closeDialogSafely(mealDialog);
-      mealDialog.addEventListener("close", () => { routeSubId = null; renderRation(); });
+      mealDialog.addEventListener("close", () => {
+        routeSubId = null;
+        rationMealDate = "";
+        renderRation();
+      });
       mealDialog.showModal();
     }
   }
@@ -3018,14 +3073,23 @@ import {
   function updateRationMealTime(input) {
     const card = input.closest(".ration-meal");
     applyLocal(localData.updateRationMeal(card.dataset.date, card.dataset.mealId, { time: input.value }));
-    routeSubId = card.dataset.mealId;
+    reopenRationMealCard(card);
     renderRation();
+  }
+
+  // Cycle days share meal ids across dates, so only an edit made inside the
+  // meal card may reopen it; an edit in the План feed stays in the feed.
+  function reopenRationMealCard(card) {
+    if (!card.closest("#ration-meal-dialog")) return;
+    routeSubId = card.dataset.mealId;
+    rationMealDate = card.dataset.date;
   }
 
   async function removeRationMeal(button) {
     const card = button.closest(".ration-meal");
     const currentDay = rationDayFor(state, card.dataset.date);
     const currentMeal = currentDay?.meals.find((meal) => meal.id === card.dataset.mealId);
+    const fromCard = Boolean(card.closest("#ration-meal-dialog"));
     if (!currentMeal || !await askConfirm(`Удалить приём пищи «${currentMeal.name}» и все его продукты?`)) return;
     const removed = localData.removeRationMeal(card.dataset.date, card.dataset.mealId);
     if (!applyLocal(removed)) return;
@@ -3033,7 +3097,10 @@ import {
     renderRation();
     showToast(`Приём пищи «${currentMeal.name}» удалён.`, "Отменить", () => {
       if (!applyLocal(localData.undoRationRemoval(removed.undo))) return;
-      routeSubId = currentMeal.id;
+      if (fromCard) {
+        routeSubId = currentMeal.id;
+        rationMealDate = card.dataset.date;
+      }
       renderRation();
     });
   }
@@ -3057,7 +3124,7 @@ import {
     renderRation();
     showToast(`«${removedName}» удалён из рациона.`, "Отменить", () => {
       if (!applyLocal(localData.undoRationRemoval(removed.undo))) return;
-      routeSubId = card.dataset.mealId;
+      reopenRationMealCard(card);
       renderRation();
     });
   }
