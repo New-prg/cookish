@@ -2,6 +2,7 @@ package ru.listok.purchases;
 
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -19,10 +20,13 @@ import com.google.zxing.integration.android.IntentResult;
 
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import ru.listok.purchases.ai.AiHttp;
+import ru.listok.purchases.ai.GestureRects;
 import ru.listok.purchases.update.AndroidInstaller;
 import ru.listok.purchases.update.AppUpdate;
 import ru.listok.purchases.update.UpdateStatus;
@@ -114,6 +118,21 @@ public class MainActivity extends BridgeActivity {
                         null
                     );
                 });
+            });
+        }
+
+        // The assistant handle sits at the right edge: its rectangle (CSS px)
+        // is excluded from the system back gesture (API 29+). "[]" clears it.
+        @JavascriptInterface
+        public void setGestureExclusion(String rectsJson) {
+            float density = getResources().getDisplayMetrics().density;
+            List<int[]> parsed = GestureRects.parse(rectsJson, density);
+            runOnUiThread(() -> {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+                if (bridge == null || bridge.getWebView() == null) return;
+                List<Rect> rects = new ArrayList<>();
+                for (int[] rect : parsed) rects.add(new Rect(rect[0], rect[1], rect[2], rect[3]));
+                bridge.getWebView().setSystemGestureExclusionRects(rects);
             });
         }
 

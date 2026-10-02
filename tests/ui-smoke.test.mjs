@@ -1024,3 +1024,197 @@ test("smoke: Profile keeps the AI key on the device, checks it after one warning
     await context.close();
   }
 });
+
+const aiMessage = (message) => ({ status: 200, body: { choices: [{ message }] } });
+const aiToolCall = (name, args, id) => ({ id, type: "function", function: { name, arguments: JSON.stringify(args) } });
+
+function assistantPlanState() {
+  return {
+    schemaVersion: 13,
+    products: [
+      { id: "product_oats", name: "Овсянка", unit: "г", nutrition: { calories: 350, protein: 12, fat: 6, carbs: 60, fiber: 10 } },
+      { id: "product_curd", name: "Творог", unit: "г", nutrition: { calories: 121, protein: 17, fat: 5, carbs: 2, fiber: 0 } },
+    ],
+    requests: [],
+    ration: {
+      versions: [{
+        id: "version_1",
+        owner: "local",
+        effectiveFrom: dateKey(-3),
+        cycle: { anchor: dateKey(-3), weekdayBinding: false, days: [{ id: "cycle_1", meals: [
+          { id: "meal_1", name: "Завтрак", time: "08:00", items: [{ id: "item_1", productId: "product_oats", name: "Овсянка", portionSize: 150 }] },
+          { id: "meal_2", name: "Ужин", time: "19:00", items: [{ id: "item_2", productId: "product_curd", name: "Творог", portionSize: 300 }] },
+        ] }] },
+      }],
+      specialDays: {},
+      history: {},
+    },
+  };
+}
+
+const bigDay = [
+  { name: "Завтрак", time: "08:00", items: [{ product: "Овсянка", amount: 200 }] },
+  { name: "Ужин", time: "19:00", items: [{ product: "Творог", amount: 500 }] },
+];
+
+async function withAssistantKey(page, state = assistantPlanState()) {
+  await page.evaluate(() => {
+    localStorage.setItem("cookish.ai.key.test", "test-key");
+    localStorage.setItem("cookish.ai.consent.v1", "1");
+  });
+  await seedState(page, state);
+}
+
+async function askAssistant(page, text) {
+  await page.click("#assistant-handle");
+  await page.waitForSelector("#assistant-dialog[open]");
+  await page.fill("#assistant-input", text);
+  await page.click("#assistant-send");
+}
+
+test("smoke: the assistant handle opens the chat on every root page with its context", async () => {
+  const { context, page } = await openPage();
+  try {
+    const calls = await routeAi(context, () => ({ status: 500 }));
+    await withAssistantKey(page);
+    const viewport = page.viewportSize();
+    const titles = { ration: "Рацион · Учёт", sport: "Спорт · Учёт", requests: "Покупки" };
+    let handleTop = null;
+    for (const route of ROOT_PAGES) {
+      await openRoute(page, route);
+      const handle = await page.locator("#assistant-handle").boundingBox();
+      assert.ok(handle.height <= 200, "the handle is at most 200 dp tall");
+      assert.ok(Math.abs(handle.x + handle.width - viewport.width) <= 1, "the handle sits at the right edge");
+      handleTop ??= handle.y;
+      assert.equal(handle.y, handleTop, "the handle keeps one height on every page");
+      await page.click("#assistant-handle");
+      await page.waitForSelector("#assistant-dialog[open]");
+      assert.equal(await page.locator("#assistant-title").innerText(), titles[route]);
+      const suggestions = await page.locator(".assistant-suggestion").count();
+      assert.ok(suggestions >= 2 && suggestions <= 3, `2–3 suggestions on ${route}`);
+      assert.equal(await page.locator("#assistant-input").inputValue(), "");
+      assert.equal(await page.locator("#assistant-handle").isVisible(), false);
+      await page.click("#assistant-close");
+      assert.equal(await page.locator("#assistant-dialog[open]").count(), 0);
+    }
+
+    await openRoute(page, "ration");
+    await page.click("#page-slider");
+    const box = await page.locator("#assistant-handle").boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x - 80, box.y + box.height / 2, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForSelector("#assistant-dialog[open]");
+    assert.equal(await page.locator("#assistant-title").innerText(), "Рацион · План", "a pull opens the chat too");
+    await page.locator(".assistant-suggestion").first().click();
+    assert.notEqual(await page.locator("#assistant-input").inputValue(), "", "a suggestion fills the input");
+    assert.equal(await page.evaluate(() => window.__handleNativeBack()), true, "Android back closes the chat");
+    assert.equal(await page.locator("#assistant-dialog[open]").count(), 0);
+    assert.equal(calls.length, 0, "no LLM call until a message is sent");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: «Применить все» writes one journal set and a card can undo it", async () => {
+  const { context, page } = await openPage();
+  try {
+    const calls = await routeAi(context, (request, index) => index === 0
+      ? aiMessage({ role: "assistant", content: "", tool_calls: [
+        aiToolCall("get_plan", { from: dateKey(1), to: dateKey(2) }, "c1"),
+        aiToolCall("set_special_day", { date: dateKey(1), meals: bigDay }, "c2"),
+        aiToolCall("set_special_day", { date: dateKey(2), meals: bigDay }, "c3"),
+      ] })
+      : aiMessage({ role: "assistant", content: "Предлагаю два дня с большими порциями." }));
+    await withAssistantKey(page);
+    await askAssistant(page, "Увеличь порции на два дня");
+    await page.waitForSelector(".assistant-proposal >> nth=1");
+    await page.waitForSelector(".assistant-message.from-assistant");
+    assert.match(await page.locator(".assistant-progress").first().innerText(), /Читаю план/);
+    const card = page.locator(".assistant-proposal").first();
+    assert.match(await card.innerText(), /Особый день/);
+    assert.match(await card.innerText(), /Было: 08:00 · Овсянка 150 г/);
+    assert.match(await card.innerText(), /Стало: 08:00 · Овсянка 200 г/);
+    assert.match(await card.innerText(), /Δ \+/);
+    assert.equal((await storedState(page)).journal?.length ?? 0, 0, "proposals write nothing");
+    const system = calls[0].body.messages[0].content;
+    assert.match(system, /«Рацион · Учёт»/);
+    assert.ok(calls[0].body.tools.some((tool) => tool.function.name === "set_special_day"));
+
+    await page.click("#assistant-apply-all");
+    await page.waitForSelector(".assistant-proposal.status-applied >> nth=1");
+    const stored = await storedState(page);
+    assert.equal(stored.journal.length, 1);
+    assert.equal(stored.journal[0].actor, "ai");
+    assert.deepEqual(Object.keys(stored.ration.specialDays).sort(), [`local|${dateKey(1)}`, `local|${dateKey(2)}`]);
+    assert.equal(await page.locator("#assistant-apply-bar").isVisible(), false);
+
+    await card.locator('[data-proposal-action="undo"]').click();
+    await page.waitForSelector(".assistant-proposal.status-reverted >> nth=1");
+    const undone = await storedState(page);
+    assert.deepEqual(undone.ration.specialDays, {});
+    assert.equal(undone.journal.length, 2);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: closing the chat with unapplied proposals asks to apply or discard them", async () => {
+  const { context, page } = await openPage();
+  try {
+    let turn = 0;
+    await routeAi(context, () => (turn++ % 2 === 0)
+      ? aiMessage({ role: "assistant", content: "", tool_calls: [aiToolCall("set_special_day", { date: dateKey(1), meals: bigDay }, `c${turn}`)] })
+      : aiMessage({ role: "assistant", content: "Готово." }));
+    await withAssistantKey(page);
+    await askAssistant(page, "Больше еды завтра");
+    await page.waitForSelector(".assistant-proposal");
+    await page.waitForSelector(".assistant-message.from-assistant");
+
+    await page.click("#assistant-close");
+    await page.waitForSelector("#app-choice-dialog[open]");
+    assert.match(await page.locator("#app-choice-options").innerText(), /Применить 1/);
+    assert.match(await page.locator("#app-choice-options").innerText(), /Отбросить/);
+    assert.equal(await page.evaluate(() => window.__handleNativeBack()), true, "back closes the question first");
+    assert.equal(await page.locator("#assistant-dialog[open]").count(), 1, "the chat stays open");
+
+    await page.click("#assistant-close");
+    await page.click('#app-choice-options button:has-text("Отбросить")');
+    assert.equal(await page.locator("#assistant-dialog[open]").count(), 0);
+    assert.equal((await storedState(page)).journal?.length ?? 0, 0);
+    await page.click("#assistant-handle");
+    assert.equal(await page.locator(".assistant-proposal").count(), 0, "a closed thread is gone");
+    assert.ok(await page.locator(".assistant-suggestion").count() > 0);
+
+    await page.fill("#assistant-input", "Больше еды завтра");
+    await page.click("#assistant-send");
+    await page.waitForSelector(".assistant-message.from-assistant");
+    assert.equal(await page.evaluate(() => window.__handleNativeBack()), true);
+    await page.click('#app-choice-options button:has-text("Применить 1")');
+    await page.waitForFunction(() => !document.getElementById("assistant-dialog").open);
+    const stored = await storedState(page);
+    assert.equal(stored.journal.length, 1);
+    assert.deepEqual(Object.keys(stored.ration.specialDays), [`local|${dateKey(1)}`]);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: without a key the handle says the AI is unavailable and nothing is sent", async () => {
+  const { context, page } = await openPage();
+  try {
+    const calls = await routeAi(context, () => ({ status: 200, body: {} }));
+    await openRoute(page, "ration");
+    assert.equal(await page.locator("#assistant-handle").getAttribute("aria-label"), "ИИ недоступен: добавьте ключ в Профиле");
+    await page.click("#assistant-handle");
+    await page.waitForSelector("#assistant-dialog[open]");
+    assert.match(await page.locator("#assistant-feed").innerText(), /ИИ недоступен: добавьте ключ в Профиле/);
+    assert.equal(await page.locator("#assistant-form").isVisible(), false);
+    await page.click("#assistant-open-profile");
+    await page.waitForSelector(".profile-ai");
+    assert.equal(calls.length, 0);
+  } finally {
+    await context.close();
+  }
+});

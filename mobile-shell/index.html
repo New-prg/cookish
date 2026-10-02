@@ -40,6 +40,28 @@
       </span>
     </button>
 
+    <button id="assistant-handle" class="assistant-handle" type="button" aria-label="Открыть ассистента" hidden>
+      <span class="assistant-handle-grip" aria-hidden="true"></span>
+    </button>
+
+    <dialog id="assistant-dialog" class="assistant-dialog" aria-labelledby="assistant-title">
+      <header class="assistant-header">
+        <div class="assistant-heading">
+          <span class="eyebrow">Ассистент</span>
+          <h2 id="assistant-title"></h2>
+        </div>
+        <button id="assistant-close" class="assistant-close" type="button" aria-label="Закрыть ассистента">×</button>
+      </header>
+      <div id="assistant-feed" class="assistant-feed"></div>
+      <div id="assistant-apply-bar" class="assistant-apply-bar" hidden>
+        <button id="assistant-apply-all" class="button full" type="button">Применить все</button>
+      </div>
+      <form id="assistant-form" class="assistant-form">
+        <textarea id="assistant-input" rows="1" placeholder="Сообщение ассистенту" aria-label="Сообщение ассистенту"></textarea>
+        <button id="assistant-send" class="assistant-send" type="submit" aria-label="Отправить">➤</button>
+      </form>
+    </dialog>
+
     <div id="toast" role="status" aria-live="polite">
       <span id="toast-message"></span>
       <button id="toast-action" type="button" hidden></button>

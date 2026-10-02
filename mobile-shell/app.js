@@ -30,6 +30,7 @@ import {
   createRouterAiProvider,
   defaultTransport,
 } from "./ai-provider.js";
+import { createAssistant, createThread } from "./ai-tools.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
   // на 100 г (для напитков — на 100 мл) и могут отличаться у конкретных марок.
@@ -75,6 +76,14 @@ import {
   const aiConsent = aiConsentStore(window.localStorage);
   const aiProvider = createRouterAiProvider({ getKey: () => aiKey.read(), transport: defaultTransport(window) });
   let aiKeyStatus = { text: "", tone: "muted", busy: false };
+  const assistant = createAssistant({
+    provider: aiProvider,
+    getState: () => localData.snapshot(),
+    changePlan: localData.changePlan,
+  });
+  // The open chat. A thread lives only in memory and is gone after closing.
+  let assistantThread = null;
+  let assistantBusy = false;
   let route = "ration";
   // Pages with modes remember them for the session; Покупки has none.
   const pageModes = { ration: "log", sport: "log" };
@@ -109,6 +118,7 @@ import {
   let formDirty = false;
   let requestAutosaveTimer = null;
   let confirmResolve = null;
+  let choiceResolve = null;
   let productEditReturn = null;
   let rationProfileReturn = "profile";
   let requestGestureToken = 0;
@@ -125,6 +135,10 @@ import {
   const rationHeaderPicker = document.getElementById("ration-header-picker");
   const headerProfile = document.getElementById("header-profile");
   const pageSlider = document.getElementById("page-slider");
+  const assistantHandle = document.getElementById("assistant-handle");
+  const assistantDialog = document.getElementById("assistant-dialog");
+  const assistantFeed = document.getElementById("assistant-feed");
+  const assistantInput = document.getElementById("assistant-input");
 
   headerProfile.addEventListener("click", () => {
     profileReturn = lastRootPage;
@@ -141,6 +155,7 @@ import {
   });
 
   bindPageSwipe();
+  bindAssistantHandle();
 
   ["input", "change"].forEach((eventName) => app.addEventListener(eventName, (event) => {
     const dialog = event.target.closest("dialog");
@@ -276,7 +291,8 @@ import {
   }
 
   function attemptBackNavigation() {
-    const openDialog = document.querySelector("dialog[open]");
+    // The topmost dialog closes first: a confirm may sit over the assistant.
+    const openDialog = [...document.querySelectorAll("dialog[open]")].pop();
     if (openDialog) {
       closeDialogSafely(openDialog);
       return true;
@@ -330,6 +346,14 @@ import {
       dialog.close();
       return true;
     }
+    if (dialog.id === "app-choice-dialog") {
+      finishChoice(null);
+      return true;
+    }
+    if (dialog.id === "assistant-dialog") {
+      requestCloseAssistant();
+      return true;
+    }
     if (dialog.id === "answer-action-dialog") {
       // Soft-commit quantity/price so details are not lost on back/dismiss.
       const productId = dialog.dataset.productId;
@@ -373,6 +397,42 @@ import {
     });
   }
 
+  // A dialog with several answers; resolves with the chosen value or null.
+  function askChoice(message, options) {
+    return new Promise((resolve) => {
+      choiceResolve = resolve;
+      let dialog = document.getElementById("app-choice-dialog");
+      if (!dialog) {
+        dialog = document.createElement("dialog");
+        dialog.id = "app-choice-dialog";
+        dialog.className = "answer-dialog confirm-dialog";
+        dialog.innerHTML = `<p id="app-choice-message"></p><div id="app-choice-options" class="choice-options"></div>
+          <button id="app-choice-cancel" class="text-button dialog-cancel" type="button">Остаться</button>`;
+        document.body.appendChild(dialog);
+        dialog.addEventListener("cancel", (event) => {
+          event.preventDefault();
+          finishChoice(null);
+        });
+        document.getElementById("app-choice-cancel").onclick = () => finishChoice(null);
+      }
+      document.getElementById("app-choice-message").textContent = message;
+      const list = document.getElementById("app-choice-options");
+      list.innerHTML = options.map((option, index) => `<button class="button full ${option.secondary ? "secondary" : ""}" data-index="${index}" type="button">${escapeHtml(option.label)}</button>`).join("");
+      list.querySelectorAll("button").forEach((button) => {
+        button.onclick = () => finishChoice(options[Number(button.dataset.index)].value);
+      });
+      dialog.showModal();
+    });
+  }
+
+  function finishChoice(value) {
+    const dialog = document.getElementById("app-choice-dialog");
+    if (dialog?.open) dialog.close();
+    const resolve = choiceResolve;
+    choiceResolve = null;
+    if (resolve) resolve(value);
+  }
+
   function finishConfirm(result) {
     const dialog = document.getElementById("app-confirm-dialog");
     if (dialog?.open) dialog.close();
@@ -386,6 +446,7 @@ import {
     if (rootPage) lastRootPage = route;
     document.body.classList.toggle("root-page", rootPage);
     renderPageSlider();
+    renderAssistantHandle();
     configureHeader();
 
     if (route === "ration") renderRation();
@@ -537,6 +598,329 @@ import {
       event.preventDefault();
       event.stopPropagation();
     }, true);
+  }
+
+  // Assistant: a handle at the right edge of every root page opens one chat.
+  // The chat knows the page and mode it was opened from; changes come as
+  // Предложения that write nothing until applied.
+  const ASSISTANT_SUGGESTIONS = {
+    "ration:log": ["Как я соблюдал рацион последние недели?", "Чем заменить пропущенный приём пищи?", "Какие расхождения у меня бывают чаще всего?"],
+    "ration:plan": ["Сделай завтра день без мяса", "Добавь больше белка в план на неделю", "Укладывается ли план в мою цель?"],
+    "sport:log": ["Сколько белка у меня в плане на завтра?", "Подстрой питание под дни тренировок"],
+    "sport:plan": ["Подстрой питание под дни тренировок", "Добавь перекус перед вечерней тренировкой"],
+    "requests:": ["Сколько я потратил на продукты за месяц?", "Какие продукты нужны по плану на неделю?"],
+  };
+  const PROPOSAL_STATUS = {
+    pending: "Предложение",
+    applied: "Применено",
+    conflict: "Конфликт",
+    dismissed: "Убрано",
+    reverted: "Отменено",
+  };
+  let handleDrag = null;
+  let suppressHandleClick = false;
+  let lastGestureExclusion = "";
+
+  function assistantUnavailableText() {
+    return "ИИ недоступен: добавьте ключ в Профиле";
+  }
+
+  function renderAssistantHandle() {
+    const visible = ROOT_PAGES.includes(route) && !assistantDialog.open;
+    assistantHandle.hidden = !visible;
+    const available = aiProvider.hasKey();
+    assistantHandle.classList.toggle("unavailable", !available);
+    assistantHandle.setAttribute("aria-label", available ? "Открыть ассистента" : assistantUnavailableText());
+    assistantHandle.title = available ? "Ассистент" : assistantUnavailableText();
+    syncGestureExclusion();
+  }
+
+  // The handle's area is excluded from the Android back gesture (API 29+).
+  function syncGestureExclusion() {
+    if (typeof window.NativeCookish?.setGestureExclusion !== "function") return;
+    const rects = [];
+    if (!assistantHandle.hidden) {
+      const box = assistantHandle.getBoundingClientRect();
+      if (box.width && box.height) rects.push({ x: box.left, y: box.top, width: box.width, height: box.height });
+    }
+    const json = JSON.stringify(rects.map((rect) => Object.fromEntries(Object.entries(rect).map(([key, value]) => [key, Math.round(value)]))));
+    if (json === lastGestureExclusion) return;
+    lastGestureExclusion = json;
+    window.NativeCookish.setGestureExclusion(json);
+  }
+
+  function bindAssistantHandle() {
+    assistantHandle.addEventListener("pointerdown", (event) => {
+      handleDrag = { x: event.clientX, y: event.clientY, pointerId: event.pointerId, opened: false };
+      try {
+        assistantHandle.setPointerCapture?.(event.pointerId);
+      } catch {}
+    });
+    assistantHandle.addEventListener("pointermove", (event) => {
+      if (!handleDrag || event.pointerId !== handleDrag.pointerId || handleDrag.opened) return;
+      const dx = Math.min(0, event.clientX - handleDrag.x);
+      assistantHandle.style.setProperty("--pull", `${Math.max(dx, -48)}px`);
+      // Pulling the handle to the left opens the chat.
+      if (dx < -36 && Math.abs(event.clientY - handleDrag.y) < 90) {
+        handleDrag.opened = true;
+        suppressHandleClick = true;
+        openAssistant();
+      }
+    });
+    const release = () => {
+      handleDrag = null;
+      assistantHandle.style.removeProperty("--pull");
+      setTimeout(() => { suppressHandleClick = false; }, 0);
+    };
+    assistantHandle.addEventListener("pointerup", release);
+    assistantHandle.addEventListener("pointercancel", release);
+    // A tap opens the chat too.
+    assistantHandle.addEventListener("click", () => {
+      if (suppressHandleClick) return;
+      openAssistant();
+    });
+    document.getElementById("assistant-close").addEventListener("click", () => requestCloseAssistant());
+    assistantDialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      requestCloseAssistant();
+    });
+    document.getElementById("assistant-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      sendAssistantMessage(assistantInput.value);
+    });
+    assistantInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendAssistantMessage(assistantInput.value);
+      }
+    });
+    document.getElementById("assistant-apply-all").addEventListener("click", () => {
+      applyAssistantProposals(pendingProposals(), true);
+    });
+    assistantFeed.addEventListener("click", (event) => {
+      const suggestion = event.target.closest(".assistant-suggestion");
+      if (suggestion) {
+        assistantInput.value = suggestion.dataset.text;
+        assistantInput.focus();
+        return;
+      }
+      if (event.target.closest("#assistant-open-profile")) {
+        assistantDialog.close();
+        assistantThread = null;
+        profileReturn = lastRootPage;
+        navigate("profile");
+        return;
+      }
+      const button = event.target.closest("[data-proposal-action]");
+      if (!button || !assistantThread) return;
+      const proposal = assistantThread.proposals.find((value) => value.id === button.dataset.proposalId);
+      if (!proposal) return;
+      const action = button.dataset.proposalAction;
+      if (action === "apply") applyAssistantProposals([proposal], false);
+      else if (action === "dismiss") {
+        proposal.status = "dismissed";
+        renderAssistantFeed();
+      } else if (action === "undo") undoAssistantProposal(proposal);
+    });
+  }
+
+  function openAssistant() {
+    if (assistantDialog.open || !ROOT_PAGES.includes(route)) return;
+    const mode = pageModes[route] || "";
+    assistantThread = createThread({ page: route, mode });
+    document.getElementById("assistant-title").textContent = assistantContextTitle(route, mode);
+    assistantInput.value = "";
+    renderAssistantFeed();
+    assistantDialog.showModal();
+    renderAssistantHandle();
+    // The keyboard would cover the suggestions: focus stays on the dialog.
+    assistantDialog.focus?.();
+  }
+
+  function assistantContextTitle(page, mode) {
+    return mode ? `${PAGE_TITLES[page]} · ${capitalize(PAGE_MODE_LABELS[mode])}` : PAGE_TITLES[page];
+  }
+
+  function pendingProposals() {
+    return (assistantThread?.proposals || []).filter((proposal) => proposal.status === "pending");
+  }
+
+  // Closing with unapplied Предложения asks what to do with them.
+  async function requestCloseAssistant() {
+    if (!assistantDialog.open) return;
+    const pending = pendingProposals();
+    if (pending.length) {
+      const choice = await askChoice(
+        `В чате ${pending.length} неприменённ${pending.length === 1 ? "ое предложение" : "ых предложения"}. После закрытия чат не сохранится.`,
+        [
+          { label: `Применить ${pending.length}`, value: "apply" },
+          { label: "Отбросить", value: "discard", secondary: true },
+        ]
+      );
+      if (!choice) return;
+      if (choice === "apply" && !applyAssistantProposals(pending, true)) return;
+    }
+    closeAssistant();
+  }
+
+  function closeAssistant() {
+    if (assistantDialog.open) assistantDialog.close();
+    assistantThread = null;
+    assistantBusy = false;
+    renderAssistantHandle();
+  }
+
+  async function sendAssistantMessage(value) {
+    const text = String(value || "").trim();
+    if (!text || assistantBusy || !assistantThread) return;
+    if (!aiProvider.hasKey()) return renderAssistantFeed();
+    if (!await ensureAiConsent()) return;
+    const thread = assistantThread;
+    assistantBusy = true;
+    assistantInput.value = "";
+    renderAssistantFeed();
+    try {
+      await assistant.run(thread, text, {
+        page: thread.page,
+        mode: thread.mode,
+        onEvent: () => {
+          if (assistantThread === thread) renderAssistantFeed();
+        },
+      });
+    } finally {
+      if (assistantThread === thread) {
+        assistantBusy = false;
+        renderAssistantFeed();
+      }
+    }
+  }
+
+  function applyAssistantProposals(proposals, together) {
+    if (!proposals.length) return false;
+    const result = assistant.apply(proposals, { together });
+    state = localData.snapshot();
+    render();
+    renderAssistantFeed();
+    const failed = result.results.filter((entry) => !entry.ok);
+    if (!result.ok) showToast(failed[0]?.reason || "Предложение не применилось.");
+    else if (failed.length) showToast(`Применено ${result.results.length - failed.length}, с конфликтом ${failed.length}.`);
+    else showToast(proposals.length > 1 ? "Предложения применены." : "Предложение применено.");
+    return result.ok;
+  }
+
+  function undoAssistantProposal(proposal) {
+    const result = localData.revertChangeSet(proposal.changeSetId);
+    if (!applyLocal(result)) return;
+    assistantThread.proposals
+      .filter((value) => value.changeSetId === proposal.changeSetId)
+      .forEach((value) => { value.status = "reverted"; });
+    render();
+    renderAssistantFeed();
+    showToast("Изменение отменено.");
+  }
+
+  function renderAssistantFeed() {
+    if (!assistantThread) return;
+    const available = aiProvider.hasKey();
+    const form = document.getElementById("assistant-form");
+    form.hidden = !available;
+    assistantInput.disabled = assistantBusy;
+    document.getElementById("assistant-send").disabled = assistantBusy;
+    const pending = pendingProposals();
+    const applyBar = document.getElementById("assistant-apply-bar");
+    applyBar.hidden = pending.length < 2 || assistantBusy;
+    document.getElementById("assistant-apply-all").textContent = `Применить все (${pending.length})`;
+    if (!available) {
+      assistantFeed.innerHTML = `<div class="assistant-unavailable">
+        <p>${assistantUnavailableText()}.</p>
+        <button id="assistant-open-profile" class="button secondary" type="button">Открыть Профиль</button>
+      </div>`;
+      return;
+    }
+    const entries = assistantThread.log.map((entry) => assistantLogEntry(entry)).join("");
+    const suggestions = assistantThread.log.length ? "" : `<div class="assistant-suggestions">
+      <p class="muted">Спросите или попросите изменить план. Ассистент пришлёт изменения на подтверждение.</p>
+      ${(ASSISTANT_SUGGESTIONS[`${assistantThread.page}:${assistantThread.mode}`] || []).slice(0, 3).map((text) =>
+        `<button class="assistant-suggestion" type="button" data-text="${escapeAttr(text)}">${escapeHtml(text)}</button>`).join("")}
+    </div>`;
+    assistantFeed.innerHTML = `${suggestions}${entries}${assistantBusy ? `<p class="assistant-typing">Ассистент думает…</p>` : ""}`;
+    assistantFeed.scrollTop = assistantFeed.scrollHeight;
+  }
+
+  function assistantLogEntry(entry) {
+    if (entry.type === "user") return `<div class="assistant-message from-user">${escapeHtml(entry.text)}</div>`;
+    if (entry.type === "assistant") return `<div class="assistant-message from-assistant">${escapeHtml(entry.text)}</div>`;
+    if (entry.type === "progress") return `<p class="assistant-progress">· ${escapeHtml(entry.text)}</p>`;
+    if (entry.type === "error") return `<p class="assistant-error error" role="alert">${escapeHtml(entry.text)}</p>`;
+    if (entry.type === "proposal") {
+      const proposal = assistantThread.proposals.find((value) => value.id === entry.proposalId);
+      return proposal ? assistantProposalCard(proposal) : "";
+    }
+    return "";
+  }
+
+  function assistantProposalCard(proposal) {
+    const status = PROPOSAL_STATUS[proposal.status] ? proposal.status : "pending";
+    const actions = {
+      pending: `<button class="text-button" data-proposal-action="dismiss" data-proposal-id="${proposal.id}" type="button">Убрать</button>
+        <button class="button" data-proposal-action="apply" data-proposal-id="${proposal.id}" type="button">Применить</button>`,
+      applied: proposal.changeSetId ? `<button class="button secondary" data-proposal-action="undo" data-proposal-id="${proposal.id}" type="button">Отменить</button>` : "",
+      conflict: `<button class="text-button" data-proposal-action="dismiss" data-proposal-id="${proposal.id}" type="button">Убрать</button>`,
+      dismissed: "",
+      reverted: "",
+    }[status];
+    return `<article class="assistant-proposal status-${status}" data-proposal-id="${proposal.id}">
+      <header>
+        <strong>${escapeHtml(proposal.summary)}</strong>
+        <span class="assistant-proposal-status">${PROPOSAL_STATUS[status]}</span>
+      </header>
+      ${assistantProposalBody(proposal)}
+      ${status === "conflict" && proposal.conflict ? `<p class="assistant-proposal-conflict">${escapeHtml(proposal.conflict)}</p>` : ""}
+      ${actions ? `<div class="assistant-proposal-actions">${actions}</div>` : ""}
+    </article>`;
+  }
+
+  function assistantProposalBody(proposal) {
+    const preview = proposal.preview || {};
+    if (preview.type === "product") {
+      const line = (values) => values ? `${number(values.calories)} ккал · Б ${number(values.protein)} · Ж ${number(values.fat)} · У ${number(values.carbs)}` : "нет данных";
+      return `<dl class="assistant-proposal-product">
+        <dt>Было</dt><dd>${preview.before ? escapeHtml(line(preview.before)) : "нового продукта не было"}</dd>
+        <dt>Стало</dt><dd>${escapeHtml(line(preview.after))} на 100 ${preview.unit === "л" ? "мл" : "г"}</dd>
+      </dl>`;
+    }
+    const days = (preview.days || []).slice(0, 7).map((day) => {
+      const before = new Map((day.before || []).map((meal) => [meal.name, meal]));
+      const after = new Map((day.after || []).map((meal) => [meal.name, meal]));
+      const names = [...new Set([...before.keys(), ...after.keys()])];
+      const changed = names.filter((name) => JSON.stringify(before.get(name)) !== JSON.stringify(after.get(name)));
+      const rows = changed.map((name) => `<li>
+        <span class="assistant-proposal-meal">${escapeHtml(name)}</span>
+        <span class="was">Было: ${escapeHtml(assistantMealText(before.get(name)))}</span>
+        <span class="now">Стало: ${escapeHtml(assistantMealText(after.get(name)))}</span>
+      </li>`).join("");
+      return `<section class="assistant-proposal-day">
+        <h4>${capitalize(rationShortWeekday(day.date))}, ${rationShortDate(day.date)}</h4>
+        ${rows ? `<ul>${rows}</ul>` : ""}
+        <small>${assistantDelta(day.delta)}</small>
+      </section>`;
+    }).join("");
+    const more = (preview.days || []).length > 7 ? `<p class="muted">И ещё ${(preview.days || []).length - 7} дн.</p>` : "";
+    return days ? `${days}${more}` : `<p class="muted">Затронутые дни: ${escapeHtml((proposal.dates || []).map((date) => rationShortDate(date)).join(", ") || "—")}</p>`;
+  }
+
+  function assistantMealText(meal) {
+    if (!meal) return "нет";
+    const items = (meal.items || []).map((item) => `${item.product} ${number(item.amount)} ${item.unit}`).join(", ");
+    return `${meal.time} · ${items || "без продуктов"}`;
+  }
+
+  function assistantDelta(delta = {}) {
+    const sign = (value) => {
+      const rounded = Math.round(Number(value) || 0);
+      return rounded > 0 ? `+${number(rounded)}` : rounded < 0 ? `−${number(Math.abs(rounded))}` : "0";
+    };
+    return `Δ ${sign(delta.calories)} ккал · Б ${sign(delta.protein)} · Ж ${sign(delta.fat)} · У ${sign(delta.carbs)}`;
   }
 
   function renderSport() {
@@ -3570,6 +3954,7 @@ import {
 
   if (typeof window.addEventListener === "function") {
     window.addEventListener("resize", queuePurchaseDialogViewportSync, { passive: true });
+    window.addEventListener("resize", syncGestureExclusion, { passive: true });
   }
   if (typeof window.visualViewport?.addEventListener === "function") {
     window.visualViewport.addEventListener("resize", queuePurchaseDialogViewportSync, { passive: true });
