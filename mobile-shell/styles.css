@@ -2030,7 +2030,7 @@ body.root-page dialog > #toast {
 .ration-today-items li { display: flex; justify-content: space-between; gap: 10px; color: #3c4043; font-size: 13px; }
 .ration-today-items li small { color: var(--muted); }
 
-.ration-rail { position: fixed; z-index: 25; top: 84px; right: 6px; display: grid; gap: 8px; }
+.ration-rail { position: fixed; z-index: 25; top: calc(84px + env(safe-area-inset-top)); right: 6px; display: grid; gap: 8px; }
 .ration-rail-flag { min-height: 44px; writing-mode: vertical-rl; padding: 10px 6px; border: 1px solid #dce2dd; border-radius: 12px; background: rgba(255, 255, 255, .92); color: var(--accent); font-size: 12px; font-weight: 700; box-shadow: 0 1px 3px rgb(60 64 67 / 12%); }
 .ration-rail-flag.active { background: var(--accent); color: #fff; }
 
