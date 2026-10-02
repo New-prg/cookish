@@ -966,3 +966,61 @@ test("smoke: swiping a request line away says which item was removed", async () 
     await context.close();
   }
 });
+
+// routerai.ru stand-in for the browser tests: answers the CORS preflight and
+// passes every other request to `handler(request)` → { status, body }.
+async function routeAi(context, handler) {
+  const calls = [];
+  await context.route("https://routerai.ru/**", async (route) => {
+    const request = route.request();
+    const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "GET, POST" };
+    if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
+    calls.push({ method: request.method(), url: request.url(), headers: request.headers(), body: request.postDataJSON?.() ?? null });
+    const answer = await handler(request, calls.length - 1);
+    return route.fulfill({ status: answer.status || 200, headers: cors, contentType: "application/json", body: JSON.stringify(answer.body ?? {}) });
+  });
+  return calls;
+}
+
+test("smoke: Profile keeps the AI key on the device, checks it after one warning and deletes it", async () => {
+  const { context, page } = await openPage();
+  try {
+    const calls = await routeAi(context, (request) => request.headers().authorization === "Bearer good-key"
+      ? { status: 200, body: { data: { label: "test" } } }
+      : { status: 401, body: { error: { message: "Invalid key bad-key" } } });
+    await openRoute(page, "profile");
+    assert.match(await page.locator(".profile-ai").innerText(), /Ключ ИИ \(тест\)/);
+    assert.match(await page.locator("#ai-key-status").innerText(), /не задан/);
+    assert.equal(await page.locator("#ai-key-input").getAttribute("type"), "password");
+    assert.equal(await page.locator("#ai-key-delete").isDisabled(), true);
+
+    await page.fill("#ai-key-input", "bad-key");
+    await page.click("#ai-key-check");
+    await page.waitForSelector("#app-confirm-dialog[open]");
+    assert.match(await page.locator("#app-confirm-message").innerText(), /routerai\.ru/);
+    await page.click("#app-confirm-ok");
+    await page.waitForFunction(() => /не подошёл/.test(document.getElementById("ai-key-status").textContent));
+    assert.doesNotMatch(await page.locator("#app").innerText(), /bad-key/);
+
+    await page.fill("#ai-key-input", "good-key");
+    await page.click("#ai-key-check");
+    await page.waitForFunction(() => /Ключ работает/.test(document.getElementById("ai-key-status").textContent));
+    assert.equal(await page.locator("#app-confirm-dialog[open]").count(), 0, "the warning shows only once");
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((call) => call.method === "GET" && call.url === "https://routerai.ru/api/v1/key"));
+    const stored = await page.evaluate(() => ({
+      key: localStorage.getItem("cookish.ai.key.test"),
+      data: localStorage.getItem("cookish.android.data.v1") || "",
+    }));
+    assert.equal(stored.key, "good-key");
+    assert.doesNotMatch(stored.data, /good-key/);
+    assert.equal(await page.locator("#ai-key-input").inputValue(), "", "the saved key is not shown back");
+
+    await page.click("#ai-key-delete");
+    await page.click("#app-confirm-ok");
+    await page.waitForFunction(() => /удалён/.test(document.getElementById("ai-key-status").textContent));
+    assert.equal(await page.evaluate(() => localStorage.getItem("cookish.ai.key.test")), null);
+  } finally {
+    await context.close();
+  }
+});

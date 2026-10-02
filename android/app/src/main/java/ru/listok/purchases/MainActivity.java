@@ -22,6 +22,7 @@ import org.json.JSONObject;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import ru.listok.purchases.ai.AiHttp;
 import ru.listok.purchases.update.AndroidInstaller;
 import ru.listok.purchases.update.AppUpdate;
 import ru.listok.purchases.update.UpdateStatus;
@@ -31,11 +32,13 @@ public class MainActivity extends BridgeActivity {
     private OnBackPressedCallback webBackCallback;
     private AppUpdate appUpdate;
     private ExecutorService updateExecutor;
+    private ExecutorService aiExecutor;
 
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         updateExecutor = Executors.newSingleThreadExecutor();
+        aiExecutor = Executors.newFixedThreadPool(2);
         appUpdate = new AppUpdate(
             new UrlHttpClient(),
             new AndroidInstaller(this),
@@ -94,6 +97,24 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void installLatestUpdate() {
             runOnUiThread(() -> appUpdate.installLatest());
+        }
+
+        // The test assistant's HTTP call; the answer comes back through
+        // window.__onNativeAiResponse(requestId, result).
+        @JavascriptInterface
+        public void aiRequest(String requestId, String payload) {
+            if (requestId == null || payload == null || aiExecutor == null) return;
+            aiExecutor.execute(() -> {
+                String result = AiHttp.execute(payload);
+                runOnUiThread(() -> {
+                    if (bridge == null || bridge.getWebView() == null) return;
+                    bridge.getWebView().evaluateJavascript(
+                        "window.__onNativeAiResponse && window.__onNativeAiResponse(" +
+                            JSONObject.quote(requestId) + "," + JSONObject.quote(result) + ")",
+                        null
+                    );
+                });
+            });
         }
 
         @JavascriptInterface
@@ -165,6 +186,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onDestroy() {
         if (updateExecutor != null) updateExecutor.shutdownNow();
+        if (aiExecutor != null) aiExecutor.shutdownNow();
         super.onDestroy();
     }
 

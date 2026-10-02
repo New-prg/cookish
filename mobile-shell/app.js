@@ -23,6 +23,13 @@ import {
   todayDateKey,
   validateRationProfile,
 } from "./local-data.js";
+import {
+  AI_CONSENT_TEXT,
+  aiConsentStore,
+  aiKeyStore,
+  createRouterAiProvider,
+  defaultTransport,
+} from "./ai-provider.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
   // на 100 г (для напитков — на 100 мл) и могут отличаться у конкретных марок.
@@ -63,6 +70,11 @@ import {
 
   const localData = openLocalData(browserStorage(window.localStorage));
   let state = localData.load();
+  // The AI key stays on the device apart from the local data (test mode, #44).
+  const aiKey = aiKeyStore(window.localStorage);
+  const aiConsent = aiConsentStore(window.localStorage);
+  const aiProvider = createRouterAiProvider({ getKey: () => aiKey.read(), transport: defaultTransport(window) });
+  let aiKeyStatus = { text: "", tone: "muted", busy: false };
   let route = "ration";
   // Pages with modes remember them for the session; Покупки has none.
   const pageModes = { ration: "log", sport: "log" };
@@ -3320,9 +3332,68 @@ import {
     window.NativeCookish.checkForAppUpdate();
   }
 
+  // Before the first request to the provider the person sees, once, which
+  // data leaves the device and where it goes.
+  async function ensureAiConsent() {
+    if (aiConsent.accepted()) return true;
+    if (!await askConfirm(AI_CONSENT_TEXT, "Понятно, продолжить")) return false;
+    aiConsent.accept();
+    return true;
+  }
+
+  function aiKeySection() {
+    const saved = Boolean(aiKey.read());
+    const status = aiKeyStatus.text || (saved ? "Ключ сохранён на этом устройстве." : "Ключ не задан: ассистент недоступен.");
+    return `
+      <section class="section profile-ai">
+        <span class="eyebrow">Ассистент</span>
+        <h2 class="profile-section-title">Ключ ИИ (тест)</h2>
+        <p class="muted">Временное поле на время теста. Ключ хранится только на этом устройстве, отдельно от данных приложения.</p>
+        <label class="field"><span>Ключ routerai.ru</span>
+          <input id="ai-key-input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${saved ? "Ключ сохранён · введите новый, чтобы заменить" : "Вставьте ключ"}">
+        </label>
+        <p id="ai-key-status" class="${aiKeyStatus.tone}" role="status">${escapeHtml(status)}</p>
+        <div class="button-row">
+          <button id="ai-key-check" class="button secondary" type="button" ${aiKeyStatus.busy ? "disabled" : ""}>${aiKeyStatus.busy ? "Проверяем…" : "Проверить"}</button>
+          <button id="ai-key-delete" class="button danger" type="button" ${saved && !aiKeyStatus.busy ? "" : "disabled"}>Удалить</button>
+        </div>
+      </section>`;
+  }
+
+  function setAiKeyStatus(text, tone = "muted", busy = false) {
+    aiKeyStatus = { text, tone, busy };
+    if (route !== "profile") return;
+    const section = document.querySelector(".profile-ai");
+    if (!section) return;
+    const typed = document.getElementById("ai-key-input")?.value || "";
+    section.outerHTML = aiKeySection();
+    document.getElementById("ai-key-input").value = typed;
+    bindAiKeyActions();
+  }
+
+  function bindAiKeyActions() {
+    document.getElementById("ai-key-check")?.addEventListener("click", async () => {
+      const input = document.getElementById("ai-key-input");
+      const typed = input.value.trim();
+      if (!typed && !aiKey.read()) return setAiKeyStatus("Введите ключ, чтобы проверить его.", "error");
+      if (!await ensureAiConsent()) return;
+      if (typed && !aiKey.write(typed)) return setAiKeyStatus("Не удалось сохранить ключ на устройстве.", "error");
+      input.value = "";
+      setAiKeyStatus("Проверяем ключ…", "muted", true);
+      const result = await aiProvider.checkKey();
+      setAiKeyStatus(result.ok ? "Ключ работает." : result.reason, result.ok ? "success" : "error");
+    });
+    document.getElementById("ai-key-delete")?.addEventListener("click", async () => {
+      if (!await askConfirm("Удалить ключ ИИ с этого устройства? Ассистент станет недоступен.", "Удалить ключ")) return;
+      aiKey.clear();
+      setAiKeyStatus("Ключ удалён.", "muted");
+    });
+  }
+
   function renderProfile() {
     app.innerHTML = `
       ${rationProfileSection()}
+      ${aiKeySection()}
       ${renderAppUpdateSection()}
       <section class="section danger-zone">
         <span class="eyebrow">Опасная зона</span>
@@ -3334,6 +3405,7 @@ import {
   }
 
   function bindProfileActions() {
+    bindAiKeyActions();
     document.getElementById("edit-ration-profile")?.addEventListener("click", () => {
       rationProfileReturn = "profile";
       navigate("ration-profile");
