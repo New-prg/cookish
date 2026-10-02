@@ -74,7 +74,7 @@ approved scheme (ADR-0001, epic #21) and come after epic #44.
 | UI shell | Single-page vanilla JS `mobile-shell/app.js` + `styles.css` |
 | Ration rules | `mobile-shell/ration-domain.js`, a deep in-process module; UI, sync and AI tools call one command/projection interface (#23) |
 | Sport rules | Planned module mirroring the ration domain (#53) |
-| Assistant | Planned `ai-tools.js` (#50) over a provider port: routerai.ru adapter and a mock for tests (#49) |
+| Assistant | `mobile-shell/ai-tools.js` (#50): agent loop, read tools, Предложения executed on a copy and gated, apply with re-check and the change journal (`plan-journal.js`, #48); provider port `ai-provider.js` with the routerai.ru adapter and a mock for tests (#49) |
 | Navigation | Three root pages Рацион → Спорт → Покупки switched by a horizontal swipe; a slider shows the page and the mode; Profile from a header button; stack routes for request note, purchase editor, product card and forms |
 | Data | Local data on the device. See README |
 | Auth | None yet. Account + backend sync are planned (#29, #30); sync stays off without an account |

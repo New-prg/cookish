@@ -77,6 +77,23 @@ export function appendChangeSet(state, { now, actor, page, summary, diff, revert
 // Restores the «before» snapshot of a set on the draft when the affected parts
 // still match its «after» snapshot, and journals the revert as a new set.
 export function revertChangeSet(state, changeSetId, { now, actor } = {}) {
+  const stamp = now || new Date().toISOString();
+  const restored = restoreChangeSet(state, changeSetId, { now: stamp, actor });
+  if (!restored.ok) return restored;
+  const revert = appendChangeSet(state, {
+    now: stamp,
+    actor: actor === "ai" ? "ai" : "human",
+    page: restored.set.page,
+    summary: `Откат: ${restored.set.summary}`,
+    diff: restored.diff,
+    revertOf: restored.set.id,
+  });
+  return { ok: true, changeSetId: revert.id, revertedId: restored.set.id, dates: restored.dates };
+}
+
+// The restore half of a revert, without a journal entry: an assistant batch
+// that contains a revert journals the whole batch as one set.
+export function restoreChangeSet(state, changeSetId, { now, actor } = {}) {
   const set = (state.journal || []).find((entry) => entry.id === changeSetId);
   if (!set) return { ok: false, reason: "Набор изменений не найден." };
   // A product the set created stays on revert: plans and requests may already
@@ -93,24 +110,15 @@ export function revertChangeSet(state, changeSetId, { now, actor } = {}) {
     };
   }
   const stamp = now || new Date().toISOString();
-  const keys = Object.keys(set.before).filter((key) => !kept(key));
   const diff = { before: {}, after: {} };
-  keys.forEach((key) => {
+  Object.keys(set.before).filter((key) => !kept(key)).forEach((key) => {
     const current = readPart(state, key);
     const restored = set.before[key] == null ? null : touch(structuredClone(set.before[key]), stamp, actor);
     writePart(state, key, restored);
     diff.before[key] = current == null ? null : structuredClone(current);
     diff.after[key] = restored == null ? null : structuredClone(restored);
   });
-  const revert = appendChangeSet(state, {
-    now: stamp,
-    actor: actor === "ai" ? "ai" : "human",
-    page: set.page,
-    summary: `Откат: ${set.summary}`,
-    diff,
-    revertOf: set.id,
-  });
-  return { ok: true, changeSetId: revert.id, revertedId: set.id, dates: partDates(set) };
+  return { ok: true, set, diff, dates: partDates(set) };
 }
 
 // Short view of the journal for the assistant and future UI: newest first.
