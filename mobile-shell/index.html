@@ -12,7 +12,7 @@
       <button id="header-back" class="header-back-button" type="button" aria-label="Назад" hidden>
         <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
-      <h1 id="page-title">Сводка</h1>
+      <h1 id="page-title">Рацион</h1>
       <div id="ration-header-picker" class="ration-header-picker" hidden></div>
       <div id="request-header-menu-wrap" class="header-menu-wrap" hidden>
         <button id="header-more" class="header-more-button" type="button" aria-label="Меню запроса" aria-haspopup="menu" aria-expanded="false">⋮</button>
@@ -22,16 +22,23 @@
         </div>
       </div>
       <button id="header-action" class="text-button" type="button" hidden></button>
+      <button id="header-profile" class="header-profile-button" type="button" aria-label="Профиль">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="8.5" r="3.8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4.5 20c1.2-3.6 4-5.4 7.5-5.4s6.3 1.8 7.5 5.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
     </header>
 
     <main id="app"></main>
 
-    <nav class="bottom-nav" aria-label="Основная навигация">
-      <button data-route="summary" class="active" aria-current="page"><span aria-hidden="true">⌂</span>Сводка</button>
-      <button data-route="requests"><span aria-hidden="true">≡</span>Запросы</button>
-      <button data-route="ration"><span aria-hidden="true">▦</span>Рацион</button>
-      <button data-route="profile"><span aria-hidden="true">○</span>Профиль</button>
-    </nav>
+    <button id="page-slider" class="page-slider" type="button">
+      <span class="page-slider-pages">
+        <span id="page-slider-prev" class="page-slider-neighbour"></span>
+        <strong id="page-slider-current"></strong>
+        <span id="page-slider-next" class="page-slider-neighbour"></span>
+      </span>
+      <span id="page-slider-modes" class="page-slider-modes">
+        <span data-mode="log">учёт</span><span aria-hidden="true">·</span><span data-mode="plan">план</span>
+      </span>
+    </button>
 
     <div id="toast" role="status" aria-live="polite">
       <span id="toast-message"></span>

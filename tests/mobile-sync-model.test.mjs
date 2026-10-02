@@ -37,7 +37,7 @@ test("app opens locally without Google Sheets or a sign-in flow", () => {
     "utf8"
   );
 
-  assert.match(appSource, /let route = "summary";/);
+  assert.match(appSource, /let route = "ration";/);
   assert.match(appSource, /openLocalData\(browserStorage/);
   assert.match(localDataSource, new RegExp(STORAGE_KEY.replaceAll(".", "\\.")));
   assert.doesNotMatch(appSource, /localStorage\.setItem|localStorage\.getItem/);

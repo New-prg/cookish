@@ -43,8 +43,8 @@ after(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
-async function openPage(viewport = { width: 412, height: 915 }) {
-  const context = await browser.newContext({ viewport });
+async function openPage(viewport = { width: 412, height: 915 }, { hasTouch = false } = {}) {
+  const context = await browser.newContext({ viewport, hasTouch });
   const page = await context.newPage();
   page.on("pageerror", (error) => {
     throw new Error(`Unhandled page error: ${error.message}`);
@@ -53,15 +53,79 @@ async function openPage(viewport = { width: 412, height: 915 }) {
   return { context, page };
 }
 
+const ROOT_PAGES = ["ration", "sport", "requests"];
+const PAGE_TITLES = ["Рацион", "Спорт", "Покупки"];
+
+// Drags the content of a root page horizontally; step 1 moves to the next page.
+async function swipePage(page, step, { from } = {}) {
+  const box = await page.locator("main").boundingBox();
+  const y = from?.y ?? box.y + Math.min(box.height / 2, 240);
+  const x = from?.x ?? box.x + box.width / 2 + step * 90;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x - step * 200, y, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(80);
+}
+
+async function currentPage(page) {
+  if (await page.locator("#page-slider").isHidden()) return "";
+  return ROOT_PAGES[PAGE_TITLES.indexOf(await page.locator("#page-slider-current").innerText())];
+}
+
+// Under load the page may handle the last swipe a little later than the
+// fixed pause in swipePage, so wait for the expected page before asserting.
+async function expectPage(page, route, message) {
+  await page.waitForFunction((title) => {
+    const slider = document.getElementById("page-slider");
+    return !slider.hidden && document.getElementById("page-slider-current").textContent === title;
+  }, PAGE_TITLES[ROOT_PAGES.indexOf(route)], { timeout: 3000 }).catch(() => {});
+  assert.equal(await currentPage(page), route, message);
+}
+
 async function openRoute(page, route) {
-  await page.click(`nav button[data-route="${route}"]`);
-  await page.waitForTimeout(50);
+  // Screens over a page have no swipe: leave them through the header first.
+  while (!await currentPage(page)) {
+    await page.click("#header-back");
+    await page.waitForTimeout(50);
+  }
+  if (route === "profile") {
+    await page.click("#header-profile");
+    await page.waitForTimeout(50);
+    return;
+  }
+  const target = ROOT_PAGES.indexOf(route);
+  let index = ROOT_PAGES.indexOf(await currentPage(page));
+  while (index !== target) {
+    const step = Math.sign(target - index);
+    await swipePage(page, step);
+    index += step;
+    await expectPage(page, ROOT_PAGES[index]);
+  }
+}
+
+// A product card opens only from a chip of a request line. The request row
+// captures the pointer, so the chip answers a finger tap, not a mouse click;
+// open the page with { hasTouch: true }.
+async function openProductCard(page, productId) {
+  const now = new Date().toISOString();
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("cookish.android.data.v1") || "null"));
+  await seedState(page, {
+    schemaVersion: 12,
+    products: stored?.products?.length ? stored.products : [{ id: productId, name: "Чай", unit: "г" }],
+    requests: [{ id: "request_card", status: "open", createdAt: now, updatedAt: now, items: [{ productId, quantity: 1 }], responses: [] }],
+  });
+  await openRoute(page, "requests");
+  await page.locator(".request-link").first().click();
+  await page.tap(`#request-items .product-chip[data-product-id="${productId}"]`);
+  await page.waitForSelector("#product-form");
 }
 
 test("smoke: request with two items and one purchase mark", async () => {
   const { context, page } = await openPage();
   try {
-    await page.click("#summary-empty-request");
+    await openRoute(page, "requests");
+    await page.click("#requests-empty-add");
     await page.waitForSelector("#request-items .request-line-editor");
     const first = page.locator("#request-items .request-line-editor").first();
     await first.click();
@@ -170,18 +234,27 @@ test("smoke: ration plan overlay edits a future day and creates a request", asyn
   }
 });
 
-test("smoke: profile opens and bottom navigation stays pinned", async () => {
+test("smoke: the slider stays pinned on root pages and Profile opens from the header", async () => {
   const { context, page } = await openPage();
   try {
-    for (const route of ["summary", "requests", "ration", "profile"]) {
+    for (const route of ROOT_PAGES) {
       await openRoute(page, route);
-      const nav = await page.locator("nav.bottom-nav").boundingBox();
+      const slider = await page.locator("#page-slider").boundingBox();
       const viewport = page.viewportSize();
-      assert.ok(nav, `nav must exist on ${route}`);
-      assert.ok(nav.y > 0 && nav.y + nav.height <= viewport.height + 1, `nav must stay pinned on ${route}`);
+      assert.ok(slider, `slider must exist on ${route}`);
+      assert.ok(slider.y > 0 && slider.y + slider.height <= viewport.height + 1, `slider must stay pinned on ${route}`);
+      assert.ok(slider.width < viewport.width / 2, `slider must stay narrow on ${route}`);
       assert.ok((await page.locator("#app").innerText()).length > 0, `main must render on ${route}`);
+      assert.equal(await page.locator("#header-profile").isVisible(), true);
     }
-    assert.match(await page.locator("#app").innerText(), /Обнов|Данные|Очистить/);
+    await openRoute(page, "profile");
+    assert.equal(await page.locator("#page-slider").isVisible(), false);
+    assert.equal(await page.locator("#header-profile").isVisible(), false);
+    const text = await page.locator("#app").innerText();
+    assert.match(text, /Обнов/);
+    assert.doesNotMatch(text, /Открыть продукты|Сумма трат|Всего запросов/);
+    await page.click("#header-back");
+    assert.equal(await currentPage(page), "requests");
   } finally {
     await context.close();
   }
@@ -201,8 +274,10 @@ test("smoke: action elements stay visible at 360 px width", async () => {
       const eat = await eatButton.boundingBox();
       assert.ok(eat.x + eat.width <= rail.x + 1, "eat action must not be covered by the rail");
     }
+    const slider = await page.locator("#page-slider").boundingBox();
+    assert.ok(slider.x >= 0 && slider.x + slider.width <= 360, "slider must fit at 360 px");
     await openRoute(page, "requests");
-    assert.ok(await page.locator("nav.bottom-nav").isVisible());
+    assert.ok(await page.locator("#page-slider").isVisible());
   } finally {
     await context.close();
   }
@@ -278,7 +353,7 @@ test("smoke: saving an empty ration product shows a reason instead of crashing",
 });
 
 test("smoke: barcode lookup fills the product form from Open Food Facts", async () => {
-  const { context, page } = await openPage();
+  const { context, page } = await openPage(undefined, { hasTouch: true });
   try {
     await page.route("https://world.openfoodfacts.org/**", (route) => route.fulfill({
       contentType: "application/json",
@@ -294,13 +369,10 @@ test("smoke: barcode lookup fills the product form from Open Food Facts", async 
         },
       }),
     }));
-    await openRoute(page, "profile");
-    await page.click("#manage-products");
-    await page.click("#header-action");
-    await page.waitForSelector("#product-form");
+    await openProductCard(page, "product_tea");
     await page.fill("#product-form [name=barcode]", "4600000000001");
     await page.click("#lookup-barcode");
-    await page.waitForFunction(() => document.querySelector("#product-form [name=name]").value !== "");
+    await page.waitForFunction(() => /Найдено/.test(document.getElementById("barcode-status").textContent));
 
     const form = page.locator("#product-form");
     assert.equal(await form.locator("[name=name]").inputValue(), "Кефир 1%");
@@ -369,31 +441,6 @@ test("smoke: undo after removing a ration product returns the day to its plan", 
     const { ration } = await storedState(page);
     assert.deepEqual(ration.specialDays, {});
     assert.equal(await page.locator('#ration-meal-dialog .ration-food-row[data-item-id="item_1"]').count(), 1);
-  } finally {
-    await context.close();
-  }
-});
-
-test("smoke: undo in a toast restores a deleted product", async () => {
-  const { context, page } = await openPage();
-  try {
-    await seedState(page, {
-      schemaVersion: 12,
-      products: [{ id: "product_tea", name: "Чай", unit: "г" }],
-      requests: [],
-    });
-    await openRoute(page, "profile");
-    await page.click("#manage-products");
-    await page.click('.product-link[data-id="product_tea"]');
-    await page.click("#delete-product");
-    await page.click("#app-confirm-ok");
-    await page.waitForTimeout(80);
-    assert.ok((await storedState(page)).products[0].deletedAt);
-
-    await page.click("#toast-action");
-    await page.waitForTimeout(80);
-    assert.equal((await storedState(page)).products[0].deletedAt, "");
-    assert.equal(await page.locator('.product-link[data-id="product_tea"]').count(), 1);
   } finally {
     await context.close();
   }
@@ -608,6 +655,124 @@ test("smoke: Android back closes an open ration overlay instead of leaving the a
   }
 });
 
+test("smoke: launch opens Рацион and a swipe moves Рацион → Спорт → Покупки", async () => {
+  const { context, page } = await openPage();
+  try {
+    assert.equal(await currentPage(page), "ration");
+    await page.waitForSelector(".ration-today");
+    assert.equal(await page.locator("nav.bottom-nav").count(), 0);
+    assert.equal(await page.locator("#page-slider-prev").innerText(), "");
+    assert.equal(await page.locator("#page-slider-next").innerText(), "Спорт");
+
+    // Past the first page the swipe does nothing.
+    await swipePage(page, -1);
+    await expectPage(page, "ration");
+
+    await swipePage(page, 1);
+    await expectPage(page, "sport");
+    assert.match(await page.locator("#app").innerText(), /Скоро/);
+    assert.equal(await page.locator("#page-slider-prev").innerText(), "Рацион");
+    assert.equal(await page.locator("#page-slider-next").innerText(), "Покупки");
+
+    await swipePage(page, 1);
+    await expectPage(page, "requests");
+    assert.equal(await page.locator("#page-title").innerText(), "Покупки");
+    assert.equal(await page.locator("#header-action").innerText(), "Создать");
+    await swipePage(page, 1);
+    await expectPage(page, "requests");
+
+    await swipePage(page, -1);
+    await expectPage(page, "sport");
+
+    // A short vertical drag scrolls instead of switching pages.
+    const box = await page.locator("main").boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + 200);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 30, box.y + 40, { steps: 6 });
+    await page.mouse.up();
+    assert.equal(await currentPage(page), "sport");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a tap on the slider switches the mode on Рацион and does nothing on Покупки", async () => {
+  const { context, page } = await openPage();
+  try {
+    const slider = page.locator("#page-slider");
+    const activeMode = () => page.locator("#page-slider-modes .active").innerText();
+    assert.equal(await activeMode(), "учёт");
+    await slider.click();
+    assert.equal(await activeMode(), "план");
+    assert.equal(await currentPage(page), "ration", "the slider does not switch pages");
+
+    await openRoute(page, "sport");
+    assert.equal(await activeMode(), "учёт", "every page keeps its own mode");
+
+    await openRoute(page, "requests");
+    assert.equal(await page.locator("#page-slider-modes").isVisible(), false);
+    assert.equal(await slider.getAttribute("aria-disabled"), "true");
+    await slider.click({ force: true });
+    assert.equal(await currentPage(page), "requests");
+    assert.equal(await page.locator("#page-slider-modes").isVisible(), false);
+
+    await openRoute(page, "ration");
+    assert.equal(await activeMode(), "план", "the mode lasts for the session");
+    await page.reload({ waitUntil: "load" });
+    assert.equal(await activeMode(), "учёт", "a new launch opens Рацион in Учёт");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a swipe inside a request note does not switch pages", async () => {
+  const { context, page } = await openPage();
+  try {
+    const now = new Date().toISOString();
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [{ id: "product_milk", name: "Молоко", unit: "л" }],
+      requests: [{ id: "request_1", status: "open", createdAt: now, updatedAt: now, items: [{ productId: "product_milk", quantity: 1 }], responses: [] }],
+    });
+    await openRoute(page, "requests");
+    await page.locator(".request-link").first().click();
+    await page.waitForSelector("#request-items");
+    assert.equal(await page.locator("#page-slider").isVisible(), false);
+    assert.equal(await page.locator("#header-profile").isVisible(), false);
+
+    const list = await page.locator("#request-items").boundingBox();
+    await swipePage(page, 1, { from: { x: list.x + list.width / 2 + 90, y: list.y + list.height + 60 } });
+    await swipePage(page, -1, { from: { x: list.x + list.width / 2 - 90, y: list.y + list.height + 60 } });
+    assert.ok(await page.locator("#request-items").isVisible(), "the note stays open");
+    assert.equal((await storedState(page)).requests[0].items.length, 1);
+
+    await page.click("#header-action");
+    assert.equal(await currentPage(page), "requests");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: Android back returns Спорт and Покупки to Рацион and leaves the app from Рацион", async () => {
+  const { context, page } = await openPage();
+  try {
+    const back = () => page.evaluate(() => window.__handleNativeBack());
+    await openRoute(page, "requests");
+    assert.equal(await back(), true);
+    assert.equal(await currentPage(page), "ration");
+    assert.equal(await back(), false);
+
+    await openRoute(page, "sport");
+    await openRoute(page, "profile");
+    assert.equal(await back(), true);
+    assert.equal(await currentPage(page), "sport", "Profile returns to the page it was opened from");
+    assert.equal(await back(), true);
+    assert.equal(await currentPage(page), "ration");
+  } finally {
+    await context.close();
+  }
+});
+
 test("smoke: a tap on the check marks a request line bought and a second tap unmarks it", async () => {
   const { context, page } = await openPage();
   try {
@@ -646,12 +811,12 @@ test("smoke: a tap on the check marks a request line bought and a second tap unm
 });
 
 test("smoke: opening another screen starts it from the top", async () => {
-  const { context, page } = await openPage({ width: 412, height: 500 });
+  const { context, page } = await openPage({ width: 412, height: 400 });
   try {
     await openRoute(page, "profile");
     await page.locator("main").evaluate((main) => main.scrollTo(0, 9999));
     assert.ok(await page.locator("main").evaluate((main) => main.scrollTop) > 0);
-    await page.click("#manage-products");
+    await page.click("#edit-ration-profile");
     await page.waitForTimeout(80);
     assert.equal(await page.locator("main").evaluate((main) => main.scrollTop), 0);
   } finally {
@@ -690,46 +855,13 @@ test("smoke: unchecking a product in the meal card records that it was not eaten
   }
 });
 
-test("smoke: product catalog groups by category and filters by search", async () => {
-  const { context, page } = await openPage();
-  try {
-    await seedState(page, {
-      schemaVersion: 12,
-      products: [
-        { id: "product_milk", name: "Молоко", unit: "л", category: "Молочное", nutrition: { calories: 52, protein: 2.8, fat: 2.5, carbs: 4.7 } },
-        { id: "product_kefir", name: "Кефир", unit: "л", category: "Молочное" },
-        { id: "product_rice", name: "Рис", unit: "г", category: "Крупы" },
-        { id: "product_salt", name: "Соль", unit: "г" },
-      ],
-      requests: [],
-    });
-    await openRoute(page, "profile");
-    await page.click("#manage-products");
-    const titles = await page.locator(".product-group-title").allInnerTexts();
-    assert.deepEqual(titles.map((text) => text.replace(/\s+\d+$/, "").toLowerCase()), ["крупы", "молочное", "без категории"]);
-    assert.deepEqual(await page.locator('.product-group:nth-child(2) .product-link strong').allInnerTexts(), ["Кефир", "Молоко"]);
-    assert.match(await page.locator('.product-link[data-id="product_milk"]').innerText(), /52 ккал/);
-
-    await page.fill("#product-search", "молок");
-    assert.deepEqual(await page.locator(".product-link strong").allInnerTexts(), ["Молоко"]);
-    await page.fill("#product-search", "сыр");
-    await page.click("#product-search-add");
-    await page.waitForSelector("#product-form");
-    assert.equal(await page.locator("#product-form [name=name]").inputValue(), "сыр");
-  } finally {
-    await context.close();
-  }
-});
-
 test("smoke: product form saves from the header and asks before leaving unsaved changes", async () => {
-  const { context, page } = await openPage();
+  const { context, page } = await openPage(undefined, { hasTouch: true });
   try {
-    await openRoute(page, "profile");
-    await page.click("#manage-products");
-    await page.click("#header-action");
-    await page.waitForSelector("#product-form");
+    await openProductCard(page, "product_tea");
     assert.equal(await page.locator("#header-action").innerText(), "Сохранить");
     assert.equal(await page.locator("#header-back").isVisible(), true);
+    assert.equal(await page.locator("#delete-product").count(), 0);
 
     await page.fill("#product-form [name=name]", "Гречка");
     await page.click("#header-back");
@@ -738,15 +870,17 @@ test("smoke: product form saves from the header and asks before leaving unsaved 
     assert.equal(await page.locator("#product-form [name=name]").inputValue(), "Гречка");
 
     await page.click("#header-action");
-    await page.waitForTimeout(80);
-    assert.equal(await page.locator('.product-link strong').innerText(), "Гречка");
+    await page.waitForSelector("#request-items");
+    const chip = page.locator('#request-items .product-chip[data-product-id="product_tea"]');
+    assert.equal(await chip.innerText(), "Гречка");
 
-    await page.click(".product-link");
+    await chip.tap();
+    await page.waitForSelector("#product-form");
     await page.fill("#product-form [name=name]", "Гречка ядрица");
     assert.equal(await page.evaluate(() => window.__handleNativeBack()), true);
     await page.click("#app-confirm-ok");
-    await page.waitForTimeout(80);
-    assert.equal(await page.locator('.product-link strong').innerText(), "Гречка");
+    await page.waitForSelector("#request-items");
+    assert.equal(await chip.innerText(), "Гречка");
   } finally {
     await context.close();
   }

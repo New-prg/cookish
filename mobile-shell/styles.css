@@ -94,6 +94,22 @@ summary:focus-visible {
 
 .header-back-button:active { background: #eef1ee; }
 
+.header-profile-button {
+  display: grid;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  margin-right: -6px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+}
+
+.header-profile-button:active { background: #eef1ee; }
+
 .topbar h1 {
   margin: 0;
   flex: 1;
@@ -192,101 +208,7 @@ main {
   text-transform: uppercase;
 }
 
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  border-bottom: 1px solid var(--line);
-}
-
-.metric {
-  min-height: 96px;
-  padding: 16px;
-  border-right: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-
-.metric-button {
-  width: 100%;
-  border: 0;
-  background: #fff;
-  color: inherit;
-  text-align: left;
-  font: inherit;
-}
-
-.metric-button:active { background: #f5f7f5; }
-
-.metric:nth-child(2n) { border-right: 0; }
-.metric:nth-last-child(-n + 2) { border-bottom: 0; }
-
-.metric strong {
-  display: block;
-  margin-top: 8px;
-  font-size: 22px;
-  font-weight: 600;
-}
-
-.summary-screen .metric {
-  min-height: 76px;
-  padding: 11px 14px;
-}
-
-.summary-screen .metric span {
-  display: block;
-  overflow: hidden;
-  font-size: 13px;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.summary-screen .metric strong {
-  margin-top: 5px;
-  font-size: 20px;
-  line-height: 1.15;
-}
-
-.summary-requests {
-  padding: 14px 16px 12px;
-}
-
-.summary-requests .section-title {
-  margin-bottom: 7px;
-  font-size: 12px;
-}
-
-.summary-requests .request-link {
-  min-height: 60px;
-  align-items: flex-start;
-  padding: 8px 0 9px;
-}
-
-.summary-requests .request-link .row-main strong {
-  display: -webkit-box;
-  overflow: hidden;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.summary-requests .request-link .row-main span {
-  margin-top: 4px;
-  font-size: 12px;
-}
-
-.summary-requests .request-link .status {
-  flex: 0 0 auto;
-  margin-top: 1px;
-}
-
-.summary-create-request {
-  min-height: 44px;
-  margin-top: 10px;
-  padding-block: 8px;
-}
-
-.muted, .metric span, .empty {
+.muted, .empty {
   color: var(--muted);
 }
 
@@ -316,83 +238,6 @@ main {
 .row-main span { margin-top: 3px; color: var(--muted); font-size: 14px; }
 .row-value { white-space: nowrap; font-variant-numeric: tabular-nums; }
 
-/* Product catalog: search, category groups, one compact row per product. */
-.product-search {
-  position: sticky;
-  z-index: 2;
-  top: 0;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--line);
-  background: #fff;
-}
-
-.product-search input {
-  width: 100%;
-  min-height: 42px;
-  padding: 0 14px 0 40px;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: #f1f3f1 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23686c67' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='6.5'/%3E%3Cpath d='M16 16l4 4'/%3E%3C/svg%3E") 12px center / 18px no-repeat;
-  color: inherit;
-}
-
-.product-group-title {
-  margin: 0;
-  padding: 16px 16px 4px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: .045em;
-  text-transform: uppercase;
-}
-
-.product-group-title span {
-  margin-left: 4px;
-  color: #9aa09b;
-  font-weight: 500;
-}
-
-.product-link {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  min-height: 56px;
-  padding: 8px 12px 8px 16px;
-  border: 0;
-  background: #fff;
-  color: inherit;
-  text-align: left;
-}
-
-.product-link + .product-link { box-shadow: inset 16px 1px 0 #fff, inset 0 1px 0 #eceeec; }
-.product-link:active { background: #f4f6f4; }
-
-.product-link-main {
-  display: grid;
-  flex: 1;
-  min-width: 0;
-  gap: 2px;
-}
-
-.product-link-main strong,
-.product-link-main span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.product-link-main strong { font-weight: 600; }
-.product-link-main span { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-.product-link-chevron { flex: 0 0 auto; color: #b0b5b1; }
-
-.product-search-empty {
-  padding: 28px 16px;
-  text-align: center;
-}
-
-.product-search-empty p { margin: 0 0 4px; }
-
 .product-more { border-top: 1px solid var(--line); }
 
 .product-more > summary {
@@ -420,13 +265,6 @@ main {
 }
 
 .product-more[open] > summary::after { transform: rotate(-135deg); }
-
-.danger-text-button {
-  width: 100%;
-  min-height: 48px;
-  margin-top: 4px;
-  color: var(--danger);
-}
 
 .status {
   display: inline-block;
@@ -2017,53 +1855,86 @@ textarea { resize: vertical; }
   background: #fffafa;
 }
 
-.bottom-nav {
-  position: relative;
-  z-index: 20;
-  flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  align-items: stretch;
-  min-height: 56px;
-  padding: 4px 0 calc(6px + env(safe-area-inset-bottom));
-  background: #fff;
-  border-top: 1px solid var(--line);
-  box-shadow: 0 -1px 0 rgb(0 0 0 / 4%);
+/* Root pages leave room under the content for the floating slider. */
+body.root-page main {
+  padding-bottom: calc(80px + env(safe-area-inset-bottom));
+  touch-action: pan-y;
 }
 
-.bottom-nav[hidden] { display: none !important; }
+main.is-page-dragging { overflow: hidden; }
 
-.bottom-nav button {
-  display: flex;
-  min-width: 0;
-  min-height: 48px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  padding: 4px 2px;
-  border: 0;
-  background: #fff;
+.sport-soon { border-bottom: 0; }
+
+/* Shows the current root page between its neighbours and the page mode.
+   A tap switches the mode; pages switch with a swipe over the content. */
+.page-slider {
+  position: fixed;
+  z-index: 25;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  display: grid;
+  width: clamp(168px, 36vw, 220px);
+  min-height: 52px;
+  align-content: center;
+  gap: 1px;
+  padding: 6px 10px;
+  border: 1px solid #dce2dd;
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, .96);
+  color: #171917;
+  box-shadow: 0 4px 16px rgb(25 45 32 / 16%);
+}
+
+.page-slider[aria-disabled="true"] { cursor: default; }
+
+.page-slider-pages {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px;
+}
+
+.page-slider-pages strong { font-size: 16px; font-weight: 650; }
+
+/* A neighbour that does not fit fades out towards the slider edge. */
+.page-slider-neighbour {
+  overflow: hidden;
   color: var(--muted);
-  font-size: 11px;
-  line-height: 1.15;
+  font-size: var(--font-min);
+  opacity: .6;
   white-space: nowrap;
 }
 
-.bottom-nav button span {
-  display: block;
-  font-size: 18px;
-  line-height: 1;
+.page-slider-neighbour:first-child {
+  direction: rtl;
+  text-align: right;
+  -webkit-mask-image: linear-gradient(to left, #000 70%, transparent);
+  mask-image: linear-gradient(to left, #000 70%, transparent);
 }
 
-.bottom-nav button.active { color: var(--accent); font-weight: 600; }
+.page-slider-neighbour:last-child {
+  text-align: left;
+  -webkit-mask-image: linear-gradient(to right, #000 70%, transparent);
+  mask-image: linear-gradient(to right, #000 70%, transparent);
+}
+
+.page-slider-modes {
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--font-min);
+  line-height: 1.2;
+}
+
+.page-slider-modes .active { color: var(--accent); font-weight: 700; }
 
 #toast {
   position: fixed;
   z-index: 30;
   left: 16px;
   right: 16px;
-  bottom: calc(72px + env(safe-area-inset-bottom));
+  bottom: calc(16px + env(safe-area-inset-bottom));
   max-width: 520px;
   margin: auto;
   display: flex;
@@ -2091,11 +1962,11 @@ textarea { resize: vertical; }
 }
 
 #toast.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
-body.nav-hidden #toast { bottom: calc(16px + env(safe-area-inset-bottom)); }
+body.root-page #toast { bottom: calc(76px + env(safe-area-inset-bottom)); }
 /* Inside an open modal dialog the toast sticks to the bottom of the dialog's
    scroll area: fixed positioning would be clipped by the dialog. */
 dialog > #toast,
-body.nav-hidden dialog > #toast {
+body.root-page dialog > #toast {
   position: sticky;
   bottom: 12px;
   margin: 12px 0 0;
