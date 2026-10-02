@@ -17,6 +17,18 @@ import {
   todayDateKey,
 } from "./ration-domain.js";
 import { diffPlan, readChangeSets, readPart, restoreChangeSet, sameContent } from "./plan-journal.js";
+import {
+  SPORT_INTENSITIES,
+  SPORT_INTENSITY_LABELS,
+  SPORT_STATE_LABELS,
+  SPORT_TYPES,
+  SPORT_TYPE_LABELS,
+  applySportCommand,
+  normalizeSession,
+  readSportDay,
+  readSportDayEnergy,
+  readSportLogDay,
+} from "./sport-domain.js";
 
 export const ASSISTANT_MAX_TURNS = 8;
 export const KBJU_GATE = Object.freeze({ minCalories: 1200, tolerance: 0.15, minProteinShare: 0.75 });
@@ -66,6 +78,30 @@ export const RATION_TOOLS = [
   { name: "revert_change_set", description: "Предложить откат набора изменений из журнала (своего или ручного).", parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
 ].map((tool) => ({ type: "function", function: tool }));
 
+const sessionsSchema = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: {
+      type: { type: "string", enum: SPORT_TYPES, description: "strength — силовая, run — бег, swim — плавание, bike — велосипед, walk — ходьба, yoga — йога, other — другое" },
+      time: { type: "string", description: "ЧЧ:ММ" },
+      duration_min: { type: "number" },
+      intensity: { type: "string", enum: SPORT_INTENSITIES, description: "low — низкая, medium — средняя, high — высокая" },
+      note: { type: "string" },
+    },
+    required: ["type", "time", "duration_min", "intensity"],
+  },
+};
+
+export const SPORT_TOOLS = [
+  { name: "get_sport_plan", description: "Прочитать План тренировок на диапазон дат (включительно, до 14 дней) с плановым расходом ккал.", parameters: datesSchema },
+  { name: "get_sport_log", description: "Прочитать Учёт тренировок прошедших дней (до 28 дней): отметки, фактические длительность и интенсивность, внеплановая активность. Только чтение.", parameters: datesSchema },
+  { name: "set_sport_special_day", description: "Предложить Особый день тренировок: заменить все тренировки одной даты (сегодня или будущее). Пустой список — день отдыха.", parameters: { type: "object", properties: { date: { type: "string" }, sessions: sessionsSchema }, required: ["date", "sessions"] } },
+  { name: "release_sport_version", description: "Предложить новое недельное расписание тренировок с даты effective_from (сегодня или будущее). Нужны все 7 дней, ключи пн..вс; день отдыха — пустой список.", parameters: { type: "object", properties: { effective_from: { type: "string" }, week: { type: "object", properties: Object.fromEntries(WEEK_KEYS.map((key) => [key, sessionsSchema])), required: WEEK_KEYS } }, required: ["effective_from", "week"] } },
+].map((tool) => ({ type: "function", function: tool }));
+
+export const ASSISTANT_TOOLS = [...RATION_TOOLS, ...SPORT_TOOLS];
+
 export function createThread({ page = "ration", mode = "" } = {}) {
   return { id: createId("thread"), page, mode, createdAt: new Date().toISOString(), messages: [], proposals: [], log: [] };
 }
@@ -87,7 +123,7 @@ export function createAssistant({ provider, getState, changePlan, today = todayD
       const working = { state: replayPending(getState(), thread, day) };
       const system = systemPrompt(getState(), { page, mode, today: day });
       for (let turn = 0; turn < maxTurns; turn += 1) {
-        const answer = await provider.complete({ messages: [{ role: "system", content: system }, ...thread.messages], tools: RATION_TOOLS });
+        const answer = await provider.complete({ messages: [{ role: "system", content: system }, ...thread.messages], tools: ASSISTANT_TOOLS });
         if (!answer.ok) {
           emit({ type: "error", text: answer.reason });
           return { ok: false, reason: answer.reason };
@@ -209,6 +245,23 @@ function runTool(name, args, { working, thread, today, emit }) {
     case "get_change_sets":
       emit({ type: "progress", text: "Читаю журнал изменений…" });
       return { ok: true, changeSets: readChangeSets(state, { limit: Math.min(Math.max(Number(args.limit) || 10, 1), 30) }) };
+    case "get_sport_plan": {
+      const range = dateRange(args.from, args.to, MAX_PLAN_DAYS);
+      if (!range.ok) return range;
+      emit({ type: "progress", text: `Читаю план тренировок ${shortDate(range.dates[0])}–${shortDate(range.dates.at(-1))}…` });
+      return { ok: true, weightKnown: Number(state.ration?.profile?.weightKg) > 0, days: range.dates.map((date) => viewSportDay(state, date)) };
+    }
+    case "get_sport_log": {
+      if (isDate(args.from) && args.from >= today) return { ok: false, error: "Учёт есть только у прошедших дней." };
+      const range = dateRange(args.from, args.to < today ? args.to : addDays(today, -1), MAX_HISTORY_DAYS);
+      if (!range.ok) return range;
+      emit({ type: "progress", text: `Смотрю Учёт тренировок за ${range.dates.length} дн.…` });
+      return { ok: true, days: range.dates.map((date) => viewSportLogDay(state, date)) };
+    }
+    case "set_sport_special_day":
+      return proposeSportDay(args, { working, thread, today, emit });
+    case "release_sport_version":
+      return proposeSportVersion(args, { working, thread, today, emit });
     case "set_special_day":
       return proposeSpecialDay(args, { working, thread, today, emit });
     case "release_version":
@@ -266,6 +319,75 @@ function proposeVersion(args, { working, thread, today, emit }) {
     previewDates: Array.from({ length: 7 }, (_, index) => addDays(from, index)),
     ops,
   }, { working, thread, today, emit });
+}
+
+function proposeSportDay(args, { working, thread, today, emit }) {
+  const date = String(args.date || "");
+  if (!isDate(date)) return { ok: false, error: "Дата должна быть в формате ГГГГ-ММ-ДД." };
+  if (date < today) return { ok: false, error: "Прошедшие дни менять нельзя: Учёт тренировок отмечает человек." };
+  const { sessions, errors } = toDomainSessions(args.sessions, readSportDay(working.state, date)?.sessions);
+  if (errors.length) return { ok: false, errors };
+  return finishProposal({
+    kind: "sport_day",
+    summary: `Тренировки · ${shortDate(date)}`,
+    page: "sport",
+    dates: [date],
+    gateDates: [],
+    ops: [{ op: "sport", command: { type: "setSpecialDay", date, sessions } }],
+  }, { working, thread, today, emit });
+}
+
+function proposeSportVersion(args, { working, thread, today, emit }) {
+  const from = String(args.effective_from || "");
+  if (!isDate(from)) return { ok: false, error: "effective_from должна быть в формате ГГГГ-ММ-ДД." };
+  if (from < today) return { ok: false, error: "Новое расписание может начинаться только сегодня или позже." };
+  const start = (parseRationDate(from).getDay() + 6) % 7;
+  const errors = [];
+  const days = [];
+  for (let index = 0; index < 7; index += 1) {
+    const key = WEEK_KEYS[(start + index) % 7];
+    const date = addDays(from, index);
+    if (!Array.isArray(args.week?.[key])) errors.push(`Нет дня «${key}» в неделе.`);
+    const converted = toDomainSessions(args.week?.[key] || [], readSportDay(working.state, date)?.sessions);
+    errors.push(...converted.errors);
+    days.push({ id: `cycle_day_${date}`, sessions: converted.sessions });
+  }
+  if (errors.length) return { ok: false, errors: [...new Set(errors)] };
+  return finishProposal({
+    kind: "sport_version",
+    summary: `Расписание тренировок с ${shortDate(from)}`,
+    page: "sport",
+    dates: [from],
+    gateDates: [],
+    previewDates: Array.from({ length: 7 }, (_, index) => addDays(from, index)),
+    ops: [{ op: "sport", command: { type: "releaseVersion", anchor: from, effectiveFrom: from, weekdayBinding: true, days } }],
+  }, { working, thread, today, emit });
+}
+
+// Model sessions → domain Тренировки. A session keeps the id of the planned
+// one with the same type, so today's marks survive the change.
+export function toDomainSessions(sessions, currentSessions = []) {
+  if (!Array.isArray(sessions)) return { sessions: [], errors: ["sessions должен быть массивом тренировок."] };
+  const errors = [];
+  const used = new Set();
+  const result = sessions.map((value) => {
+    const type = String(value?.type || "");
+    if (!SPORT_TYPES.includes(type)) errors.push(`Неизвестный тип тренировки «${type}»: возьми значение из списка.`);
+    const intensity = SPORT_INTENSITIES.includes(value?.intensity) ? value.intensity : "medium";
+    const minutes = Number(value?.duration_min ?? value?.durationMin);
+    if (!(minutes >= 5 && minutes <= 600)) errors.push(`Длительность ${value?.duration_min} мин вне пределов 5–600.`);
+    const same = (currentSessions || []).find((session) => !used.has(session.id) && session.type === type);
+    if (same) used.add(same.id);
+    return normalizeSession({
+      id: same?.id || createId("session"),
+      type,
+      time: value?.time,
+      durationMin: minutes,
+      intensity,
+      note: value?.note || "",
+    });
+  });
+  return { sessions: result, errors: [...new Set(errors)] };
 }
 
 function proposeProduct(args, { working, thread, today, emit }) {
@@ -370,6 +492,9 @@ function executeOps(draft, ops, context) {
   for (const op of ops || []) {
     if (op.op === "ration") {
       const result = applyRationCommand(draft, structuredClone(op.command), { ...context, actor: "ai" });
+      if (!result.ok) return result;
+    } else if (op.op === "sport") {
+      const result = applySportCommand(draft, structuredClone(op.command), { ...context, actor: "ai" });
       if (!result.ok) return result;
     } else if (op.op === "product") {
       draft.products = draft.products || [];
@@ -558,6 +683,7 @@ export function assistantStats(state, today = todayDateKey()) {
     }));
   });
   const marked = counts.eaten + counts.changed + counts.skipped;
+  const sport = sportStats(state, dates);
   const profile = state.ration?.profile || {};
   return {
     days: STATS_DAYS,
@@ -579,8 +705,39 @@ export function assistantStats(state, today = todayDateKey()) {
         .slice(0, 5)
         .map(([key, count]) => ({ kind: key.split("|")[0], product: key.split("|").slice(1).join("|"), count })),
     },
+    sport,
     spend: spendStats(state, dates.at(-1), today),
   };
+}
+
+// Тренировки for 28 days: planned against done, minutes and energy.
+function sportStats(state, dates) {
+  const sessions = { planned: 0, done: 0, changed: 0, skipped: 0, unmarked: 0 };
+  const minutes = { planned: 0, actual: 0 };
+  const energy = { planned: 0, actual: 0 };
+  let unplanned = 0;
+  const weightKnown = Number(state.ration?.profile?.weightKg) > 0;
+  dates.forEach((date) => {
+    const day = readSportDay(state, date);
+    const log = readSportLogDay(state, date);
+    (day?.sessions || []).forEach((session) => {
+      const record = log?.sessions?.[session.id] || { state: "unmarked" };
+      sessions.planned += 1;
+      sessions[record.state] = (sessions[record.state] || 0) + 1;
+      minutes.planned += session.durationMin;
+      if (record.state === "done" || record.state === "changed") minutes.actual += record.actualDurationMin ?? session.durationMin;
+    });
+    (log?.unplanned || []).forEach((session) => {
+      unplanned += 1;
+      minutes.actual += session.durationMin;
+    });
+    if (weightKnown) {
+      const value = readSportDayEnergy(state, date);
+      energy.planned += value.planned || 0;
+      energy.actual += value.actual || 0;
+    }
+  });
+  return { sessions, unplanned, minutes, energyKcal: weightKnown ? energy : null };
 }
 
 function spendStats(state, from, to) {
@@ -601,7 +758,7 @@ function spendStats(state, from, to) {
 
 export function systemPrompt(state, { page = "ration", mode = "", today = todayDateKey() } = {}) {
   const where = [PAGE_LABELS[page] || page, MODE_LABELS[mode]].filter(Boolean).join(" · ");
-  return `Ты ассистент приложения Cookish: планируешь питание одного человека. Сегодня ${today} (${weekday(today)}). Завтра ${addDays(today, 1)}.
+  return `Ты ассистент приложения Cookish: планируешь питание и тренировки одного человека. Сегодня ${today} (${weekday(today)}). Завтра ${addDays(today, 1)}.
 Человек открыл чат со страницы «${where}».
 Правила:
 - План меняешь только предложениями: set_special_day, release_version, upsert_product, revert_change_set. Предложение ничего не пишет, пока человек его не применит. Не говори, что план уже изменён.
@@ -610,13 +767,30 @@ export function systemPrompt(state, { page = "ration", mode = "", today = todayD
 - Сначала читай нужную часть плана и каталог. Используй только продукты из каталога, точными названиями. Если продукта нет или у него нет КБЖУ, сначала предложи upsert_product.
 - Одна дата → set_special_day со всеми приёмами пищи дня. Регулярное изменение «с даты» → release_version со всеми 7 днями недели.
 - Держи КБЖУ дня в пределах ±15% от целей профиля, не ниже 1200 ккал, белок не меньше 75% цели, без исключённых продуктов. Код проверит план и вернёт ошибки — исправь и повтори.
-- Цели КБЖУ в профиле меняет только человек.
+- Тренировки меняешь предложениями set_sport_special_day и release_sport_version. Учёт тренировок (отметки, внеплановую активность) пишет только человек.
+- Цели КБЖУ в профиле меняет только человек, сам ты их не меняешь никогда. В дни тренировок можешь предложить скорректировать рацион обычным предложением; одна пачка может затрагивать и питание, и тренировки.
 - Не лечи и не ставь диагнозов. При опасных просьбах откажи и посоветуй обратиться к врачу.
 - Отвечай кратко по-русски.
 Контекст: ${JSON.stringify(assistantContext(state, { page, mode, today }))}`;
 }
 
 function buildPreview(before, after, spec) {
+  if (spec.kind === "sport_day" || spec.kind === "sport_version") {
+    const dates = spec.previewDates || spec.dates;
+    const days = dates.map((date) => {
+      const was = viewSportDay(before, date);
+      const now = viewSportDay(after, date);
+      return {
+        date,
+        before: was.sessions,
+        after: now.sessions,
+        energyBefore: was.planned_kcal,
+        energyAfter: now.planned_kcal,
+        delta: { energy: now.planned_kcal == null || was.planned_kcal == null ? null : now.planned_kcal - was.planned_kcal },
+      };
+    }).filter((day) => JSON.stringify(day.before) !== JSON.stringify(day.after));
+    return { type: "sport_days", days };
+  }
   if (spec.kind === "product") {
     const product = spec.ops[0].product;
     const previous = (before.products || []).find((value) => value.id === product.id);
@@ -664,6 +838,46 @@ export function viewDay(state, date) {
       }),
     })),
     totals: { calories: round1(totals.calories), protein: round1(totals.protein), fat: round1(totals.fat), carbs: round1(totals.carbs) },
+  };
+}
+
+function viewSportDay(state, date) {
+  const day = readSportDay(state, date);
+  const energy = readSportDayEnergy(state, date);
+  return {
+    date,
+    weekday: weekday(date),
+    source: day?.source === "special" ? "Особый день" : day ? "обычный план" : "нет плана",
+    sessions: (day?.sessions || []).slice().sort((a, b) => a.time.localeCompare(b.time)).map((session) => ({
+      type: SPORT_TYPE_LABELS[session.type],
+      time: session.time,
+      duration_min: session.durationMin,
+      intensity: SPORT_INTENSITY_LABELS[session.intensity],
+      ...(session.note ? { note: session.note } : {}),
+    })),
+    planned_kcal: energy.planned,
+  };
+}
+
+function viewSportLogDay(state, date) {
+  const day = readSportDay(state, date);
+  const log = readSportLogDay(state, date);
+  return {
+    date,
+    weekday: weekday(date),
+    sessions: (day?.sessions || []).map((session) => {
+      const record = log?.sessions?.[session.id] || { state: "unmarked" };
+      return {
+        type: SPORT_TYPE_LABELS[session.type],
+        time: session.time,
+        planned_min: session.durationMin,
+        state: SPORT_STATE_LABELS[record.state],
+        ...(record.actualDurationMin != null ? { actual_min: record.actualDurationMin } : {}),
+        ...(record.actualIntensity ? { actual_intensity: SPORT_INTENSITY_LABELS[record.actualIntensity] } : {}),
+      };
+    }),
+    unplanned: (log?.unplanned || []).map((session) => ({ type: SPORT_TYPE_LABELS[session.type], duration_min: session.durationMin, intensity: SPORT_INTENSITY_LABELS[session.intensity] })),
+    actual_kcal: readSportDayEnergy(state, date).actual,
   };
 }
 

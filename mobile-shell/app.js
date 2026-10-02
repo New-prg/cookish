@@ -640,8 +640,8 @@ import {
   const ASSISTANT_SUGGESTIONS = {
     "ration:log": ["Как я соблюдал рацион последние недели?", "Чем заменить пропущенный приём пищи?", "Какие расхождения у меня бывают чаще всего?"],
     "ration:plan": ["Сделай завтра день без мяса", "Добавь больше белка в план на неделю", "Укладывается ли план в мою цель?"],
-    "sport:log": ["Сколько белка у меня в плане на завтра?", "Подстрой питание под дни тренировок"],
-    "sport:plan": ["Подстрой питание под дни тренировок", "Добавь перекус перед вечерней тренировкой"],
+    "sport:log": ["Как прошли мои тренировки за месяц?", "Сколько энергии я трачу на тренировках?", "Подстрой питание под дни тренировок"],
+    "sport:plan": ["Составь расписание тренировок на неделю", "Добавь лёгкую тренировку в выходные", "Подстрой рацион под дни тренировок"],
     "requests:": ["Сколько я потратил на продукты за месяц?", "Какие продукты нужны по плану на неделю?"],
   };
   const PROPOSAL_STATUS = {
@@ -1067,6 +1067,20 @@ import {
 
   function assistantProposalBody(proposal) {
     const preview = proposal.preview || {};
+    if (preview.type === "sport_days") {
+      const sessionsText = (sessions) => (sessions || []).length
+        ? sessions.map((session) => `${session.time} ${session.type} ${number(session.duration_min)} мин, ${session.intensity}`).join("; ")
+        : "отдых";
+      const days = (preview.days || []).slice(0, 7).map((day) => `<section class="assistant-proposal-day">
+        <h4>${capitalize(rationShortWeekday(day.date))}, ${rationShortDate(day.date)}</h4>
+        <ul><li>
+          <span class="was">Было: ${escapeHtml(sessionsText(day.before))}</span>
+          <span class="now">Стало: ${escapeHtml(sessionsText(day.after))}</span>
+        </li></ul>
+        ${day.delta?.energy != null ? `<small>Δ расход ${day.delta.energy > 0 ? "+" : day.delta.energy < 0 ? "−" : ""}${number(Math.abs(day.delta.energy))} ккал</small>` : ""}
+      </section>`).join("");
+      return days || `<p class="muted">Затронутые дни: ${escapeHtml((proposal.dates || []).map((value) => rationShortDate(value)).join(", "))}</p>`;
+    }
     if (preview.type === "product") {
       const line = (values) => values ? `${number(values.calories)} ккал · Б ${number(values.protein)} · Ж ${number(values.fat)} · У ${number(values.carbs)}` : "нет данных";
       return `<dl class="assistant-proposal-product">

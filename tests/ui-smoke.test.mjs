@@ -1497,3 +1497,38 @@ test("smoke: Спорт asks for the weight before estimating energy", async () 
     await context.close();
   }
 });
+
+test("smoke: on Спорт the assistant proposes a workout change and applying it updates План", async () => {
+  const { context, page } = await openPage();
+  try {
+    const calls = await routeAi(context, (request, index) => index === 0
+      ? aiMessage({ role: "assistant", content: "", tool_calls: [
+        aiToolCall("set_sport_special_day", { date: dateKey(1), sessions: [{ type: "bike", time: "10:00", duration_min: 60, intensity: "low" }] }, "c1"),
+      ] })
+      : aiMessage({ role: "assistant", content: "Завтра лёгкий велосипед вместо бега." }));
+    await page.evaluate(() => {
+      localStorage.setItem("cookish.ai.key.test", "test-key");
+      localStorage.setItem("cookish.ai.consent.v1", "1");
+    });
+    await seedState(page, sportState());
+    await openRoute(page, "sport");
+    await page.click("#page-slider");
+    await askAssistant(page, "Сделай завтра полегче");
+    await page.waitForSelector(".assistant-message.from-assistant");
+    assert.equal(await page.locator("#assistant-title").innerText(), "Спорт · План");
+    assert.match(calls[0].body.messages[0].content, /«Спорт · План»/);
+    const card = page.locator(".assistant-proposal");
+    assert.match(await card.innerText(), /Было: 07:30 Бег 40 мин, средняя/);
+    assert.match(await card.innerText(), /Стало: 10:00 Велосипед 60 мин, низкая/);
+    assert.match(await card.innerText(), /Δ расход/);
+    await card.locator("[data-proposal-action=apply]").click();
+    await page.waitForSelector(".assistant-proposal.status-applied");
+    await page.click("#assistant-close");
+    assert.match(await page.locator(`.sport-plan-day[data-date="${dateKey(1)}"]`).innerText(), /Велосипед[\s\S]*Особый день|Особый день[\s\S]*Велосипед/);
+    const stored = await storedState(page);
+    assert.equal(stored.journal.at(-1).page, "sport");
+    assert.equal(stored.journal.at(-1).actor, "ai");
+  } finally {
+    await context.close();
+  }
+});

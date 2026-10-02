@@ -1,4 +1,5 @@
 import { readRationDay, readRationHistoryDay } from "./ration-domain.js";
+import { SPORT_INTENSITY_LABELS, SPORT_TYPE_LABELS, readSportDay, readSportLogDay } from "./sport-domain.js";
 
 // Тычки: every deviation from the plan reaches the assistant, which decides
 // whether to tell the person. Detection is code; the queue lives in local data
@@ -80,6 +81,30 @@ export function rationNudges(command, before, after, { now = new Date().toISOStr
   if (type === "transferMeals") {
     const minutes = Number(command.minutes) || 0;
     return [nudge(now, { page: "ration", kind: "meal_transferred", date, mealId: command.mealId, text: `${mealName(after)} перенесён на ${minutes > 0 ? "+" : ""}${minutes} мин` })];
+  }
+  return [];
+}
+
+// Deviations a successful Учёт тренировок command made: a session «пропущено»
+// or «изменено» and unplanned activity.
+export function sportNudges(command, before, after, { now = new Date().toISOString() } = {}) {
+  const type = String(command?.type || "");
+  const date = String(command?.date || "");
+  if (type === "markSession") {
+    if (command.state !== "skipped" && command.state !== "changed") return [];
+    const previous = readSportLogDay(before, date)?.sessions?.[command.sessionId]?.state || "unmarked";
+    if (previous === command.state) return [];
+    const session = readSportDay(after, date)?.sessions?.find((value) => value.id === command.sessionId);
+    const name = SPORT_TYPE_LABELS[session?.type] || "Тренировка";
+    const record = readSportLogDay(after, date)?.sessions?.[command.sessionId] || {};
+    const text = command.state === "skipped"
+      ? `${name} ${session?.time || ""}: пропущена`.replace(/\s+:/, ":")
+      : `${name}: изменена — ${record.actualDurationMin ?? session?.durationMin} мин вместо ${session?.durationMin}, ${SPORT_INTENSITY_LABELS[record.actualIntensity] || ""}`.trim();
+    return [nudge(now, { page: "sport", kind: command.state === "skipped" ? "session_skipped" : "session_changed", date, sessionId: command.sessionId, text })];
+  }
+  if (type === "addUnplanned") {
+    const session = command.session || {};
+    return [nudge(now, { page: "sport", kind: "unplanned_activity", date, text: `Внеплановая активность: ${SPORT_TYPE_LABELS[session.type] || "другое"}, ${Number(session.durationMin) || 45} мин` })];
   }
   return [];
 }

@@ -4,7 +4,7 @@ import test from "node:test";
 import { createMockProvider } from "../mobile-shell/ai-provider.js";
 import {
   ASSISTANT_MAX_TURNS,
-  RATION_TOOLS,
+  ASSISTANT_TOOLS,
   assistantStats,
   createAssistant,
   createThread,
@@ -107,7 +107,7 @@ test("assistant: the context always carries page, mode, profile and 28-day aggre
   assert.equal(context.profile.targetCalories, 2400);
   assert.equal(context.stats28.days, 28);
   assert.ok(context.stats28.ration.averagePlannedPerDay.calories > 0);
-  assert.deepEqual(provider.requests[0].tools, RATION_TOOLS);
+  assert.deepEqual(provider.requests[0].tools, ASSISTANT_TOOLS);
 });
 
 test("assistant: a proposal is a card and changes nothing until applied", async () => {

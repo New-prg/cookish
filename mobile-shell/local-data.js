@@ -41,6 +41,7 @@ import {
   enqueueNudges,
   normalizeAssistantState,
   rationNudges,
+  sportNudges,
   STRICTNESS_LEVELS,
 } from "./nudges.js";
 
@@ -701,6 +702,10 @@ export function openLocalData(storage) {
     return apply({ sport: true, journal: true, assistant: true }, (next, context) => {
       const result = applySportCommand(next, command, context);
       if (result.ok === false) return result;
+      // A deviation in Учёт тренировок becomes a Тычок for the assistant.
+      const nudges = context.actor === "ai" ? [] : sportNudges(command, current, next, { now: context.now });
+      enqueueNudges(next.assistant, nudges);
+      if (nudges.length) result.nudges = nudges.length;
       const diff = diffPlan(current, next);
       if (diff) {
         const set = appendChangeSet(next, {
