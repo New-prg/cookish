@@ -12,17 +12,22 @@ branch.
 
 ## Current development plan
 
-The plan lives in GitHub issues, not in repo files. Source of truth is epic #21
-(`gh issue view 21`): phased checklist with the execution order.
+The plan lives in GitHub issues, not in repo files. Source of truth is epic #44
+(`gh issue view 44`): three root pages, Учёт/План modes and the test AI
+assistant. Epic #21 keeps the overall history; its AI phase moved to #44.
 
-- Active slice: milestone «Рацион: локальный срез», in order
-  #22 → #23 → #24/#25 (#26 in parallel) → #27 → #28 → #38 → #39/#40/#41 → #37.
-- #37 is the release gate: issues in milestone «После локального среза»
-  (#29–#36, #42) must not start until #37 is done. #42 is the end-to-end QA of
-  account, sync and AI and comes last.
+- Active slice: milestone «Три страницы и ассистент (тест)».
+  Start points without dependencies: #45 (docs), #46 (shell), #48 (plan journal),
+  #49 (AI key and transport). Then #46 → #47; #48 + #49 → #50 → #51 (+#46)
+  → #52, #56; #48 → #53 → #54 (+#46); #50 + #53 + #52 → #55.
+- Each issue lists its dependencies; do not start an issue before they are closed.
+- Backend, account, sync and AI proxy (#29–#32) come after #44. #36 holds AI
+  eval fixtures. #42 is the end-to-end QA and comes last.
+- The AI provider key is never committed or bundled. The app reads it from the
+  temporary Profile field; `scripts/ai-lab/` reads it from the local opencode config.
 - Milestone «Бэклог» issues are parked; do not reopen them without the user.
-- When starting implementation, read the epic, then the first open issue of the
-  slice; close issues as their scope lands and push `master` after each session.
+- When starting implementation, read the epic, then the issue; close issues as
+  their scope lands and push `master` after each session.
 
 ## Android releases
 
