@@ -30,7 +30,8 @@ import {
   createRouterAiProvider,
   defaultTransport,
 } from "./ai-provider.js";
-import { createAssistant, createThread } from "./ai-tools.js";
+import { assistantContext, createAssistant, createThread } from "./ai-tools.js";
+import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
   // на 100 г (для напитков — на 100 мл) и могут отличаться у конкретных марок.
@@ -80,6 +81,19 @@ import { createAssistant, createThread } from "./ai-tools.js";
     provider: aiProvider,
     getState: () => localData.snapshot(),
     changePlan: localData.changePlan,
+  });
+  // Тычки wait in local data; the worker merges a burst into one background call.
+  const nudgeWorker = createNudgeWorker({
+    provider: aiProvider,
+    store: {
+      pending: () => localData.snapshot().assistant?.nudges || [],
+      settings: () => localData.snapshot().assistant?.settings || {},
+      finish: (ids, text) => {
+        if (applyLocal(localData.finishNudges(ids, text))) renderAssistantHandle();
+      },
+    },
+    buildContext: () => assistantContext(localData.snapshot(), { page: lastRootPage, mode: pageModes[lastRootPage] || "" }),
+    allowed: () => aiConsent.accepted(),
   });
   // The open chat. A thread lives only in memory and is gone after closing.
   let assistantThread = null;
@@ -136,6 +150,7 @@ import { createAssistant, createThread } from "./ai-tools.js";
   const headerProfile = document.getElementById("header-profile");
   const pageSlider = document.getElementById("page-slider");
   const assistantHandle = document.getElementById("assistant-handle");
+  const assistantTeaser = document.getElementById("assistant-teaser");
   const assistantDialog = document.getElementById("assistant-dialog");
   const assistantFeed = document.getElementById("assistant-feed");
   const assistantInput = document.getElementById("assistant-input");
@@ -249,6 +264,7 @@ import { createAssistant, createThread } from "./ai-tools.js";
       return false;
     }
     state = localData.snapshot();
+    if (result.nudges) nudgeWorker.schedule();
     return true;
   }
 
@@ -629,9 +645,17 @@ import { createAssistant, createThread } from "./ai-tools.js";
     const visible = ROOT_PAGES.includes(route) && !assistantDialog.open;
     assistantHandle.hidden = !visible;
     const available = aiProvider.hasKey();
+    // A notice from a Тычок: a badge on the handle and a teaser line.
+    const notice = available ? state.assistant?.notice : null;
     assistantHandle.classList.toggle("unavailable", !available);
-    assistantHandle.setAttribute("aria-label", available ? "Открыть ассистента" : assistantUnavailableText());
+    assistantHandle.classList.toggle("has-notice", Boolean(notice));
+    document.getElementById("assistant-handle-badge").hidden = !notice;
+    assistantHandle.setAttribute("aria-label", !available
+      ? assistantUnavailableText()
+      : notice ? `Ассистент: ${notice.text}` : "Открыть ассистента");
     assistantHandle.title = available ? "Ассистент" : assistantUnavailableText();
+    assistantTeaser.hidden = !visible || !notice;
+    assistantTeaser.textContent = notice ? notice.text : "";
     syncGestureExclusion();
   }
 
@@ -679,6 +703,7 @@ import { createAssistant, createThread } from "./ai-tools.js";
       if (suppressHandleClick) return;
       openAssistant();
     });
+    assistantTeaser.addEventListener("click", () => openAssistant());
     document.getElementById("assistant-close").addEventListener("click", () => requestCloseAssistant());
     assistantDialog.addEventListener("cancel", (event) => {
       event.preventDefault();
@@ -728,6 +753,13 @@ import { createAssistant, createThread } from "./ai-tools.js";
     if (assistantDialog.open || !ROOT_PAGES.includes(route)) return;
     const mode = pageModes[route] || "";
     assistantThread = createThread({ page: route, mode });
+    // The assistant's reaction to a Тычок opens the thread.
+    const notice = aiProvider.hasKey() ? state.assistant?.notice : null;
+    if (notice) {
+      assistantThread.log.push({ type: "assistant", text: notice.text });
+      assistantThread.messages.push({ role: "assistant", content: notice.text });
+      applyLocal(localData.clearAssistantNotice());
+    }
     document.getElementById("assistant-title").textContent = assistantContextTitle(route, mode);
     assistantInput.value = "";
     renderAssistantFeed();
@@ -838,12 +870,12 @@ import { createAssistant, createThread } from "./ai-tools.js";
       return;
     }
     const entries = assistantThread.log.map((entry) => assistantLogEntry(entry)).join("");
-    const suggestions = assistantThread.log.length ? "" : `<div class="assistant-suggestions">
+    const suggestions = assistantThread.log.some((entry) => entry.type === "user") ? "" : `<div class="assistant-suggestions">
       <p class="muted">Спросите или попросите изменить план. Ассистент пришлёт изменения на подтверждение.</p>
       ${(ASSISTANT_SUGGESTIONS[`${assistantThread.page}:${assistantThread.mode}`] || []).slice(0, 3).map((text) =>
         `<button class="assistant-suggestion" type="button" data-text="${escapeAttr(text)}">${escapeHtml(text)}</button>`).join("")}
     </div>`;
-    assistantFeed.innerHTML = `${suggestions}${entries}${assistantBusy ? `<p class="assistant-typing">Ассистент думает…</p>` : ""}`;
+    assistantFeed.innerHTML = `${entries}${suggestions}${assistantBusy ? `<p class="assistant-typing">Ассистент думает…</p>` : ""}`;
     assistantFeed.scrollTop = assistantFeed.scrollHeight;
   }
 
@@ -3744,6 +3776,36 @@ import { createAssistant, createThread } from "./ai-tools.js";
       </section>`;
   }
 
+  function strictnessSection() {
+    const settings = state.assistant?.settings || {};
+    return `
+      <section class="section profile-strictness">
+        <span class="eyebrow">Ассистент</span>
+        <h2 class="profile-section-title">Жёсткость</h2>
+        <p class="muted">На какие отклонения от плана ассистент обращает ваше внимание. План он сам не меняет.</p>
+        <div class="strictness-options" role="radiogroup" aria-label="Жёсткость">
+          ${Object.entries(STRICTNESS_LEVELS).map(([value, level]) => `<label class="strictness-option">
+            <input type="radio" name="strictness" value="${value}" ${settings.strictness === value ? "checked" : ""}>
+            <span>${escapeHtml(level.label)}${value === "any" ? " · по умолчанию" : ""}</span>
+          </label>`).join("")}
+        </div>
+        <label class="field"><span>Как реагировать (необязательно)</span>
+          <textarea id="ai-how-to-react" rows="2" maxlength="600" placeholder="Например: коротко и без упрёков">${escapeHtml(settings.howToReact || "")}</textarea>
+        </label>
+      </section>`;
+  }
+
+  function bindStrictnessActions() {
+    document.querySelectorAll(".profile-strictness input[name=strictness]").forEach((input) => {
+      input.addEventListener("change", () => {
+        if (applyLocal(localData.setAssistantSettings({ strictness: input.value }))) showToast("Жёсткость сохранена.");
+      });
+    });
+    document.getElementById("ai-how-to-react")?.addEventListener("change", (event) => {
+      if (applyLocal(localData.setAssistantSettings({ howToReact: event.target.value }))) showToast("Пожелание сохранено.");
+    });
+  }
+
   function setAiKeyStatus(text, tone = "muted", busy = false) {
     aiKeyStatus = { text, tone, busy };
     if (route !== "profile") return;
@@ -3766,6 +3828,7 @@ import { createAssistant, createThread } from "./ai-tools.js";
       setAiKeyStatus("Проверяем ключ…", "muted", true);
       const result = await aiProvider.checkKey();
       setAiKeyStatus(result.ok ? "Ключ работает." : result.reason, result.ok ? "success" : "error");
+      if (result.ok) nudgeWorker.schedule();
     });
     document.getElementById("ai-key-delete")?.addEventListener("click", async () => {
       if (!await askConfirm("Удалить ключ ИИ с этого устройства? Ассистент станет недоступен.", "Удалить ключ")) return;
@@ -3778,6 +3841,7 @@ import { createAssistant, createThread } from "./ai-tools.js";
     app.innerHTML = `
       ${rationProfileSection()}
       ${aiKeySection()}
+      ${strictnessSection()}
       ${renderAppUpdateSection()}
       <section class="section danger-zone">
         <span class="eyebrow">Опасная зона</span>
@@ -3790,6 +3854,7 @@ import { createAssistant, createThread } from "./ai-tools.js";
 
   function bindProfileActions() {
     bindAiKeyActions();
+    bindStrictnessActions();
     document.getElementById("edit-ration-profile")?.addEventListener("click", () => {
       rationProfileReturn = "profile";
       navigate("ration-profile");
@@ -3963,6 +4028,9 @@ import { createAssistant, createThread } from "./ai-tools.js";
 
   render();
   requestAppUpdateCheck(false);
+  // Тычки queued before a restart or while offline go out when possible.
+  nudgeWorker.schedule();
+  window.addEventListener?.("online", () => nudgeWorker.schedule(1000));
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "hidden" && appUpdate.status === "installing") requestAppUpdateCheck(true);
   });

@@ -2312,3 +2312,43 @@ body.root-page dialog.assistant-dialog > #toast {
 @media (prefers-reduced-motion: reduce) {
   .assistant-dialog[open] { animation: none; }
 }
+
+/* A Тычок the assistant chose to mention: a badge and a teaser by the handle. */
+.assistant-handle-badge {
+  position: absolute;
+  top: -5px;
+  right: 9px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #d9822b;
+}
+
+.assistant-teaser {
+  position: fixed;
+  z-index: 24;
+  top: calc(40% - 6px);
+  right: 30px;
+  max-width: min(260px, 68vw);
+  min-height: 44px;
+  overflow: hidden;
+  display: -webkit-box;
+  padding: 8px 12px;
+  border: 1px solid #cfe0d4;
+  border-radius: 14px 14px 4px 14px;
+  background: #fff;
+  color: #171917;
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: left;
+  box-shadow: 0 4px 16px rgb(25 45 32 / 18%);
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.strictness-options { display: grid; gap: 6px; margin: 4px 0 12px; }
+.strictness-option { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; border: 1px solid #dce2dd; border-radius: var(--radius-sm); }
+.strictness-option input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.strictness-option:has(input:checked) { border-color: var(--accent); background: #f3faf5; }
+.button-row .button.danger { margin-top: 0; }

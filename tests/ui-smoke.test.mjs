@@ -1218,3 +1218,53 @@ test("smoke: without a key the handle says the AI is unavailable and nothing is 
     await context.close();
   }
 });
+
+test("smoke: a Тычок notice shows a badge and a teaser and opens the chat as its first message", async () => {
+  const { context, page } = await openPage();
+  try {
+    const calls = await routeAi(context, () => ({ status: 500 }));
+    const state = assistantPlanState();
+    state.assistant = { settings: { strictness: "any", howToReact: "" }, nudges: [], notice: { text: "Ужин вчера пропущен. Перенести творог на завтрак?", createdAt: new Date().toISOString() } };
+    await withAssistantKey(page, state);
+    assert.equal(await page.locator("#assistant-handle-badge").isVisible(), true);
+    assert.match(await page.locator("#assistant-teaser").innerText(), /Ужин вчера пропущен/);
+    await openRoute(page, "sport");
+    assert.equal(await page.locator("#assistant-teaser").isVisible(), true, "the notice waits on every root page");
+
+    await page.click("#assistant-teaser");
+    await page.waitForSelector("#assistant-dialog[open]");
+    assert.match(await page.locator(".assistant-message.from-assistant").first().innerText(), /Ужин вчера пропущен/);
+    assert.equal((await storedState(page)).assistant.notice, null, "the notice is read");
+    await page.click("#assistant-close");
+    assert.equal(await page.locator("#assistant-handle-badge").isVisible(), false);
+    assert.equal(await page.locator("#assistant-teaser").isVisible(), false);
+    assert.equal(calls.length, 0, "showing the notice calls nothing");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: marking a meal «не съедено» queues a Тычок, and Profile sets the strictness", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, assistantPlanState());
+    await openRoute(page, "ration");
+    await page.click('.ration-today-meal-open[data-meal-id="meal_2"]');
+    await page.click('#ration-meal-dialog .ration-state-set[data-state="skipped"]');
+    await page.waitForTimeout(80);
+    const { nudges } = (await storedState(page)).assistant;
+    assert.equal(nudges.length, 1);
+    assert.equal(nudges[0].kind, "meal_skipped");
+
+    await page.click("#close-ration-meal");
+    await openRoute(page, "profile");
+    assert.equal(await page.locator('.profile-strictness input[value="any"]').isChecked(), true);
+    await page.locator('.profile-strictness input[value="notable"]').check();
+    await page.fill("#ai-how-to-react", "Коротко");
+    await page.locator("#ai-how-to-react").blur();
+    await page.waitForTimeout(80);
+    assert.deepEqual((await storedState(page)).assistant.settings, { strictness: "notable", howToReact: "Коротко" });
+  } finally {
+    await context.close();
+  }
+});

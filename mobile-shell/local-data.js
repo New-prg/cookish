@@ -29,6 +29,13 @@ import {
   readChangeSets,
   revertChangeSet as revertJournalChangeSet,
 } from "./plan-journal.js";
+import {
+  defaultAssistantState,
+  enqueueNudges,
+  normalizeAssistantState,
+  rationNudges,
+  STRICTNESS_LEVELS,
+} from "./nudges.js";
 
 export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationMeasure, rationOwner, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
@@ -42,6 +49,7 @@ export function emptyState() {
     requests: [],
     ration: emptyRation(),
     journal: [],
+    assistant: defaultAssistantState(),
     user: null,
     onboardingCompleted: true,
   };
@@ -130,6 +138,7 @@ export function openLocalData(storage) {
     if (scope.products) next.products = structuredClone(current.products);
     if (scope.ration) next.ration = structuredClone(current.ration);
     if (scope.journal) next.journal = (current.journal || []).slice();
+    if (scope.assistant) next.assistant = structuredClone(current.assistant || defaultAssistantState());
     if (scope.requestId) {
       next.requests = current.requests.map((request) =>
         request.id === scope.requestId ? structuredClone(request) : request
@@ -521,6 +530,38 @@ export function openLocalData(storage) {
       return readChangeSets(current, options);
     },
 
+    setAssistantSettings(fields = {}) {
+      return apply({ assistant: true }, (next) => {
+        const settings = next.assistant.settings;
+        if (fields.strictness != null) {
+          if (!STRICTNESS_LEVELS[fields.strictness]) return { ok: false, reason: "Неизвестный уровень жёсткости." };
+          settings.strictness = fields.strictness;
+        }
+        if (fields.howToReact != null) settings.howToReact = String(fields.howToReact).trim().slice(0, 600);
+        return { ok: true, settings: structuredClone(settings) };
+      });
+    },
+
+    // The worker processed these Тычки; a non-empty text becomes the notice
+    // on the handle and the first message of the next chat.
+    finishNudges(ids, noticeText = "") {
+      const done = new Set(ids || []);
+      return apply({ assistant: true }, (next, { now }) => {
+        next.assistant.nudges = next.assistant.nudges.filter((item) => !done.has(item.id));
+        const text = String(noticeText || "").trim();
+        if (text) next.assistant.notice = { text, createdAt: now };
+        return { ok: true };
+      });
+    },
+
+    clearAssistantNotice() {
+      return apply({ assistant: true }, (next) => {
+        if (!next.assistant.notice) return { ok: true, changed: false };
+        next.assistant.notice = null;
+        return { ok: true };
+      });
+    },
+
     // `undo` is the payload returned by removeRationMeal/removeRationFood.
     undoRationRemoval(undo) {
       if (!["restoreMeal", "restoreItem"].includes(undo?.type)) return { ok: false, reason: "Нечего отменять." };
@@ -587,9 +628,13 @@ export function openLocalData(storage) {
   // Every ration command runs here. A command that changes the plan writes a
   // Набор изменений; marks and discrepancies are История and write none.
   function runRation(command) {
-    return apply({ ration: true, products: true, journal: true }, (next, context) => {
+    return apply({ ration: true, products: true, journal: true, assistant: true }, (next, context) => {
       const result = applyRationCommand(next, command, context);
       if (result.ok === false) return result;
+      // A deviation in История питания becomes a Тычок for the assistant.
+      const nudges = context.actor === "ai" ? [] : rationNudges(command, current, next, { now: context.now });
+      enqueueNudges(next.assistant, nudges);
+      if (nudges.length) result.nudges = nudges.length;
       const diff = diffPlan(current, next);
       if (diff) {
         const set = appendChangeSet(next, {
@@ -640,6 +685,7 @@ export function prepareState(source) {
   }));
   result.requests = mergeRequests([], (result.requests || []).map((request) => migrateRequest(request)));
   result.journal = normalizeJournal(result.journal);
+  result.assistant = normalizeAssistantState(result.assistant);
   return migrateRationState(result);
 }
 
