@@ -744,3 +744,10 @@ test("a legacy template without a date still becomes a visible plan", () => {
   assert.match(version.effectiveFrom, /^\d{4}-\d{2}-\d{2}$/);
   assert.equal(readRationDay(state, version.effectiveFrom).meals[0].name, "Завтрак");
 });
+
+test("ration: a profile filled in before any plan survives a restart", () => {
+  const state = migrateRationState({ schemaVersion: 13, products: [], requests: [], ration: { versions: [], specialDays: {}, history: {}, profile: { weightKg: 72, targetCalories: 2100 } } });
+  assert.equal(state.ration.profile.weightKg, 72);
+  assert.equal(state.ration.profile.targetCalories, 2100);
+  assert.deepEqual(state.ration.versions, []);
+});

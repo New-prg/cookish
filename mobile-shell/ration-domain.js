@@ -93,7 +93,13 @@ export function migrateRationState(source) {
       || (ration.history && Object.keys(ration.history).length)
     )
   );
-  result.ration = hasContent ? normalizeRation(ration) : buildRationFromLegacy(legacyDays, legacyTemplates, owner);
+  if (hasContent) {
+    result.ration = normalizeRation(ration);
+  } else {
+    // A profile filled in before any plan exists must survive the migration.
+    result.ration = buildRationFromLegacy(legacyDays, legacyTemplates, owner);
+    if (ration?.profile && typeof ration.profile === "object") result.ration.profile = normalizeProfile(ration.profile);
+  }
   result.schemaVersion = RATION_SCHEMA_VERSION;
   return result;
 }

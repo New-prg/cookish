@@ -2377,3 +2377,36 @@ body.root-page dialog.assistant-dialog > #toast {
 .assistant-bookmark-open strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .assistant-bookmark-open small { color: var(--muted); font-size: 12px; }
 .assistant-bookmark-remove { width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 20px; }
+
+/* Спорт: the same feeds as Рацион, with Тренировки instead of meals. */
+.sport-sessions { display: grid; gap: 10px; }
+.sport-session { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid #dce2dd; border-left: 4px solid #cfd6d1; border-radius: 12px; background: #fff; }
+.sport-session > header,
+.sport-unplanned,
+.sport-plan-session { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.sport-session strong, .sport-unplanned strong, .sport-plan-session strong { display: block; font-size: 15px; }
+.sport-session small, .sport-unplanned small, .sport-plan-session small { color: var(--muted); font-size: 12px; }
+.sport-session .meal-event-time, .sport-unplanned .meal-event-time, .sport-plan-session .meal-event-time { color: var(--accent); font-size: 13px; font-weight: 700; }
+.state-done { border-left-color: #1f5d3b; }
+.state-done .ration-state-chip { background: #e3f1e8; color: #1f5d3b; }
+.sport-session.state-changed { border-left-color: #e4a832; }
+.sport-session.state-skipped { border-left-color: #c25b4e; }
+.sport-marks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.sport-mark { min-height: 44px; padding: 0 6px; border: 1px solid #dce2dd; border-radius: 10px; background: #f3faf5; color: var(--accent); font-size: 13px; font-weight: 700; }
+.sport-mark.active { border-color: var(--accent); background: var(--accent); color: #fff; }
+.sport-unplanned { padding: 8px 4px 8px 12px; border: 1px dashed #cfd6d1; border-radius: 12px; }
+.sport-unplanned-remove, .sport-week-remove { width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 20px; }
+.sport-plan-sessions { display: grid; gap: 6px; }
+.sport-plan-session { min-height: 44px; padding: 6px 10px; border: 1px solid #e1e5e2; border-radius: 10px; background: #fff; color: inherit; text-align: left; grid-template-columns: 48px minmax(0, 1fr); }
+.sport-plan-add, .sport-add-past { justify-self: start; }
+.sport-energy-hint { margin: 0 0 10px; color: #8b5e00; font-size: 13px; }
+.sport-energy-hint .text-button { min-height: 32px; font-size: 13px; }
+.sport-session-dialog .field, .sport-week-dialog .field { margin: 10px 0; }
+.sport-session-states { margin: 4px 0 8px; }
+.sport-week-days { display: grid; gap: 8px; margin: 8px 0 14px; }
+.sport-week-day { padding: 6px 10px; border: 1px solid #e1e5e2; border-radius: 10px; }
+.sport-week-day header { display: flex; justify-content: space-between; align-items: center; }
+.sport-week-day ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.sport-week-day li { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.sport-week-day p { margin: 0 0 6px; font-size: 13px; }
+.sport-week-dialog { max-height: calc(100dvh - 24px); overflow: auto; }

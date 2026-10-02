@@ -361,7 +361,7 @@ editor (#27/#28), and epic #44 retires the overlays (#47).
 **Solves:** “What training is planned, did I do it, and how much energy did it take?”
 
 Спорт mirrors Рацион: a План тренировок and an Учёт тренировок, shown in the
-same two modes. Until #54 the page shows a «Скоро» stub.
+same two modes (#54).
 
 #### 6.5.1 Modes
 

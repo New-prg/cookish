@@ -725,7 +725,7 @@ test("smoke: launch opens Рацион and a swipe moves Рацион → Спо
 
     await swipePage(page, 1);
     await expectPage(page, "sport");
-    assert.match(await page.locator("#app").innerText(), /Скоро/);
+    assert.match(await page.locator(".sport-today").innerText(), /Сегодня/);
     assert.equal(await page.locator("#page-slider-prev").innerText(), "Рацион");
     assert.equal(await page.locator("#page-slider-next").innerText(), "Покупки");
 
@@ -1351,6 +1351,148 @@ test("smoke: a stale proposal from a bookmark shows a conflict instead of applyi
     assert.match(await page.locator("#toast-message").innerText(), /устарело/);
     const stored = await storedState(page);
     assert.equal(stored.journal.filter((set) => set.actor === "ai").length, 0, "nothing applied silently");
+  } finally {
+    await context.close();
+  }
+});
+
+function sportState({ weightKg = 80 } = {}) {
+  return {
+    schemaVersion: 14,
+    products: [],
+    requests: [],
+    ration: { versions: [], specialDays: {}, history: {}, profile: weightKg ? { weightKg } : {} },
+    sport: {
+      versions: [{
+        id: "sport_version_1",
+        owner: "local",
+        effectiveFrom: dateKey(-10),
+        cycle: { anchor: dateKey(-10), weekdayBinding: false, days: [{ id: "d1", sessions: [{ id: "s1", type: "run", time: "07:30", durationMin: 40, intensity: "medium", note: "" }] }] },
+      }],
+      specialDays: {},
+      log: {},
+    },
+  };
+}
+
+test("smoke: Спорт Учёт marks a session and records unplanned activity offline", async () => {
+  const { context, page } = await openPage();
+  try {
+    const external = [];
+    await context.route("**/*", (route) => {
+      const url = new URL(route.request().url());
+      if (url.hostname === "127.0.0.1") return route.continue();
+      external.push(url.hostname);
+      return route.abort();
+    });
+    await seedState(page, sportState());
+    await openRoute(page, "sport");
+    const today = page.locator(".sport-today");
+    assert.match(await today.innerText(), /Бег/);
+    assert.match(await today.innerText(), /не отмечено/);
+    assert.match(await today.locator(".sport-energy").innerText(), /0 ккал/);
+
+    await today.locator('.sport-mark[data-state="done"]').click();
+    await page.waitForTimeout(80);
+    let stored = await storedState(page);
+    assert.equal(stored.sport.log[`local|${dateKey(0)}`].sessions.s1.state, "done");
+    assert.match(await page.locator(".sport-today .ration-state-chip").innerText(), /выполнено/);
+    assert.match(await page.locator(".sport-today .sport-energy").innerText(), /\d+ ккал/);
+
+    await page.click(".sport-today .sport-add-activity");
+    await page.waitForSelector("#sport-session-dialog[open]");
+    await page.selectOption("#sport-session-form [name=type]", "walk");
+    await page.fill("#sport-session-form [name=durationMin]", "30");
+    await page.click("#sport-session-form button[type=submit]");
+    await page.waitForTimeout(80);
+    stored = await storedState(page);
+    const entry = stored.sport.log[`local|${dateKey(0)}`];
+    assert.equal(entry.unplanned.length, 1);
+    assert.equal(entry.unplanned[0].type, "walk");
+    assert.equal(entry.unplanned[0].durationMin, 30);
+    assert.match(await page.locator(".sport-unplanned").innerText(), /Ходьба/);
+    assert.equal(stored.journal?.length ?? 0, 0, "the log is not journaled");
+
+    // A past session is corrected from its card with actual values.
+    await page.click(`.sport-past-session[data-date="${dateKey(-1)}"]`);
+    await page.waitForSelector("#sport-session-dialog[open]");
+    await page.click('#sport-session-states [data-state="changed"]');
+    await page.fill("#sport-session-form [name=durationMin]", "25");
+    await page.click("#sport-session-form button[type=submit]");
+    await page.waitForTimeout(80);
+    stored = await storedState(page);
+    assert.deepEqual(stored.sport.log[`local|${dateKey(-1)}`].sessions.s1, { state: "changed", actualDurationMin: 25, actualIntensity: "medium" });
+    assert.deepEqual(external, [], "Спорт works offline");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: Спорт План edits one date as a Особый день and the week schedule from a date", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, sportState());
+    await openRoute(page, "sport");
+    await page.click("#page-slider");
+    const first = page.locator(".sport-plan-day").first();
+    assert.equal(await first.getAttribute("data-date"), dateKey(1));
+    assert.equal(await page.locator("#header-action").innerText(), "Расписание");
+
+    await first.locator(".sport-plan-add").click();
+    await page.waitForSelector("#sport-session-dialog[open]");
+    await page.selectOption("#sport-session-form [name=type]", "swim");
+    await page.fill("#sport-session-form [name=durationMin]", "30");
+    await page.click("#sport-session-form button[type=submit]");
+    await page.waitForTimeout(80);
+    let stored = await storedState(page);
+    assert.deepEqual(Object.keys(stored.sport.specialDays), [`local|${dateKey(1)}`]);
+    assert.deepEqual(stored.sport.specialDays[`local|${dateKey(1)}`].sessions.map((session) => session.type), ["run", "swim"]);
+    assert.match(await first.innerText(), /Особый день/);
+    assert.equal(stored.journal.length, 1);
+    assert.equal(stored.journal[0].page, "sport");
+
+    await page.click("#header-action");
+    await page.waitForSelector("#sport-week-dialog[open]");
+    const from = dateKey(3);
+    await page.fill("#sport-week-from", from);
+    const weekday = new Date(`${from}T12:00:00`).getDay();
+    await page.click(`.sport-week-remove[data-weekday="${weekday}"]`);
+    await page.click(`.sport-week-add[data-weekday="${weekday}"]`);
+    await page.waitForSelector("#sport-session-dialog[open]");
+    await page.selectOption("#sport-session-form [name=type]", "strength");
+    await page.fill("#sport-session-form [name=durationMin]", "60");
+    await page.click("#sport-session-form button[type=submit]");
+    assert.match(await page.locator(`.sport-week-day[data-weekday="${weekday}"]`).innerText(), /Силовая/);
+    await page.click("#sport-week-form button[type=submit]");
+    await page.waitForTimeout(80);
+
+    stored = await storedState(page);
+    assert.equal(stored.sport.versions.length, 2);
+    const version = stored.sport.versions[1];
+    assert.equal(version.effectiveFrom, from);
+    assert.equal(version.cycle.weekdayBinding, true);
+    assert.deepEqual(version.cycle.days[0].sessions.map((session) => session.type), ["strength"]);
+    assert.match(await page.locator(`.sport-plan-day[data-date="${from}"]`).innerText(), /Силовая/);
+    assert.match(await page.locator(`.sport-plan-day[data-date="${dateKey(2)}"]`).innerText(), /Бег/, "days before the date keep the old schedule");
+    assert.match(await page.locator(`.sport-plan-day[data-date="${dateKey(1)}"]`).innerText(), /Плавание/, "the Особый день stays");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: Спорт asks for the weight before estimating energy", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, sportState({ weightKg: 0 }));
+    await openRoute(page, "sport");
+    assert.match(await page.locator(".sport-today .sport-energy-hint").innerText(), /укажите вес/);
+    assert.equal(await page.locator(".sport-today .sport-energy").count(), 0);
+    await page.click(".sport-today .sport-set-weight");
+    await page.waitForSelector("#ration-profile-form");
+    await page.fill("#ration-profile-form [name=weightKg]", "70");
+    await page.click("#header-action");
+    await page.waitForSelector(".sport-today");
+    assert.match(await page.locator(".sport-today .sport-energy").innerText(), /ккал/);
   } finally {
     await context.close();
   }

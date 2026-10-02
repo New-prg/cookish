@@ -32,6 +32,16 @@ import {
 } from "./ai-provider.js";
 import { assistantContext, createAssistant, createThread } from "./ai-tools.js";
 import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
+import {
+  SPORT_INTENSITIES,
+  SPORT_INTENSITY_LABELS,
+  SPORT_STATE_LABELS,
+  SPORT_TYPES,
+  SPORT_TYPE_LABELS,
+  readSportDay,
+  readSportDayEnergy,
+  readSportLogDay,
+} from "./sport-domain.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
   // на 100 г (для напитков — на 100 мл) и могут отличаться у конкретных марок.
@@ -193,6 +203,8 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
       document.getElementById("ration-profile-form")?.requestSubmit();
     } else if (route === "ration" && pageModes.ration === "plan") {
       openRationRequestDialog();
+    } else if (route === "sport" && pageModes.sport === "plan") {
+      openSportWeekEditor();
     } else attemptBackNavigation();
   });
 
@@ -360,6 +372,10 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
       finishConfirm(false);
       return true;
     }
+    if (dialog.id === "sport-session-dialog" || dialog.id === "sport-week-dialog") {
+      dialog.close();
+      return true;
+    }
     if (dialog.id === "ration-request-dialog") {
       dialog.close();
       return true;
@@ -485,7 +501,7 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
   function configureHeader() {
     const config = {
       ration: [PAGE_TITLES.ration, pageModes.ration === "plan" ? "Запросить" : ""],
-      sport: [PAGE_TITLES.sport, ""],
+      sport: [PAGE_TITLES.sport, pageModes.sport === "plan" ? "Расписание" : ""],
       requests: [PAGE_TITLES.requests, "Создать"],
       "product-edit": ["Продукт", "Сохранить"],
       "request-edit": ["", "Готово"],
@@ -1092,11 +1108,430 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
     return `Δ ${sign(delta.calories)} ккал · Б ${sign(delta.protein)} · Ж ${sign(delta.fat)} · У ${sign(delta.carbs)}`;
   }
 
+  // Спорт mirrors Рацион: Учёт starts with «Сегодня» and goes into the past,
+  // План starts with tomorrow. Editing one date makes a Особый день; the week
+  // schedule releases a new version from the chosen date.
+  const SPORT_WEEKDAYS = [[1, "Понедельник"], [2, "Вторник"], [3, "Среда"], [4, "Четверг"], [5, "Пятница"], [6, "Суббота"], [0, "Воскресенье"]];
+  let sportSessionTarget = null;
+  let sportWeekDraft = null;
+
   function renderSport() {
-    app.innerHTML = `<section class="section sport-soon"><div class="empty-state">
-        <p class="empty">Скоро</p>
-        <p class="muted">Здесь появятся план тренировок и их учёт.</p>
-      </div></section>`;
+    const top = app.scrollTop;
+    const today = todayDateKey();
+    const mode = pageModes.sport;
+    app.innerHTML = `<div class="ration-feed sport-feed" data-mode="${mode}">
+      ${mode === "plan" ? sportPlanFeed(today) : sportLogFeed(today)}
+    </div>`;
+    app.scrollTop = top;
+    bindSport(today);
+  }
+
+  function sportLogFeed(today) {
+    const pastDates = Array.from({ length: feedDays.sport.log }, (_, index) => addRationDays(today, -(index + 1)));
+    return `${sportTodayCard(today)}
+      ${pastDates.map((dateKey) => sportPastDayCard(dateKey, today)).join("")}
+      <button class="feed-more" data-page="sport" type="button">Показать ещё</button>`;
+  }
+
+  function sportPlanFeed(today) {
+    const dates = Array.from({ length: feedDays.sport.plan }, (_, index) => addRationDays(today, index + 1));
+    return `${dates.map((dateKey) => sportPlanDayCard(dateKey, today)).join("")}
+      <button class="feed-more" data-page="sport" type="button">Показать ещё</button>`;
+  }
+
+  function sportSortedSessions(day) {
+    return [...(day?.sessions || [])].sort((a, b) => String(a.time).localeCompare(String(b.time)));
+  }
+
+  function sportSessionLine(session, record = null) {
+    const actual = record && (record.state === "changed" || record.state === "done") && record.actualDurationMin
+      ? ` · факт ${number(record.actualDurationMin)} мин, ${SPORT_INTENSITY_LABELS[record.actualIntensity || session.intensity]}`
+      : "";
+    return `${number(session.durationMin)} мин · ${SPORT_INTENSITY_LABELS[session.intensity]}${session.note ? ` · ${escapeHtml(session.note)}` : ""}${actual}`;
+  }
+
+  // Planned and actual ккал of a day; without a weight a hint asks for it.
+  function sportEnergyTotals(dateKey, { actual = false } = {}) {
+    const energy = readSportDayEnergy(state, dateKey);
+    if (!energy.sessions.length && !energy.unplanned.length) return "";
+    if (!energy.weightKnown) return "";
+    return `<div class="ration-day-card-totals sport-energy">
+      <strong>${number(actual ? energy.actual : energy.planned)} ккал</strong>
+      <span>${actual ? `факт · план ${number(energy.planned)}` : "план расхода"}</span>
+    </div>`;
+  }
+
+  function sportWeightHint(dateKey) {
+    const energy = readSportDayEnergy(state, dateKey);
+    if (energy.weightKnown || (!energy.sessions.length && !energy.unplanned.length)) return "";
+    return `<p class="sport-energy-hint">Чтобы считать расход ккал, укажите вес в профиле рациона.
+      <button class="text-button sport-set-weight" type="button">Указать вес</button></p>`;
+  }
+
+  function sportTodayCard(today) {
+    const day = readSportDay(state, today);
+    const log = readSportLogDay(state, today);
+    const sessions = sportSortedSessions(day);
+    const unplanned = log?.unplanned || [];
+    return `<section class="ration-today sport-today ration-day-card" data-date="${today}">
+      <header class="ration-today-header">
+        <div class="ration-today-date"><span>Сегодня · ${rationWeekday(today)}</span><h2>${rationDayMonth(today)}</h2></div>
+        ${sportEnergyTotals(today, { actual: true })}
+      </header>
+      ${sportWeightHint(today)}
+      <div class="sport-sessions">
+        ${sessions.length ? sessions.map((session) => sportTodaySession(today, session, log)).join("") : `<p class="ration-today-empty muted">На сегодня тренировок нет.</p>`}
+        ${unplanned.map((session) => sportUnplannedRow(today, session)).join("")}
+      </div>
+      <button class="keep-add-item sport-add-activity" data-date="${today}" type="button"><span>＋</span> Добавить активность</button>
+    </section>`;
+  }
+
+  function sportTodaySession(dateKey, session, log) {
+    const record = log?.sessions?.[session.id] || { state: "unmarked" };
+    return `<article class="sport-session state-${record.state}" data-session-id="${escapeAttr(session.id)}">
+      <header>
+        <span class="meal-event-time">${escapeHtml(session.time)}</span>
+        <div><strong>${SPORT_TYPE_LABELS[session.type]}</strong><small>${sportSessionLine(session, record)}</small></div>
+        <span class="ration-state-chip">${SPORT_STATE_LABELS[record.state]}</span>
+      </header>
+      <div class="sport-marks">
+        ${["done", "changed", "skipped"].map((value) => `<button class="sport-mark ${record.state === value ? "active" : ""}" data-date="${dateKey}" data-session-id="${escapeAttr(session.id)}" data-state="${value}" type="button">${capitalize(SPORT_STATE_LABELS[value])}</button>`).join("")}
+      </div>
+    </article>`;
+  }
+
+  function sportUnplannedRow(dateKey, session) {
+    return `<div class="sport-unplanned" data-session-id="${escapeAttr(session.id)}">
+      <span class="meal-event-time">${escapeHtml(session.time)}</span>
+      <div><strong>${SPORT_TYPE_LABELS[session.type]}</strong><small>Внеплановая · ${sportSessionLine(session)}</small></div>
+      <button class="sport-unplanned-remove" data-date="${dateKey}" data-session-id="${escapeAttr(session.id)}" type="button" aria-label="Удалить активность ${escapeAttr(SPORT_TYPE_LABELS[session.type])}">×</button>
+    </div>`;
+  }
+
+  function sportPastDayCard(dateKey, today) {
+    const day = readSportDay(state, dateKey);
+    const log = readSportLogDay(state, dateKey);
+    const sessions = sportSortedSessions(day);
+    const unplanned = log?.unplanned || [];
+    const rows = sessions.map((session) => {
+      const record = log?.sessions?.[session.id] || { state: "unmarked" };
+      return `<button class="ration-past-meal sport-past-session state-${record.state}" data-date="${dateKey}" data-session-id="${escapeAttr(session.id)}" type="button" aria-label="Отметить ${escapeAttr(SPORT_TYPE_LABELS[session.type])}, ${rationDayMonth(dateKey)}">
+        <span class="meal-event-time">${escapeHtml(session.time)}</span>
+        <strong>${SPORT_TYPE_LABELS[session.type]} · ${number(session.durationMin)} мин</strong>
+        <span class="ration-state-chip">${SPORT_STATE_LABELS[record.state]}</span>
+      </button>`;
+    }).join("");
+    const empty = !sessions.length && !unplanned.length;
+    return `<article class="ration-day-card ration-past-day sport-past-day" data-date="${dateKey}">
+      <header class="ration-day-card-header">
+        <div class="ration-day-card-date"><span>${rationDayLabel(dateKey, today)}</span><h3>${rationDayMonth(dateKey)}</h3></div>
+        ${sportEnergyTotals(dateKey, { actual: true })}
+      </header>
+      ${empty ? `<p class="muted ration-day-card-empty">Тренировок не было.</p>` : `<div class="ration-past-meals">${rows}${unplanned.map((session) => sportUnplannedRow(dateKey, session)).join("")}</div>`}
+      <button class="text-button sport-add-activity sport-add-past" data-date="${dateKey}" type="button">＋ Активность</button>
+    </article>`;
+  }
+
+  function sportPlanDayCard(dateKey, today) {
+    const day = readSportDay(state, dateKey);
+    const sessions = sportSortedSessions(day);
+    const rows = sessions.map((session) => `<button class="sport-plan-session" data-date="${dateKey}" data-session-id="${escapeAttr(session.id)}" type="button" aria-label="Изменить ${escapeAttr(SPORT_TYPE_LABELS[session.type])}, ${rationDayMonth(dateKey)}">
+      <span class="meal-event-time">${escapeHtml(session.time)}</span>
+      <div><strong>${SPORT_TYPE_LABELS[session.type]}</strong><small>${sportSessionLine(session)}</small></div>
+    </button>`).join("");
+    return `<article class="ration-day-card sport-plan-day" data-date="${dateKey}">
+      <header class="ration-day-card-header">
+        <div class="ration-day-card-date">
+          <span>${rationDayLabel(dateKey, today)}${day?.source === "special" ? " · Особый день" : ""}</span>
+          <h3>${rationDayMonth(dateKey)}</h3>
+        </div>
+        ${sportEnergyTotals(dateKey)}
+      </header>
+      ${sessions.length ? `<div class="sport-plan-sessions">${rows}</div>` : `<p class="muted ration-day-card-empty">Отдых.</p>`}
+      ${sportWeightHint(dateKey)}
+      <button class="text-button sport-plan-add" data-date="${dateKey}" type="button">＋ Тренировка</button>
+    </article>`;
+  }
+
+  function bindSport(today) {
+    document.querySelectorAll(".sport-mark").forEach((button) => {
+      button.onclick = () => {
+        const { date: dateKey, sessionId, state: mark } = button.dataset;
+        const current = readSportLogDay(state, dateKey)?.sessions?.[sessionId]?.state || "unmarked";
+        if (mark === "changed") return openSportSessionDialog({ mode: "mark", date: dateKey, sessionId, state: "changed" });
+        markSport(dateKey, sessionId, current === mark ? "unmarked" : mark);
+      };
+    });
+    document.querySelectorAll(".sport-past-session").forEach((button) => {
+      button.onclick = () => openSportSessionDialog({ mode: "mark", date: button.dataset.date, sessionId: button.dataset.sessionId });
+    });
+    document.querySelectorAll(".sport-add-activity").forEach((button) => {
+      button.onclick = () => openSportSessionDialog({ mode: "unplanned", date: button.dataset.date });
+    });
+    document.querySelectorAll(".sport-unplanned-remove").forEach((button) => {
+      button.onclick = () => {
+        const removed = localData.removeUnplannedSport(button.dataset.date, button.dataset.sessionId);
+        if (!applyLocal(removed)) return;
+        renderSport();
+        showToast("Активность удалена.", "Отменить", () => {
+          if (applyLocal(localData.addUnplannedSport(button.dataset.date, removed.session))) renderSport();
+        });
+      };
+    });
+    document.querySelectorAll(".sport-plan-session").forEach((button) => {
+      button.onclick = () => openSportSessionDialog({ mode: "plan-edit", date: button.dataset.date, sessionId: button.dataset.sessionId });
+    });
+    document.querySelectorAll(".sport-plan-add").forEach((button) => {
+      button.onclick = () => openSportSessionDialog({ mode: "plan-add", date: button.dataset.date });
+    });
+    document.querySelectorAll(".sport-set-weight").forEach((button) => {
+      button.onclick = () => {
+        rationProfileReturn = "sport";
+        navigate("ration-profile");
+      };
+    });
+    document.querySelectorAll(".feed-more").forEach((button) => {
+      button.onclick = () => {
+        const mode = pageModes[button.dataset.page];
+        feedDays[button.dataset.page][mode] = Math.min(feedDays[button.dataset.page][mode] + FEED_STEP, 366);
+        render();
+      };
+    });
+  }
+
+  function markSport(dateKey, sessionId, mark, actual = {}) {
+    if (!applyLocal(localData.markSportSession(dateKey, sessionId, mark, actual))) return false;
+    renderSport();
+    showToast(mark === "unmarked" ? "Отметка снята." : `Тренировка: ${SPORT_STATE_LABELS[mark]}.`);
+    return true;
+  }
+
+  function sportSessionDialog() {
+    let dialog = document.getElementById("sport-session-dialog");
+    if (dialog) return dialog;
+    dialog = document.createElement("dialog");
+    dialog.id = "sport-session-dialog";
+    dialog.className = "answer-dialog sport-session-dialog";
+    dialog.innerHTML = `<form id="sport-session-form">
+      <h2 id="sport-session-title"></h2>
+      <p id="sport-session-subtitle" class="muted"></p>
+      <div id="sport-session-states" class="ration-meal-states sport-session-states"></div>
+      <label class="field" data-field="type"><span>Тип</span><select name="type">${SPORT_TYPES.map((type) => `<option value="${type}">${SPORT_TYPE_LABELS[type]}</option>`).join("")}</select></label>
+      <div class="nutrition-grid">
+        <label class="field" data-field="time"><span>Время</span><input name="time" type="time"></label>
+        <label class="field"><span id="sport-duration-label">Длительность, мин</span><input name="durationMin" type="number" min="1" max="1440" step="1" inputmode="numeric" required></label>
+      </div>
+      <label class="field"><span>Интенсивность</span><select name="intensity">${SPORT_INTENSITIES.map((value) => `<option value="${value}">${capitalize(SPORT_INTENSITY_LABELS[value])}</option>`).join("")}</select></label>
+      <label class="field" data-field="note"><span>Заметка</span><input name="note" autocomplete="off" maxlength="300"></label>
+      <button class="button full" type="submit">Сохранить</button>
+      <button id="sport-session-delete" class="button danger full" type="button" hidden>Удалить тренировку</button>
+      <button id="sport-session-cancel" class="text-button dialog-cancel" type="button">Отмена</button>
+    </form>`;
+    document.body.appendChild(dialog);
+    dialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      dialog.close();
+    });
+    dialog.querySelector("#sport-session-cancel").onclick = () => dialog.close();
+    dialog.querySelector("#sport-session-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveSportSessionDialog();
+    });
+    dialog.querySelector("#sport-session-delete").onclick = () => deleteSportSession();
+    return dialog;
+  }
+
+  function openSportSessionDialog(target) {
+    const dialog = sportSessionDialog();
+    const form = dialog.querySelector("form");
+    const planned = target.sessionId ? readSportDay(state, target.date)?.sessions?.find((value) => value.id === target.sessionId) : null;
+    const record = planned ? readSportLogDay(state, target.date)?.sessions?.[planned.id] : null;
+    const session = planned || { type: "run", time: "18:00", durationMin: 45, intensity: "medium", note: "" };
+    const marking = target.mode === "mark";
+    sportSessionTarget = { ...target, state: target.state || (record?.state && record.state !== "unmarked" ? record.state : "done") };
+    const titles = {
+      mark: SPORT_TYPE_LABELS[session.type],
+      unplanned: "Внеплановая активность",
+      "plan-add": "Новая тренировка",
+      "plan-edit": "Тренировка",
+      "week-add": "Тренировка в расписании",
+    };
+    dialog.querySelector("#sport-session-title").textContent = titles[target.mode];
+    dialog.querySelector("#sport-session-subtitle").textContent = target.mode === "week-add"
+      ? SPORT_WEEKDAYS.find(([day]) => day === target.weekday)?.[1] || ""
+      : `${capitalize(rationLongDate(target.date))}${marking ? ` · план: ${number(session.durationMin)} мин, ${SPORT_INTENSITY_LABELS[session.intensity]}` : ""}`;
+    const states = dialog.querySelector("#sport-session-states");
+    states.hidden = !marking;
+    states.innerHTML = marking ? ["done", "changed", "skipped", "unmarked"].map((value) =>
+      `<button class="ration-state-set ${sportSessionTarget.state === value ? "active" : ""}" data-state="${value}" type="button">${SPORT_STATE_LABELS[value]}</button>`).join("") : "";
+    states.querySelectorAll("button").forEach((button) => {
+      button.onclick = () => {
+        sportSessionTarget.state = button.dataset.state;
+        states.querySelectorAll("button").forEach((value) => value.classList.toggle("active", value === button));
+        syncSportDialogFields();
+      };
+    });
+    ["type", "time", "note"].forEach((name) => { form.querySelector(`[data-field="${name}"]`).hidden = marking; });
+    form.elements.type.value = session.type;
+    form.elements.time.value = session.time;
+    form.elements.durationMin.value = marking ? (record?.actualDurationMin ?? session.durationMin) : session.durationMin;
+    form.elements.intensity.value = marking ? (record?.actualIntensity || session.intensity) : session.intensity;
+    form.elements.note.value = session.note || "";
+    dialog.querySelector("#sport-session-delete").hidden = target.mode !== "plan-edit";
+    syncSportDialogFields();
+    if (!dialog.open) dialog.showModal();
+  }
+
+  // Actual duration and intensity matter only for «выполнено» and «изменено».
+  function syncSportDialogFields() {
+    const form = document.getElementById("sport-session-form");
+    const marking = sportSessionTarget?.mode === "mark";
+    const withActual = !marking || ["done", "changed"].includes(sportSessionTarget.state);
+    form.elements.durationMin.closest(".field").hidden = !withActual;
+    form.elements.intensity.closest(".field").hidden = !withActual;
+    form.elements.durationMin.required = withActual;
+    document.getElementById("sport-duration-label").textContent = marking ? "Фактически, мин" : "Длительность, мин";
+  }
+
+  function saveSportSessionDialog() {
+    const dialog = document.getElementById("sport-session-dialog");
+    const form = dialog.querySelector("form");
+    const target = sportSessionTarget;
+    if (!target) return dialog.close();
+    const fields = {
+      type: form.elements.type.value,
+      time: form.elements.time.value || "18:00",
+      durationMin: Number(form.elements.durationMin.value),
+      intensity: form.elements.intensity.value,
+      note: form.elements.note.value.trim(),
+    };
+    if (target.mode === "week-add") {
+      sportWeekDraft.days[target.weekday].push({ id: id("session"), ...fields, exercises: [] });
+      dialog.close();
+      renderSportWeekDays();
+      return;
+    }
+    let result;
+    if (target.mode === "mark") {
+      const withActual = ["done", "changed"].includes(target.state);
+      const actual = withActual ? { actualDurationMin: fields.durationMin, actualIntensity: fields.intensity } : {};
+      if (markSport(target.date, target.sessionId, target.state, actual)) dialog.close();
+      return;
+    }
+    if (target.mode === "unplanned") result = localData.addUnplannedSport(target.date, fields);
+    else if (target.mode === "plan-add") result = localData.addSportSession(target.date, fields);
+    else if (target.mode === "plan-edit") result = localData.updateSportSession(target.date, target.sessionId, fields);
+    if (!applyLocal(result)) return;
+    dialog.close();
+    renderSport();
+    const messages = { unplanned: "Активность записана.", "plan-add": "Тренировка добавлена.", "plan-edit": "Тренировка изменена." };
+    if (result.changeSetId) {
+      showToast(messages[target.mode], "Отменить", () => {
+        if (applyLocal(localData.revertChangeSet(result.changeSetId))) renderSport();
+      });
+    } else showToast(messages[target.mode]);
+  }
+
+  function deleteSportSession() {
+    const dialog = document.getElementById("sport-session-dialog");
+    const target = sportSessionTarget;
+    const result = localData.removeSportSession(target.date, target.sessionId);
+    if (!applyLocal(result)) return;
+    dialog.close();
+    renderSport();
+    showToast("Тренировка удалена.", "Отменить", () => {
+      if (applyLocal(localData.revertChangeSet(result.changeSetId))) renderSport();
+    });
+  }
+
+  // The week schedule: seven weekdays from the computed plan of the chosen
+  // week; saving releases a version from that date.
+  function sportWeekDialog() {
+    let dialog = document.getElementById("sport-week-dialog");
+    if (dialog) return dialog;
+    dialog = document.createElement("dialog");
+    dialog.id = "sport-week-dialog";
+    dialog.className = "answer-dialog sport-week-dialog";
+    dialog.innerHTML = `<form id="sport-week-form">
+      <h2>Расписание недели</h2>
+      <p class="muted">Новое расписание повторяется каждую неделю с выбранной даты. Прошлые отметки и отдельно изменённые дни сохраняются.</p>
+      <label class="field"><span>Действует с</span><input id="sport-week-from" type="date" required></label>
+      <div id="sport-week-days" class="sport-week-days"></div>
+      <button class="button full" type="submit">Сохранить расписание</button>
+      <button id="sport-week-cancel" class="text-button dialog-cancel" type="button">Отмена</button>
+    </form>`;
+    document.body.appendChild(dialog);
+    dialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      dialog.close();
+    });
+    dialog.querySelector("#sport-week-cancel").onclick = () => dialog.close();
+    dialog.querySelector("#sport-week-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveSportWeek();
+    });
+    dialog.querySelector("#sport-week-days").addEventListener("click", (event) => {
+      const add = event.target.closest(".sport-week-add");
+      if (add) return openSportSessionDialog({ mode: "week-add", weekday: Number(add.dataset.weekday) });
+      const remove = event.target.closest(".sport-week-remove");
+      if (remove) {
+        const list = sportWeekDraft.days[Number(remove.dataset.weekday)];
+        list.splice(Number(remove.dataset.index), 1);
+        renderSportWeekDays();
+      }
+    });
+    return dialog;
+  }
+
+  function openSportWeekEditor() {
+    const dialog = sportWeekDialog();
+    const from = addRationDays(todayDateKey(), 1);
+    const days = {};
+    for (let index = 0; index < 7; index += 1) {
+      const dateKey = addRationDays(from, index);
+      days[parseRationDate(dateKey).getDay()] = structuredClone(readSportDay(state, dateKey)?.sessions || []);
+    }
+    sportWeekDraft = { days };
+    const input = dialog.querySelector("#sport-week-from");
+    input.min = from;
+    input.value = from;
+    renderSportWeekDays();
+    dialog.showModal();
+  }
+
+  function renderSportWeekDays() {
+    const container = document.getElementById("sport-week-days");
+    if (!container || !sportWeekDraft) return;
+    container.innerHTML = SPORT_WEEKDAYS.map(([day, label]) => {
+      const sessions = sportWeekDraft.days[day] || [];
+      return `<section class="sport-week-day" data-weekday="${day}">
+        <header><strong>${label}</strong><button class="text-button sport-week-add" data-weekday="${day}" type="button" aria-label="Добавить тренировку: ${label}">＋ Тренировка</button></header>
+        ${sessions.length ? `<ul>${sessions.map((session, index) => `<li>
+          <span>${escapeHtml(session.time)} · ${SPORT_TYPE_LABELS[session.type]} · ${number(session.durationMin)} мин · ${SPORT_INTENSITY_LABELS[session.intensity]}</span>
+          <button class="sport-week-remove" data-weekday="${day}" data-index="${index}" type="button" aria-label="Убрать ${escapeAttr(SPORT_TYPE_LABELS[session.type])}: ${label}">×</button>
+        </li>`).join("")}</ul>` : `<p class="muted">Отдых</p>`}
+      </section>`;
+    }).join("");
+  }
+
+  function saveSportWeek() {
+    const dialog = document.getElementById("sport-week-dialog");
+    const from = dialog.querySelector("#sport-week-from").value;
+    if (!from || from <= todayDateKey()) return showToast("Расписание можно начать только с будущего дня.");
+    const start = parseRationDate(from).getDay();
+    const days = Array.from({ length: 7 }, (_, index) => ({
+      id: `cycle_day_${addRationDays(from, index)}`,
+      sessions: structuredClone(sportWeekDraft.days[(start + index) % 7] || []),
+    }));
+    const result = localData.releaseSportVersion({ effectiveFrom: from, days });
+    if (!applyLocal(result)) return;
+    dialog.close();
+    sportWeekDraft = null;
+    renderSport();
+    showToast(`Расписание действует с ${rationDayMonth(from)}.`, "Отменить", () => {
+      if (applyLocal(localData.revertChangeSet(result.changeSetId))) renderSport();
+    });
   }
 
   function productSuggestions() {
