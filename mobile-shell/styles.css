@@ -1861,7 +1861,7 @@ body.root-page main {
   touch-action: pan-y;
 }
 
-main.is-page-dragging { overflow: hidden; }
+main.is-page-dragging { overflow: hidden; user-select: none; }
 
 .sport-soon { border-bottom: 0; }
 

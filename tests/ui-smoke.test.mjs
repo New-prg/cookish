@@ -57,10 +57,14 @@ const ROOT_PAGES = ["ration", "sport", "requests"];
 const PAGE_TITLES = ["Рацион", "Спорт", "Покупки"];
 
 // Drags the content of a root page horizontally; step 1 moves to the next page.
+// Coordinates come from the viewport: while the previous page still slides in,
+// <main> is shifted and its box would put the start into the edge zone.
 async function swipePage(page, step, { from } = {}) {
+  await page.waitForFunction(() => document.getElementById("app").getAnimations().every((animation) => animation.playState !== "running"));
   const box = await page.locator("main").boundingBox();
+  const { width } = page.viewportSize();
   const y = from?.y ?? box.y + Math.min(box.height / 2, 240);
-  const x = from?.x ?? box.x + box.width / 2 + step * 90;
+  const x = from?.x ?? width / 2 + step * 90;
   await page.mouse.move(x, y);
   await page.mouse.down();
   await page.mouse.move(x - step * 200, y, { steps: 8 });

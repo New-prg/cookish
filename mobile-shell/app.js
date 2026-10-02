@@ -456,6 +456,8 @@ import {
 
     app.addEventListener("pointerdown", (event) => {
       if (!pageSwipeAllowed(event)) return;
+      // A mouse press on selected text would start a native drag and cancel the swipe.
+      if (event.pointerType === "mouse") window.getSelection?.()?.removeAllRanges();
       start = { x: event.clientX, y: event.clientY, time: event.timeStamp, pointerId: event.pointerId };
       dragging = false;
     });
