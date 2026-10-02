@@ -1268,3 +1268,90 @@ test("smoke: marking a meal «не съедено» queues a Тычок, and Pro
     await context.close();
   }
 });
+
+function proposingAi(context) {
+  let turn = 0;
+  return routeAi(context, () => (turn++ % 2 === 0)
+    ? aiMessage({ role: "assistant", content: "", tool_calls: [aiToolCall("set_special_day", { date: dateKey(1), meals: bigDay }, `c${turn}`)] })
+    : aiMessage({ role: "assistant", content: "Предлагаю больше еды завтра." }));
+}
+
+test("smoke: a thread without a bookmark is gone; a bookmark keeps it across a restart", async () => {
+  const { context, page } = await openPage();
+  try {
+    await proposingAi(context);
+    await withAssistantKey(page);
+    await askAssistant(page, "Больше еды завтра");
+    await page.waitForSelector(".assistant-message.from-assistant");
+    await page.click("#assistant-close");
+    const options = page.locator("#app-choice-options");
+    assert.match(await options.innerText(), /Применить 1[\s\S]*Отбросить[\s\S]*В закладки/);
+    await page.click('#app-choice-options button:has-text("Отбросить")');
+    assert.deepEqual((await storedState(page)).assistant?.bookmarks ?? [], [], "a closed thread is not saved");
+
+    await askAssistant(page, "Больше еды завтра, сохраню");
+    await page.waitForSelector(".assistant-message.from-assistant");
+    await page.click("#assistant-close");
+    await page.click('#app-choice-options button:has-text("В закладки")');
+    await page.waitForFunction(() => !document.getElementById("assistant-dialog").open);
+    let [saved] = (await storedState(page)).assistant.bookmarks;
+    assert.equal(saved.title, "Больше еды завтра, сохраню");
+    assert.equal(saved.proposals.length, 1);
+    assert.ok(saved.messages.length >= 3);
+
+    await page.reload({ waitUntil: "load" });
+    await page.click("#assistant-handle");
+    await page.click("#assistant-bookmarks");
+    assert.match(await page.locator(".assistant-bookmark").innerText(), /Больше еды завтра, сохраню/);
+    await page.click(".assistant-bookmark-open");
+    assert.match(await page.locator(".assistant-message.from-user").innerText(), /сохраню/);
+    assert.equal(await page.locator(".assistant-proposal.status-pending").count(), 1);
+    assert.equal(await page.locator("#assistant-bookmark-save.saved").count(), 1);
+
+    // A bookmarked thread is saved again on close without a question.
+    await page.click(".assistant-proposal [data-proposal-action=apply]");
+    await page.click("#assistant-close");
+    assert.equal(await page.locator("#app-choice-dialog[open]").count(), 0);
+    [saved] = (await storedState(page)).assistant.bookmarks;
+    assert.equal(saved.proposals.length, 0, "an applied proposal leaves the bookmark");
+
+    await page.click("#assistant-handle");
+    await page.click("#assistant-bookmarks");
+    await page.click(".assistant-bookmark-remove");
+    await page.click("#app-confirm-ok");
+    await page.waitForFunction(() => !document.querySelector(".assistant-bookmark"));
+    assert.deepEqual((await storedState(page)).assistant.bookmarks, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a stale proposal from a bookmark shows a conflict instead of applying", async () => {
+  const { context, page } = await openPage();
+  try {
+    await proposingAi(context);
+    await withAssistantKey(page);
+    await askAssistant(page, "Больше еды завтра");
+    await page.waitForSelector(".assistant-message.from-assistant");
+    await page.click("#assistant-bookmark-save");
+    await page.click("#assistant-close");
+
+    // The person edits tomorrow by hand in План.
+    await page.click("#page-slider");
+    await page.locator(".ration-plan-edit").first().click();
+    await page.click(".ration-plan-day.expanded .add-ration-meal");
+    await page.waitForTimeout(80);
+
+    await page.click("#assistant-handle");
+    await page.click("#assistant-bookmarks");
+    await page.click(".assistant-bookmark-open");
+    const card = page.locator(".assistant-proposal");
+    assert.match(await card.innerText(), /Конфликт/);
+    assert.equal(await card.locator("[data-proposal-action=apply]").count(), 0);
+    assert.match(await page.locator("#toast-message").innerText(), /устарело/);
+    const stored = await storedState(page);
+    assert.equal(stored.journal.filter((set) => set.actor === "ai").length, 0, "nothing applied silently");
+  } finally {
+    await context.close();
+  }
+});

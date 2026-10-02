@@ -8,6 +8,7 @@ import { readRationDay, readRationHistoryDay } from "./ration-domain.js";
 export const NUDGE_BURST_MS = 30_000;
 export const NUDGE_RETRY_MS = 5 * 60_000;
 export const NUDGE_QUEUE_LIMIT = 50;
+export const BOOKMARK_LIMIT = 30;
 
 export const STRICTNESS_LEVELS = Object.freeze({
   any: {
@@ -43,7 +44,15 @@ export function normalizeAssistantState(source) {
       .filter((nudge) => nudge && typeof nudge === "object" && nudge.id && nudge.kind)
       .slice(-NUDGE_QUEUE_LIMIT),
     notice,
-    bookmarks: Array.isArray(value.bookmarks) ? value.bookmarks.filter((bookmark) => bookmark && typeof bookmark === "object" && bookmark.id) : [],
+    bookmarks: (Array.isArray(value.bookmarks) ? value.bookmarks : [])
+      .filter((bookmark) => bookmark && typeof bookmark === "object" && bookmark.id)
+      .map((bookmark) => ({
+        ...bookmark,
+        log: Array.isArray(bookmark.log) ? bookmark.log : [],
+        messages: Array.isArray(bookmark.messages) ? bookmark.messages : [],
+        proposals: Array.isArray(bookmark.proposals) ? bookmark.proposals : [],
+      }))
+      .slice(0, BOOKMARK_LIMIT),
   };
 }
 

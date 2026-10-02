@@ -30,6 +30,7 @@ import {
   revertChangeSet as revertJournalChangeSet,
 } from "./plan-journal.js";
 import {
+  BOOKMARK_LIMIT,
   defaultAssistantState,
   enqueueNudges,
   normalizeAssistantState,
@@ -550,6 +551,30 @@ export function openLocalData(storage) {
         next.assistant.nudges = next.assistant.nudges.filter((item) => !done.has(item.id));
         const text = String(noticeText || "").trim();
         if (text) next.assistant.notice = { text, createdAt: now };
+        return { ok: true };
+      });
+    },
+
+    // Закладка: a thread the person saved, with its messages and unapplied
+    // Предложения. Saving the same thread again updates its bookmark.
+    saveBookmark(bookmark) {
+      if (!bookmark?.id) return { ok: false, reason: "Нечего сохранять." };
+      return apply({ assistant: true }, (next, { now }) => {
+        const list = next.assistant.bookmarks;
+        const value = { ...structuredClone(bookmark), createdAt: bookmark.createdAt || now, updatedAt: now };
+        const index = list.findIndex((item) => item.id === bookmark.id);
+        if (index >= 0) list.splice(index, 1);
+        list.unshift(value);
+        if (list.length > BOOKMARK_LIMIT) list.length = BOOKMARK_LIMIT;
+        return { ok: true, bookmarkId: value.id };
+      });
+    },
+
+    removeBookmark(bookmarkId) {
+      return apply({ assistant: true }, (next) => {
+        const before = next.assistant.bookmarks.length;
+        next.assistant.bookmarks = next.assistant.bookmarks.filter((item) => item.id !== bookmarkId);
+        if (next.assistant.bookmarks.length === before) return { ok: false, reason: "Закладка не найдена." };
         return { ok: true };
       });
     },

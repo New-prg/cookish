@@ -52,7 +52,15 @@
           <span class="eyebrow">Ассистент</span>
           <h2 id="assistant-title"></h2>
         </div>
-        <button id="assistant-close" class="assistant-close" type="button" aria-label="Закрыть ассистента">×</button>
+        <div class="assistant-header-actions">
+          <button id="assistant-bookmark-save" class="assistant-icon-button" type="button" aria-label="В закладки" title="В закладки" hidden>
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M7 4h10v16l-5-3.6L7 20z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </button>
+          <button id="assistant-bookmarks" class="assistant-icon-button" type="button" aria-label="Закладки" title="Закладки">
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M5 6h10M5 12h10M5 18h10M19 5v3M19 11v3M19 17v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+          <button id="assistant-close" class="assistant-close" type="button" aria-label="Закрыть ассистента">×</button>
+        </div>
       </header>
       <div id="assistant-feed" class="assistant-feed"></div>
       <div id="assistant-apply-bar" class="assistant-apply-bar" hidden>

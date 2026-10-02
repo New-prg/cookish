@@ -98,6 +98,8 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
   // The open chat. A thread lives only in memory and is gone after closing.
   let assistantThread = null;
   let assistantBusy = false;
+  // "chat" or "bookmarks": the list of Закладки opens inside the overlay.
+  let assistantView = "chat";
   let route = "ration";
   // Pages with modes remember them for the session; Покупки has none.
   const pageModes = { ration: "log", sport: "log" };
@@ -705,6 +707,11 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
     });
     assistantTeaser.addEventListener("click", () => openAssistant());
     document.getElementById("assistant-close").addEventListener("click", () => requestCloseAssistant());
+    document.getElementById("assistant-bookmark-save").addEventListener("click", () => saveAssistantBookmark());
+    document.getElementById("assistant-bookmarks").addEventListener("click", () => {
+      assistantView = assistantView === "bookmarks" ? "chat" : "bookmarks";
+      renderAssistantFeed();
+    });
     assistantDialog.addEventListener("cancel", (event) => {
       event.preventDefault();
       requestCloseAssistant();
@@ -727,6 +734,21 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
       if (suggestion) {
         assistantInput.value = suggestion.dataset.text;
         assistantInput.focus();
+        return;
+      }
+      if (event.target.closest("#assistant-bookmarks-back")) {
+        assistantView = "chat";
+        renderAssistantFeed();
+        return;
+      }
+      const openBookmark = event.target.closest(".assistant-bookmark-open");
+      if (openBookmark) {
+        openAssistantBookmark(openBookmark.dataset.bookmarkId);
+        return;
+      }
+      const removeBookmark = event.target.closest(".assistant-bookmark-remove");
+      if (removeBookmark) {
+        removeAssistantBookmark(removeBookmark.dataset.bookmarkId);
         return;
       }
       if (event.target.closest("#assistant-open-profile")) {
@@ -753,6 +775,7 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
     if (assistantDialog.open || !ROOT_PAGES.includes(route)) return;
     const mode = pageModes[route] || "";
     assistantThread = createThread({ page: route, mode });
+    assistantView = "chat";
     // The assistant's reaction to a Тычок opens the thread.
     const notice = aiProvider.hasKey() ? state.assistant?.notice : null;
     if (notice) {
@@ -777,22 +800,122 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
     return (assistantThread?.proposals || []).filter((proposal) => proposal.status === "pending");
   }
 
-  // Closing with unapplied Предложения asks what to do with them.
+  // Closing with unapplied Предложения asks what to do with them. A thread in
+  // Закладки is saved again on close instead.
   async function requestCloseAssistant() {
     if (!assistantDialog.open) return;
+    if (assistantThread?.bookmarkId) {
+      saveAssistantBookmark({ silent: true });
+      closeAssistant();
+      return;
+    }
     const pending = pendingProposals();
     if (pending.length) {
       const choice = await askChoice(
-        `В чате ${pending.length} неприменённ${pending.length === 1 ? "ое предложение" : "ых предложения"}. После закрытия чат не сохранится.`,
+        `В чате ${pending.length} неприменённ${pending.length === 1 ? "ое предложение" : "ых предложения"}. Без закладки чат после закрытия не сохранится.`,
         [
           { label: `Применить ${pending.length}`, value: "apply" },
           { label: "Отбросить", value: "discard", secondary: true },
+          { label: "В закладки", value: "bookmark", secondary: true },
         ]
       );
       if (!choice) return;
       if (choice === "apply" && !applyAssistantProposals(pending, true)) return;
+      if (choice === "bookmark" && !saveAssistantBookmark({ silent: true })) return;
+      if (choice === "bookmark") showToast("Тред сохранён в закладках.");
     }
     closeAssistant();
+  }
+
+  // Keeps the messages and the unapplied Предложения of the open thread.
+  function saveAssistantBookmark({ silent = false } = {}) {
+    const thread = assistantThread;
+    const firstUser = thread?.log.find((entry) => entry.type === "user");
+    if (!firstUser) {
+      showToast("Сначала напишите ассистенту.");
+      return false;
+    }
+    const proposals = thread.proposals.filter((proposal) => proposal.status === "pending" || proposal.status === "conflict");
+    const kept = new Set(proposals.map((proposal) => proposal.id));
+    const bookmark = {
+      id: thread.bookmarkId || `bookmark_${thread.id}`,
+      title: firstUser.text.length > 60 ? `${firstUser.text.slice(0, 59)}…` : firstUser.text,
+      page: thread.page,
+      mode: thread.mode,
+      createdAt: thread.createdAt,
+      log: thread.log.filter((entry) => entry.type !== "proposal" || kept.has(entry.proposalId)),
+      messages: bookmarkMessages(thread.messages),
+      proposals,
+    };
+    if (!applyLocal(localData.saveBookmark(bookmark))) return false;
+    thread.bookmarkId = bookmark.id;
+    if (!silent) showToast("Тред в закладках.");
+    renderAssistantFeed();
+    return true;
+  }
+
+  // The model conversation is bounded; it must start with a user message so
+  // that tool results never lose their call.
+  function bookmarkMessages(messages) {
+    const recent = (messages || []).slice(-60);
+    const start = recent.findIndex((message) => message.role === "user");
+    return start < 0 ? [] : recent.slice(start);
+  }
+
+  async function openAssistantBookmark(bookmarkId) {
+    const bookmark = (state.assistant?.bookmarks || []).find((item) => item.id === bookmarkId);
+    if (!bookmark) return;
+    const unsaved = assistantThread && !assistantThread.bookmarkId && assistantThread.log.some((entry) => entry.type === "user");
+    if (unsaved && !await askConfirm("Текущий чат не в закладках и пропадёт. Открыть закладку?", "Открыть")) return;
+    assistantThread = {
+      id: bookmark.id.replace(/^bookmark_/, ""),
+      page: bookmark.page,
+      mode: bookmark.mode,
+      createdAt: bookmark.createdAt,
+      bookmarkId: bookmark.id,
+      messages: structuredClone(bookmark.messages || []),
+      proposals: structuredClone(bookmark.proposals || []),
+      log: structuredClone(bookmark.log || []),
+    };
+    // The plan may have changed since: stale Предложения get a conflict.
+    assistant.recheck(assistantThread.proposals);
+    assistantView = "chat";
+    document.getElementById("assistant-title").textContent = assistantContextTitle(bookmark.page, bookmark.mode);
+    renderAssistantFeed();
+    const stale = assistantThread.proposals.filter((proposal) => proposal.status === "conflict").length;
+    if (stale) showToast(stale === 1 ? "Одно предложение устарело: план изменился." : `Устарело предложений: ${stale}.`);
+  }
+
+  async function removeAssistantBookmark(bookmarkId) {
+    const bookmark = (state.assistant?.bookmarks || []).find((item) => item.id === bookmarkId);
+    if (!bookmark || !await askConfirm(`Удалить закладку «${bookmark.title}»?`, "Удалить")) return;
+    if (!applyLocal(localData.removeBookmark(bookmarkId))) return;
+    if (assistantThread?.bookmarkId === bookmarkId) delete assistantThread.bookmarkId;
+    renderAssistantFeed();
+  }
+
+  function assistantBookmarksList() {
+    const bookmarks = state.assistant?.bookmarks || [];
+    const rows = bookmarks.map((bookmark) => {
+      const pending = (bookmark.proposals || []).length;
+      const meta = [
+        assistantContextTitle(bookmark.page, bookmark.mode),
+        date(bookmark.updatedAt || bookmark.createdAt),
+        pending ? `предложений: ${pending}` : "",
+      ].filter(Boolean).join(" · ");
+      return `<article class="assistant-bookmark">
+        <button class="assistant-bookmark-open" data-bookmark-id="${escapeAttr(bookmark.id)}" type="button">
+          <strong>${escapeHtml(bookmark.title || "Тред")}</strong>
+          <small>${escapeHtml(meta)}</small>
+        </button>
+        <button class="assistant-bookmark-remove" data-bookmark-id="${escapeAttr(bookmark.id)}" type="button" aria-label="Удалить закладку «${escapeAttr(bookmark.title || "Тред")}»">×</button>
+      </article>`;
+    }).join("");
+    return `<div class="assistant-bookmarks">
+      <button id="assistant-bookmarks-back" class="text-button" type="button">← К чату</button>
+      <h3>Закладки</h3>
+      ${rows || `<p class="muted">Закладок пока нет. Сохраните тред кнопкой «В закладки» в шапке чата.</p>`}
+    </div>`;
   }
 
   function closeAssistant() {
@@ -822,6 +945,8 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
     } finally {
       if (assistantThread === thread) {
         assistantBusy = false;
+        // A thread in Закладки keeps its bookmark current.
+        if (thread.bookmarkId) saveAssistantBookmark({ silent: true });
         renderAssistantFeed();
       }
     }
@@ -854,19 +979,31 @@ import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
   function renderAssistantFeed() {
     if (!assistantThread) return;
     const available = aiProvider.hasKey();
+    const listing = assistantView === "bookmarks";
     const form = document.getElementById("assistant-form");
-    form.hidden = !available;
+    form.hidden = !available || listing;
+    const saveButton = document.getElementById("assistant-bookmark-save");
+    saveButton.hidden = !available || listing || !assistantThread.log.some((entry) => entry.type === "user");
+    saveButton.classList.toggle("saved", Boolean(assistantThread.bookmarkId));
+    saveButton.setAttribute("aria-label", assistantThread.bookmarkId ? "Сохранено в закладках" : "В закладки");
+    document.getElementById("assistant-bookmarks").hidden = !available;
+    document.getElementById("assistant-bookmarks").setAttribute("aria-pressed", String(listing));
     assistantInput.disabled = assistantBusy;
     document.getElementById("assistant-send").disabled = assistantBusy;
     const pending = pendingProposals();
     const applyBar = document.getElementById("assistant-apply-bar");
-    applyBar.hidden = pending.length < 2 || assistantBusy;
+    applyBar.hidden = pending.length < 2 || assistantBusy || listing;
     document.getElementById("assistant-apply-all").textContent = `Применить все (${pending.length})`;
     if (!available) {
       assistantFeed.innerHTML = `<div class="assistant-unavailable">
         <p>${assistantUnavailableText()}.</p>
         <button id="assistant-open-profile" class="button secondary" type="button">Открыть Профиль</button>
       </div>`;
+      return;
+    }
+    if (listing) {
+      assistantFeed.innerHTML = assistantBookmarksList();
+      assistantFeed.scrollTop = 0;
       return;
     }
     const entries = assistantThread.log.map((entry) => assistantLogEntry(entry)).join("");
