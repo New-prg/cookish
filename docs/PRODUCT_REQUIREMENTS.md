@@ -3,7 +3,7 @@
 **Product name:** Cookish
 **Platform:** Android (Capacitor WebView, native barcode scan, in-app APK update)
 **Primary language:** Russian UI
-**Updated:** 2026-10-01
+**Updated:** 2026-10-02
 **Package id:** `ru.listok.purchases`
 
 This file is the source of truth for **what problems the app must solve** and
@@ -12,7 +12,10 @@ How data is stored today is documented in [`README.md`](../README.md).
 Implementation may lag; when code and this file disagree, treat this file as
 the intended product unless a deliberate product change is recorded here.
 The approved data scheme is offline-first with account sync, see
-[ADR-0001](adr/0001-offline-first-with-account-sync.md).
+[ADR-0001](adr/0001-offline-first-with-account-sync.md). While the assistant is
+in test mode (epic #44), the app calls the AI provider directly with a key from
+a temporary Profile field; the ADR rule «AI only through the backend and an
+account» is suspended until the AI proxy (#31).
 
 ---
 
@@ -20,22 +23,25 @@ The approved data scheme is offline-first with account sync, see
 
 ### 1.1 Job to be done
 
-Cookish helps a small household plan food, follow the plan day by day, turn the
-plan into a shopping list, record purchases and spend, and keep a personal meal
-ration. The phone is the system of record. Local features work without an
-account; network features (account sync, AI) stay off until an account exists
-(ADR-0001).
+Cookish helps one person plan food and physical activity, follow both plans
+day by day, turn the food plan into a shopping list, and record purchases and
+spend. One assistant plans across the pages and proposes changes that the
+person confirms. The phone is the system of record. Local features work
+without an account; account sync stays off until an account exists
+(ADR-0001). The test assistant is the only network feature without an
+account, and only with a provider key the person enters (§6.6.6).
 
 ### 1.2 Core value propositions
 
 | Value | User-facing outcome |
 |---|---|
-| Instant start | Open the app, land on Summary. No sign-in, no spreadsheet, no setup wizard |
-| Offline | Local features work without network. Open Food Facts search is the only optional online lookup |
-| Today first | Ration opens on today's date with meal states, not on a calendar editor |
+| Instant start | Open the app, land on Рацион. No sign-in, no spreadsheet, no setup wizard |
+| Offline | Local features work without network. Open Food Facts search and the test assistant are the only online features |
+| Today first | Рацион and Спорт open in Учёт on the «Сегодня» card, not on a calendar editor |
 | Keep-like lists | Creating a request feels like a note checklist, not a multi-step form |
 | Plan → basket | Planned future days convert into purchase quantities with package rounding |
 | Light nutrition | Products carry optional nutrition for ration totals |
+| Nothing in secret | The assistant proposes changes in a feed; goals and plans never change without confirmation, and every change can be undone from the journal |
 
 ### 1.3 Non-goals (for now)
 
@@ -44,18 +50,20 @@ account; network features (account sync, AI) stay off until an account exists
 - Retailer price scraping or live store catalogs
 - Full inventory / warehouse stock ledger
 - iOS
-- Social feed, recipes marketplace, calorie dieting coach AI
-- Full AI access to food history (minimal context only until #14 is decided)
-- Notifications and the evening checklist (#15)
+- Social feed, recipes marketplace
+- Medical advice: the assistant is a planner for food and activity; it never treats, diagnoses or prescribes, and on risky requests it refuses and suggests a doctor
+- A product catalog screen; the assistant manages the catalog (§6.3)
+- Fitness tracker integration (Health Connect, Huawei Health via Health Sync)
+- Rework of Покупки and the budget
+- Notifications and the evening checklist (#15); the assistant reacts only inside the app
 - Allergens (#16)
 - Sharing, several rations per device, final export (#17)
 - Chat and document deletion policy; the prototype stores everything (#18)
 - Rework of the connection between ration and Requests (#19); current behavior stays
-- Product metrics (#20)
+- Product metrics (#20); Summary and spend metrics return after the page shell settles
 
-Accounts, backend sync and AI tools are part of the approved scheme
-(ADR-0001, epic #21), but they come after the local slice ships and stay
-disabled without an account.
+Accounts, backend sync, the AI proxy and billing (#29–#32) are part of the
+approved scheme (ADR-0001, epic #21) and come after epic #44.
 
 ---
 
@@ -65,11 +73,13 @@ disabled without an account.
 |---|---|
 | UI shell | Single-page vanilla JS `mobile-shell/app.js` + `styles.css` |
 | Ration rules | `mobile-shell/ration-domain.js`, a deep in-process module; UI, sync and AI tools call one command/projection interface (#23) |
-| Navigation | Bottom tabs: Сводка · Запросы · Рацион · Профиль; stack routes for products / request edit / purchase editor |
+| Sport rules | Planned module mirroring the ration domain (#53) |
+| Assistant | Planned `ai-tools.js` (#50) over a provider port: routerai.ru adapter and a mock for tests (#49) |
+| Navigation | Three root pages Рацион → Спорт → Покупки switched by a horizontal swipe; a slider shows the page and the mode; Profile from a header button; stack routes for request note, purchase editor, product card and forms |
 | Data | Local data on the device. See README |
-| Auth | None yet. Account + backend sync are planned (#29, #30); network features stay off without an account |
+| Auth | None yet. Account + backend sync are planned (#29, #30); sync stays off without an account |
 | Updates | Profile checks the latest public GitHub Release and can install `Cookish.apk` |
-| Tests | Node tests for local domain helpers |
+| Tests | Node tests for local domain helpers; Playwright UI smoke tests |
 
 ### 2.1 Must-not-regress behaviors
 
@@ -81,10 +91,11 @@ These are **requirements**, not nice-to-haves:
 4. Purchase marking is **checkbox on the request list**, not a separate «Отметить покупки» primary CTA. **One request = one receipt (чек)**.
 5. Purchase price is saved against the **real product id** (not catalog suggestion ids) and shown on the line / request total.
 6. «Готово» on request edit commits pending fields and returns to the list **without** an “unsaved data” confirm.
-7. Bottom navigation stays pinned; content scrolls inside `main`.
-8. Ration main page shows only today; the План and История overlays never move the bottom nav or scramble the date header.
+7. The header and the page slider stay pinned; content scrolls inside `main`.
+8. Рацион opens in Учёт on the «Сегодня» card; switching modes never moves the slider or scrambles the date header.
 9. A meal starts as `не отмечено`; explicit states come from the human or a permitted actor, and AI can never write past history.
 10. Existing local data continues to load after an app update.
+11. Goals and plans never change without confirmation: every assistant change goes through the feed and lands in the change journal.
 
 ---
 
@@ -93,7 +104,7 @@ These are **requirements**, not nice-to-haves:
 ### 3.1 Personas
 
 **A — Planner**
-Plans meals for the week, builds shopping lists, cares about calories/portions roughly.
+Plans meals and workouts for the week, builds shopping lists, cares about calories/portions roughly.
 
 **B — Buyer**
 Opens a request in the store, checks off bought items, sometimes replaces a product via barcode, enters price occasionally.
@@ -102,37 +113,48 @@ On one phone these are the same person at different times.
 
 ### 3.2 Primary scenarios
 
-1. **First run:** land on Summary. No account gate.
-2. **Quick list:** Requests → Создать → empty note → type products → leave.
+1. **First run:** land on Рацион in Учёт. No account gate.
+2. **Quick list:** swipe to Покупки → Создать → empty note → type products → leave.
 3. **Shop:** open request → check items as bought → optional price via swipe / long-press → totals update.
-4. **Follow the ration:** Рацион → today screen → mark meals eaten / changed / skipped → fix yesterday in История overlay.
-5. **Change the future:** План overlay → pick a future date → edit that Особый день or shift the plan → request the planned days with package rounding.
-6. **Catalog:** scan barcode / search Open Food Facts → save nutrition → reuse in ration and lists.
+4. **Follow the ration:** Рацион, Учёт → «Сегодня» card → mark meals eaten / changed / skipped → scroll down to fix yesterday.
+5. **Change the future:** tap the slider → План → pick a future day → edit its Особый день, repeat the day or week, or request a range of days with package rounding.
+6. **Follow the training plan:** swipe to Спорт → mark today's workout done / changed / skipped or add an unplanned activity; in План edit the week schedule or one date.
+7. **Ask the assistant:** pull the handle → ask → review Предложения in the feed → apply all or one by one → undo from a card if needed.
+8. **Product card:** tap a chip in a request → scan a barcode / search Open Food Facts → save nutrition → reuse in ration and lists.
 
 ---
 
 ## 4. Information architecture
 
-### 4.1 Bottom navigation (required)
+### 4.1 Root pages (required)
 
-| Tab | Purpose | Primary actions |
+| Page | Purpose | Modes |
 |---|---|---|
-| **Сводка** | Home health: active lists, spend signals, shortcuts | Create request; open products |
-| **Запросы** | All shopping notes | Create; open note |
-| **Рацион** | Today's ration adherence screen | Mark meal states; open План / История overlays |
-| **Профиль** | Products entry, app update, danger zone | Open products; check for update; clear local data |
+| **Рацион** | Food plan and adherence | Учёт: «Сегодня» and past days. План: tomorrow and future days |
+| **Спорт** | Training plan and its log | Учёт and План, as on Рацион |
+| **Покупки** | All shopping notes (Запросы) | None |
 
-### 4.2 Stack routes (not tabs)
+- Root pages go in the order Рацион → Спорт → Покупки. The app always opens on Рацион in Учёт.
+- There is no bottom tab bar. A horizontal swipe over the content switches root pages; it works only on root pages (§5.1).
+- A slider at the bottom right shows the page and its mode; a tap switches the mode, never the page (§5.1).
+- Profile opens from a small button in the header corner. It holds settings and, later, the account; it is not part of the main UI.
+- There is no Summary screen.
+- Покупки is the former Запросы list as is; the domain term stays Запрос.
 
-- Product list / new / edit
+### 4.2 Stack routes and overlays (not root pages)
+
 - Request edit (the note)
 - Request purchase editor only as an advanced editor for the existing receipt (not the main buy flow)
+- Product card: opens from a chip and returns there; there is no product list screen
+- Profile and the ration profile form
+- Assistant chat: an overlay from the right edge of any root page (§6.6)
 
 ### 4.3 IA rules
 
 - **One primary surface per job.** Buying happens on the request note, not a parallel wizard.
 - **Create = open empty artifact**, never a “confirm create” form with Submit at the end for requests.
-- **Destructive and system settings live in Profile**, not on home.
+- **Destructive and system settings live in Profile**, not on root pages.
+- **Products have no list screen.** The assistant manages the catalog; the human edits a card from a chip.
 
 ---
 
@@ -142,9 +164,14 @@ On one phone these are the same person at different times.
 
 | Pattern | Requirement |
 |---|---|
-| Fixed chrome | Top bar + bottom nav are outside the scrollport; only `main` scrolls |
+| Fixed chrome | Top bar and the page slider are outside the scrollport; only `main` scrolls |
 | Safe areas | Respect notch / gesture inset top and bottom |
-| Back | Android back: close dialog → leave stack route with save if needed → else system default |
+| Page swipe | A horizontal swipe over the content switches root pages in the order Рацион → Спорт → Покупки. It works only on root pages; screens over a page (request note, product card, Profile, forms), dialogs and the assistant chat keep horizontal gestures for themselves. Swipes that start at the screen edges belong to the system back gesture |
+| Page slider | Bottom right, about a third of the screen wide (a guide, not a fixed value). The current page name is in the centre with its neighbours small and translucent on the sides; under it the line «учёт · план» highlights the active mode. A tap switches Учёт ⇄ План; the slider never switches pages. On Покупки there is no mode line and a tap does nothing |
+| Mode memory | Each page keeps its mode for the session; a new launch opens Рацион in Учёт |
+| Profile button | A small button in the header corner of root pages; Profile returns to the page it was opened from |
+| Assistant handle | At the right edge, at the same height on every root page, at most 200 dp tall and excluded from system gestures. Pulling it left (or a tap) opens the chat (§6.6.1) |
+| Back | Android back: close dialog → close the assistant chat → leave stack route with save if needed → on Спорт or Покупки return to Рацион → on Рацион system default |
 | Header actions | Contextual: Создать / Добавить / Готово / Сохранить; never ambiguous «Отмена» for primary complete. Forms (product, ration profile) save from the header; a back arrow on the left leaves, asking with an in-app dialog when there are unsaved changes |
 | No forced re-render while typing | Background work must not rebuild focused inputs/dialogs |
 
@@ -156,7 +183,7 @@ On one phone these are the same person at different times.
 | No spam create | Typing a product name must not create many product versions mid-keystroke |
 | Debounced search only | OFF/name search may debounce; **commit** of domain objects must not use the same timer as search |
 | Immediate local | UI updates immediately; the device is the store |
-| Undo for destructive soft ops | Delete product / meal / purchase uncheck → toast with Отменить when feasible |
+| Undo for destructive soft ops | Delete meal / purchase uncheck → toast with Отменить when feasible |
 
 ### 5.3 Lists & notes (Keep-like)
 
@@ -198,7 +225,7 @@ On one phone these are the same person at different times.
 
 | Pattern | Requirement |
 |---|---|
-| Touch targets | ≥ 44×44 px for icons, checks, nav |
+| Touch targets | ≥ 44×44 px for icons, checks, the slider and the handle |
 | Font floor | Body ≥ 16 px inputs (Android zoom); UI chrome ≥ 12 px |
 | Contrast | Text/icons readable on white; status not color-only |
 | Screen readers | Meaningful labels on icon-only controls; avoid `aria-live` on entire `main` |
@@ -208,8 +235,8 @@ On one phone these are the same person at different times.
 | Pattern | Requirement |
 |---|---|
 | Partial updates preferred | Prefer updating one row over re-render whole note after check |
-| Ration | Opening an overlay or marking a state must not reshuffle the today layout |
-| Keyboard | Opening keyboard must not permanently detach bottom nav |
+| Ration | Switching modes or marking a state must not reshuffle the «Сегодня» card |
+| Keyboard | Opening keyboard must not permanently detach the header or the slider |
 
 ---
 
@@ -221,21 +248,10 @@ On one phone these are the same person at different times.
 
 | ID | Requirement |
 |---|---|
-| ONB-1 | First launch opens Summary. No account or spreadsheet step |
+| ONB-1 | First launch opens Рацион in Учёт. No account or spreadsheet step |
 | ONB-2 | Android notification / battery prompts are optional and must not block the main app |
 
-### 6.2 Summary (Сводка)
-
-**Solves:** “What needs attention right now?”
-
-| ID | Requirement |
-|---|---|
-| SUM-1 | Show active request count, spend signals (e.g. 30 days / average), product count |
-| SUM-2 | List open requests with one-tap open into note view |
-| SUM-3 | Empty state CTA: create request |
-| SUM-4 | Product metric/button opens product catalog |
-
-### 6.3 Requests (Запросы)
+### 6.2 Покупки (Запросы)
 
 **Solves:** “Shopping notes on this phone.”
 
@@ -254,54 +270,52 @@ On one phone these are the same person at different times.
 | REQ-11 | Cannot remove request line that has purchase data (clear message) |
 | REQ-12 | Cannot lower quantity below already purchased |
 
-### 6.4 Products
+### 6.3 Products
 
 **Solves:** “Reusable catalog with optional nutrition and barcodes.”
 
 | ID | Requirement |
 |---|---|
-| PRD-1 | List, add, edit, soft-delete. The list has search (name, category, barcode), groups by category and shows one compact row per product; tap opens the card, deletion lives in the card |
+| PRD-1 | There is no product list screen. The assistant manages the catalog: it creates products and fixes КБЖУ through confirmed Предложения (#50). The human opens a card from a request chip, edits it there and returns to the note |
 | PRD-2 | Fields: name, category, unit, barcode, ingredients, nutrition block; plus kind/genericKey/brand/confirmed |
 | PRD-3 | Barcode scan + Open Food Facts lookup with user confirmation before save |
 | PRD-4 | Name search suggestions: local + catalog + OFF (debounced) |
-| PRD-5 | Deleting product blocked if used in requests/purchases |
-| PRD-6 | Undo delete via toast when allowed |
+| PRD-5 | Deletion is a data command, blocked while the product is used in requests or purchases. The card has no delete button: a card opened from a chip always belongs to a request |
 | PRD-7 | Free-text create → unconfirmed product; saving product card sets confirmed |
 | PRD-8 | Category/generic from OFF when available; SKU purchase must not rewrite a different confirmed product |
 
-### 6.5 Ration (Рацион)
+### 6.4 Рацион
 
 **Solves:** “What do we eat today, did we follow the plan, and what will we eat next?”
 
-The ration opens on a **today screen**. The user never edits a calendar, a
-cycle or versions directly. Future dates live in the План overlay, past dates
-in the История overlay; both hang on a right-side rail of flags over the today
-screen.
+Рацион has two modes, two feeds that start at «Сегодня»: Учёт scrolls into the
+past, План into the future. The user never edits a calendar, a cycle or
+versions directly.
 
-#### 6.5.1 Today screen
+#### 6.4.1 Учёт: today and the past
 
 | ID | Requirement |
 |---|---|
-| RAT-1 | Main page shows only the current date and today's meals ordered by time |
+| RAT-1 | Учёт opens on the «Сегодня» card: the current date and today's meals ordered by time. Past days follow below in reverse order |
 | RAT-2 | Each meal card shows time, name, composition with portions, КБЖУ and the meal state |
 | RAT-3 | Meal state starts as `не отмечено` and never implies the person skipped food |
 | RAT-4 | One short action marks `съедено`; `изменено`, `не съедено` and other actions open from the meal card |
 | RAT-5 | Discrepancy recording (added / excluded / replaced product, actual amount) opens from the meal card and stores against the version that was in force |
 | RAT-6 | One-time transfer shifts the chosen meal and every following unmarked meal of the day by the same amount; midnight crossing needs explicit confirmation |
-| RAT-7 | The screen works fully offline and renders only ration module projections |
+| RAT-7 | The page works fully offline and renders only ration module projections |
+| RAT-12 | Past days show states and discrepancies and let the human correct past entries |
 
-#### 6.5.2 Overlays (right rail)
+#### 6.4.2 План: tomorrow and the future
 
 | ID | Requirement |
 |---|---|
-| RAT-8 | A rail of right-side flags opens the План and История overlays without leaving the tab |
-| RAT-9 | План overlay shows computed future days with meals and КБЖУ; the terms Цикл рациона and Версия рациона never appear in UI |
-| RAT-10 | From the План overlay the user picks a future date and creates or edits its Особый день; this works offline without AI |
-| RAT-11 | From the План overlay the user turns a chosen range of future days into a request with package rounding (one product once per request) |
-| RAT-12 | История overlay shows past days with states and discrepancies and lets the human correct past entries |
-| RAT-13 | Overlays keep their state when closed and never change the plan just by being viewed |
+| RAT-8 | A tap on the slider switches Учёт ⇄ План. Each mode keeps its feed and scroll position until the end of the session (#47) |
+| RAT-9 | План starts with tomorrow, then future days with meals and КБЖУ; the terms Цикл рациона and Версия рациона never appear in UI |
+| RAT-10 | In План the user picks a future date and creates or edits its Особый день, or makes the day or the week repeat from that date; this works offline without AI |
+| RAT-11 | In План the user turns a chosen range of future days into a request with package rounding (one product once per request) |
+| RAT-13 | Viewing a mode never changes the plan |
 
-#### 6.5.3 Hidden model
+#### 6.4.3 Hidden model
 
 | ID | Requirement |
 |---|---|
@@ -310,46 +324,144 @@ screen.
 | RAT-16 | Changing a shared product card recalculates past and future КБЖУ |
 | RAT-17 | A deterministic nutrition profile supplies КБЖУ targets (#26) |
 
-#### 6.5.4 Authority matrix
+#### 6.4.4 Authority matrix
 
-| Period | Human | AI (after account exists) |
+| Period | Human | Assistant |
 |---|---|---|
-| Past (История питания) | Read and correct states / discrepancies | Read only, minimal context; never write |
-| Today | Mark states, record discrepancies, transfer meals | Read; may suggest, never writes past or today |
-| Future | Create/edit Особый день, shift plan in План overlay | May propose plan edits that land as a new Версия рациона or Особый день, gated by #36 |
+| Past (История питания) | Read and correct states / discrepancies | Reads aggregates always and details on request (§6.6.1); never writes |
+| Today | Mark states, record discrepancies, transfer meals | May propose changes to today's plan through the confirmed feed (по умолчанию); never marks states or records discrepancies |
+| Future | Create/edit Особый день, repeat a day or week, request a range in План | Proposes a Особый день or a new Версия рациона through the confirmed feed, gated by the КБЖУ checks (§6.6.2, #36) |
 
-#### 6.5.5 Fate of the previous ration editor
+#### 6.4.5 Fate of earlier ration UI
 
-The approved scheme (epic #21) retires three features of the old calendar
-editor. This is a product decision; implementation removes them in #27/#28.
+The approved scheme (epic #21) retired three features of the old calendar
+editor (#27/#28), and epic #44 retires the overlays (#47).
 
-- **Day / week / month view modes.** Removed. The main page is today only;
-  future dates are the План overlay, past dates the История overlay. There is
-  no month view.
+- **Day / week / month view modes.** Removed. Past dates are Учёт, future
+  dates are План. There is no month view.
 - **Day templates (создать / переименовать / применить / удалить).** Removed.
   The stored ration days and templates convert during migration (#23) into the
   initial Версия рациона of the cycle. No template UI returns.
 - **Selection UI (selection mode, toolbar, checkbox lists).** Removed. Deletion
-  happens through meal card actions and the План overlay; Запросить works from
-  the План overlay on a chosen range of future days (RAT-11).
+  happens through meal card actions and План; Запросить works from План on a
+  chosen range of future days (RAT-11).
+- **The right rail of План / История flags and both overlays.** Replaced by the
+  Учёт and План modes.
 
-#### 6.5.6 Storage ownership
+#### 6.4.6 Storage ownership
 
 | ID | Requirement |
 |---|---|
-| RAT-18 | Without an account the whole ration (plan, history, profile) is local to this device; network features stay off |
+| RAT-18 | Without an account the whole ration (plan, history, profile) is local to this device; sync stays off |
 | RAT-19 | UI never rewrites ration structure directly; all changes go through ration module commands |
 | RAT-20 | Deleting a meal / item / day requires confirm and offers undo when feasible |
 
-### 6.6 Profile & system
+### 6.5 Спорт
+
+**Solves:** “What training is planned, did I do it, and how much energy did it take?”
+
+Спорт mirrors Рацион: a План тренировок and an Учёт тренировок, shown in the
+same two modes. Until #54 the page shows a «Скоро» stub.
+
+#### 6.5.1 Modes
+
+| ID | Requirement |
+|---|---|
+| SPT-1 | Учёт opens on the «Сегодня» card: planned Тренировки with the marks «выполнено», «изменено», «пропущено» and «Добавить активность» for an unplanned one. Past days follow below |
+| SPT-2 | План starts with tomorrow, then future days. Editing one date creates a Особый день; editing the week schedule releases a version from the chosen date |
+| SPT-3 | Cards show planned and actual energy in ккал. The estimate needs the weight from the profile; without it the card shows a hint |
+| SPT-4 | The page works fully offline; Учёт opens by default |
+
+#### 6.5.2 Model
+
+| ID | Requirement |
+|---|---|
+| SPT-5 | The План тренировок uses the ration scheme: a weekly cycle with an anchor date, versions from a date and Особые дни. The shared cycle and version logic lives in one module, not a copy |
+| SPT-6 | A Тренировка has a type (силовая, бег, плавание, велосипед, ходьба, йога, другое), time, duration in minutes, intensity (низкая, средняя, высокая) and a note; sets and repetitions are reserved for later |
+| SPT-7 | Energy estimate: MET by type and intensity × weight from the profile × hours, with a projection of the planned energy per day |
+| SPT-8 | Учёт тренировок stores, per date and session, the state «не отмечено», «выполнено», «изменено» or «пропущено» with the actual duration and intensity, plus unplanned sessions |
+| SPT-9 | План тренировок commands write change sets (§6.6.3); Учёт тренировок is a fact and is not journaled |
+
+#### 6.5.3 Authority and the link to food
+
+| ID | Requirement |
+|---|---|
+| SPT-10 | The human edits the plan and the log. The assistant never writes Учёт тренировок; it proposes plan changes through the confirmed feed |
+| SPT-11 | The КБЖУ goal never changes automatically. The assistant may propose ration changes for training days as ordinary Предложения; one batch may touch both pages |
+
+### 6.6 Ассистент
+
+**Solves:** “Plan and adjust food and training by talking, without losing control.”
+
+One Ассистент serves the whole app. It runs in test mode (§6.6.6) until the
+backend AI proxy (#31).
+
+#### 6.6.1 Entry and context
+
+| ID | Requirement |
+|---|---|
+| AST-1 | One assistant for the whole app; it can act across pages |
+| AST-2 | It opens with the handle at the right edge of any root page (§5.1): pulling it left opens a chat overlay from the right; a tap also opens it |
+| AST-3 | The chat header shows where it was called from, e.g. «Рацион · План»; the assistant knows that page and mode |
+| AST-4 | On open the chat shows an empty input and 2–3 suggestions for the page and mode (по умолчанию). No LLM call happens until the user sends a message |
+| AST-5 | The assistant always receives the page and mode, the profile and 28-day aggregates: ration adherence, average КБЖУ against the goal, frequent Расхождения, spend from receipts and, with Спорт, workouts planned/done and energy. Details (plan, История питания, catalog, journal) are read only on request, and every such read shows a visible progress line in the chat |
+| AST-6 | Without a key the handle says «ИИ недоступен: добавьте ключ в Профиле» |
+
+#### 6.6.2 Feed and confirmation
+
+| ID | Requirement |
+|---|---|
+| AST-7 | Changes come as Предложения in a feed: affected days, было/стало and the КБЖУ delta |
+| AST-8 | «Применить все» applies the batch as one Набор изменений; each card also has «Применить» and «Убрать», and applying one by one writes one set per Предложение. An applied card offers «Отменить» |
+| AST-9 | Applying re-checks every Предложение against the current plan; a stale one gets a conflict instead of applying |
+| AST-10 | A Предложение writes nothing by itself. The assistant never writes История питания or Учёт тренировок; past dates are forbidden; today and the future change only through confirmed Предложения (по умолчанию). Gesture direction never grants permissions |
+| AST-11 | КБЖУ gate in code: not below 1200 ккал, within ±15% of the target, protein at least 75% of the target, no excluded products. A failed check goes back to the model to fix the plan |
+| AST-12 | Safety: no treatment or diagnoses; on risky requests the assistant refuses and suggests a doctor. Eval fixtures live in #36 |
+
+#### 6.6.3 Change journal and undo
+
+| ID | Requirement |
+|---|---|
+| AST-13 | Every plan change, by the human or the assistant, is a Набор изменений: id, time, actor, page, short description and a snapshot of the affected plan parts before and after (Особые дни by date, released versions, the profile, later the План тренировок) |
+| AST-14 | Undo restores the «before» snapshot when the affected parts still match «after», and writes itself as a new set. If other changes landed on top, undo refuses with a conflict and the affected dates |
+| AST-15 | The assistant may propose undoing any set, its own or manual. A manual undo UI comes later |
+| AST-16 | История питания and Учёт тренировок are facts and never enter the journal. The journal is bounded (for example the last 200 sets) |
+
+#### 6.6.4 Nudges and strictness
+
+| ID | Requirement |
+|---|---|
+| AST-17 | Every deviation from the plan becomes a Тычок: a meal marked «изменено» or «не съедено», a recorded Расхождение, a transferred meal; with Спорт, a Тренировка «пропущено» or «изменено» and unplanned activity. `не отмечено` is never a deviation |
+| AST-18 | Detection is code, without an LLM. Тычки queue in local data, survive a restart and wait for the network |
+| AST-19 | The assistant decides whether to tell the person. Bursts merge into one call (for example several marks within 30 s). If it decides to notify, the handle shows a badge and a teaser line, and the text becomes the first message when the chat opens; Предложения are built only after the person acts in the chat |
+| AST-20 | Жёсткость in Profile: «Любое отклонение» (по умолчанию), «Заметные» or «Только серьёзные», plus an optional free text «Как реагировать». There are no system notifications (#15) |
+
+#### 6.6.5 Threads and bookmarks
+
+| ID | Requirement |
+|---|---|
+| AST-21 | Every chat is a separate thread held only in memory; after closing nothing remains except threads saved as Закладки |
+| AST-22 | Closing with unapplied Предложения asks «Применить N / Отбросить / В закладки» |
+| AST-23 | A Закладка keeps the messages and unapplied Предложения locally and survives a restart. Opening it re-checks the Предложения against the current plan and marks stale ones as conflicts. A Закладка can be deleted |
+
+#### 6.6.6 Test access
+
+| ID | Requirement |
+|---|---|
+| AST-24 | Profile has a temporary field «Ключ ИИ (тест)»: hidden input, «Проверить» shows whether the key works, «Удалить» removes it |
+| AST-25 | The key stays only on the device, apart from local data. It never enters export, sync, logs or error texts, and it is never in the repository or the APK |
+| AST-26 | Provider: routerai.ru, OpenAI-compatible chat completions; model `z-ai/glm-5.3-flash` by default, set in module config, not in UI; timeout 120 s; up to 2 retries on 5xx and network errors |
+| AST-27 | Before the first use a one-time warning says that plan and statistics data are sent to the external provider routerai.ru |
+
+### 6.7 Profile & system
 
 **Solves:** “Trust, recovery, staying on a current build.”
 
 | ID | Requirement |
 |---|---|
-| PRO-1 | Entry to products |
+| PRO-1 | Profile opens from a small header button on root pages and returns to that page. It holds settings: the ration profile, the temporary AI key and Жёсткость (§6.6), app update and the danger zone. No product list entry, no spend metrics |
 | PRO-2 | Check GitHub Release and install `Cookish.apk` when newer |
-| PRO-3 | Clear local data with strong confirm → empty local data, Summary |
+| PRO-3 | Clear local data with strong confirm → empty local data, Рацион |
 | PRO-4 | No Google connect, spreadsheet connect, or manual sheet sync |
 
 ---
@@ -378,20 +490,45 @@ editor. This is a product decision; implementation removes them in #27/#28.
 - Swipe left → purchase sheet (price, bought qty, barcode).
 - Готово / back → commit pending field edits, return to list.
 
-### 7.2 Ration today screen and overlays (canonical)
+### 7.2 Root page with slider and handle (canonical)
 
 ```
-[ date: today ]                       ( rail: План · История )
-[ ✓ съедено ] Приём пищи 08:00 · КБЖУ   [ card → ]
-[ не отмечено ] Приём пищи 13:00 · КБЖУ [ card → ]
+[ Рацион                                  (профиль) ]
+[ Сегодня · date · КБЖУ / цель ]                   ▐
+[ ✓ съедено ] Приём пищи 08:00 · КБЖУ   [ card → ] ▐  ← handle: assistant
+[ не отмечено ] Приём пищи 13:00 · КБЖУ [ card → ] ▐
+[ вчера … ]
+                              ╭───────────────────╮
+                              │   Рацион  Спорт   │
+                              │   учёт · план     │  ← tap: mode
+                              ╰───────────────────╯
+  ← swipe over the content: Рацион → Спорт → Покупки →
 
-План overlay:   future days · Особый день per date · range → Запросить
-История overlay: past days · states · расхождения · human corrections
+Учёт: Сегодня → вчера → …   states · расхождения · human corrections
+План: завтра → …            Особый день · repeat · range → Запросить · КБЖУ
 ```
 
-Bottom nav stays pinned; overlays never scramble the date header.
+The header and the slider stay pinned; switching modes never scrambles the
+date header. On Покупки the slider has no mode line.
 
-### 7.3 Purchase details dialog
+### 7.3 Assistant chat (canonical)
+
+```
+[ Рацион · План                                  × ]
+[ suggestions for the page and mode ]
+[ you: … ]
+[ · читаю план… ]                    ← progress line per read
+[ assistant: … ]
+[ Предложение · 5–7 окт · было → стало · Δ КБЖУ ]
+[                         [ Убрать ] [ Применить ] ]
+[ Применить все ]
+[ message …                                      ➤ ]
+```
+
+- Applied card → «Отменить» (undo through the journal).
+- Close with unapplied Предложения → «Применить N / Отбросить / В закладки».
+
+### 7.4 Purchase details dialog
 
 - Qty (capped by remaining when adding), price optional, scan optional.
 - Готово applies; back/dismiss soft-saves defaults when marking.
@@ -413,7 +550,7 @@ Bottom nav stays pinned; overlays never scramble the date header.
 |---|---|
 | Calm utility | White surfaces, green accent `#1f5d3b`, muted text |
 | One radius system | Prefer 8–12 px interactive; avoid 2 px forms vs 20 px sheets without reason |
-| Density | Shopping list rows ~48 px tall; ration calendar may be denser but ≥ 12 px type |
+| Density | Shopping list rows ~48 px tall; ration and training feeds may be denser but ≥ 12 px type |
 | Motion | Short, optional; respect `prefers-reduced-motion` |
 | Brand | Display name **Cookish** everywhere user-visible; align iconography over time |
 
@@ -438,12 +575,13 @@ A build may ship for household use only if:
 - [ ] No product spam while typing names
 - [ ] Tap-or-swipe buy/unbuy on request note; swipe for purchase details (no ···)
 - [ ] Confirmed product is not rewritten when a different SKU is scanned
-- [ ] Bottom nav stable on Profile and long Ration
-- [ ] Ration opens on today; meal states and overlays usable on ≤360 px width
+- [ ] Header and slider stay pinned on Profile and long pages
+- [ ] App opens on Рацион in Учёт; a swipe moves Рацион → Спорт → Покупки; meal states and modes are usable on ≤360 px width
 - [ ] Terms Цикл рациона and Версия рациона never appear in the UI
-- [ ] App opens Summary without an account; network features are off without one
+- [ ] App opens without an account; sync is off without one; the assistant works only with a test key entered in Profile
+- [ ] No assistant change applies without confirmation; every applied batch lands in the change journal
 - [ ] Existing local products, requests, purchases, and ration load after update
-- [ ] Tests for local domain helpers pass
+- [ ] Unit and UI smoke tests pass
 
 ---
 
