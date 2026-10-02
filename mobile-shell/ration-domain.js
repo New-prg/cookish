@@ -1,4 +1,15 @@
-export const RATION_SCHEMA_VERSION = 13;
+import {
+  activePlanVersion,
+  buildPlanVersion,
+  cycleDayFor as planCycleDayFor,
+  normalizePlanSpecialDays,
+  normalizePlanVersion,
+  readPlanDay,
+} from "./plan-cycle.js";
+
+// Version of the whole local data blob; ration migration stamps it. 14 adds
+// the Спорт plan and log (#53), 13 the change journal (#48).
+export const RATION_SCHEMA_VERSION = 14;
 
 export const RATION_MEAL_STATES = ["unmarked", "eaten", "changed", "skipped"];
 export const RATION_DISCREPANCY_KINDS = ["added", "excluded", "replaced", "amount"];
@@ -110,32 +121,7 @@ export function normalizeLegacyRationDays(source, fallbackOwner = "local") {
 }
 
 export function readRationDay(state, dateKey) {
-  if (!DATE_PATTERN.test(String(dateKey || ""))) return null;
-  const owner = rationOwner(state);
-  const special = state.ration?.specialDays?.[`${owner}|${dateKey}`];
-  if (special) {
-    return {
-      date: dateKey,
-      owner,
-      source: "special",
-      meals: special.meals || [],
-      updatedAt: special.updatedAt || "",
-      updatedBy: special.updatedBy || "",
-    };
-  }
-  const version = activeRationVersion(state.ration, owner, dateKey);
-  if (!version) return null;
-  const cycleDay = cycleDayFor(version.cycle, dateKey);
-  if (!cycleDay) return null;
-  return {
-    date: dateKey,
-    owner,
-    source: "cycle",
-    versionId: version.id,
-    meals: cycleDay.meals || [],
-    updatedAt: version.updatedAt || version.createdAt || "",
-    updatedBy: version.updatedBy || "",
-  };
+  return readPlanDay(state?.ration, rationOwner(state), dateKey, "meals");
 }
 
 export function readRationRange(state, fromKey, toKey) {
@@ -231,35 +217,11 @@ function round2(value) {
 }
 
 export function activeRationVersion(ration, owner, dateKey) {
-  const versions = (ration?.versions || []).filter((version) =>
-    (version.owner || "local") === ownerKey(owner) && DATE_PATTERN.test(version.effectiveFrom || "")
-  );
-  if (!versions.length) return null;
-  // On the same start date the version released later wins.
-  const sorted = versions.slice().sort((a, b) =>
-    a.effectiveFrom.localeCompare(b.effectiveFrom)
-    || timestampOf(a.createdAt) - timestampOf(b.createdAt)
-    || String(a.id).localeCompare(String(b.id))
-  );
-  if (String(dateKey) < sorted[0].effectiveFrom) return null;
-  let active = sorted[0];
-  for (const version of sorted) {
-    if (version.effectiveFrom <= dateKey) active = version;
-    else break;
-  }
-  return active;
+  return activePlanVersion(ration, owner, dateKey);
 }
 
 export function cycleDayFor(cycle, dateKey) {
-  const days = cycle?.days || [];
-  if (!days.length) return null;
-  const anchor = validDate(cycle.anchor);
-  const target = validDate(dateKey);
-  if (!anchor || !target) return null;
-  const index = cycle.weekdayBinding && days.length === 7
-    ? (target.getDay() - anchor.getDay() + 7) % 7
-    : ((Math.round((target - anchor) / DAY_MS) % days.length) + days.length) % days.length;
-  return days[index] || null;
+  return planCycleDayFor(cycle, dateKey);
 }
 
 export function executeRationCommand(state, command, context = {}) {
@@ -739,26 +701,17 @@ function releaseVersion(ration, owner, command, ctx) {
   const anchor = commandDate(command.anchor);
   if (!anchor) return fail("Некорректная опорная дата.");
   const effectiveFrom = commandDate(command.effectiveFrom) || anchor;
-  const weekdayBinding = Boolean(command.weekdayBinding);
-  const version = {
+  const version = buildPlanVersion({
     id: createId("ration_version"),
     owner,
+    days,
+    anchor,
     effectiveFrom,
-    createdAt: ctx.now,
-    updatedAt: ctx.now,
-    updatedBy: ctx.actor,
-    cycle: {
-      anchor,
-      weekdayBinding,
-      days: days.map((day, index) => {
-        const sourceDay = day && typeof day === "object" ? day : {};
-        return {
-          id: sourceDay.id || `cycle_day_${effectiveFrom}_${index}`,
-          meals: structuredClone(sourceDay.meals || []),
-        };
-      }),
-    },
-  };
+    weekdayBinding: command.weekdayBinding,
+    field: "meals",
+    now: ctx.now,
+    actor: ctx.actor,
+  });
   ration.versions.push(version);
   return { ok: true, versionId: version.id, effectiveFrom };
 }
@@ -995,36 +948,11 @@ function isFilledNumber(value) {
 }
 
 function normalizeVersion(version, index) {
-  const source = version && typeof version === "object" ? version : {};
-  const cycle = source.cycle && typeof source.cycle === "object" ? source.cycle : {};
-  return {
-    ...source,
-    id: source.id || `ration_version_${index}`,
-    owner: ownerKey(source.owner),
-    effectiveFrom: DATE_PATTERN.test(source.effectiveFrom || "") ? source.effectiveFrom : "",
-    cycle: {
-      anchor: DATE_PATTERN.test(cycle.anchor || "") ? cycle.anchor : "",
-      weekdayBinding: Boolean(cycle.weekdayBinding),
-      days: (Array.isArray(cycle.days) ? cycle.days : []).map((day, dayIndex) => {
-        const sourceDay = day && typeof day === "object" ? day : {};
-        return {
-          id: sourceDay.id || `cycle_day_${dayIndex}`,
-          meals: Array.isArray(sourceDay.meals) ? sourceDay.meals : [],
-        };
-      }),
-    },
-  };
+  return normalizePlanVersion(version, index, "meals", "ration_version");
 }
 
 function normalizeSpecialDays(source) {
-  const result = {};
-  const values = source && typeof source === "object" ? Object.values(source) : [];
-  values.forEach((day) => {
-    if (!day?.date || !DATE_PATTERN.test(day.date)) return;
-    const owner = ownerKey(day.owner);
-    result[`${owner}|${day.date}`] = { ...day, meals: day.meals || [], owner };
-  });
-  return result;
+  return normalizePlanSpecialDays(source, "meals");
 }
 
 function validDate(value) {

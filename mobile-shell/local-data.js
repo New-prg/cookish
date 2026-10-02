@@ -30,6 +30,12 @@ import {
   revertChangeSet as revertJournalChangeSet,
 } from "./plan-journal.js";
 import {
+  applySportCommand,
+  describeSportCommand,
+  emptySport,
+  normalizeSport,
+} from "./sport-domain.js";
+import {
   BOOKMARK_LIMIT,
   defaultAssistantState,
   enqueueNudges,
@@ -49,6 +55,7 @@ export function emptyState() {
     products: [],
     requests: [],
     ration: emptyRation(),
+    sport: emptySport(),
     journal: [],
     assistant: defaultAssistantState(),
     user: null,
@@ -138,6 +145,7 @@ export function openLocalData(storage) {
     const next = { ...current };
     if (scope.products) next.products = structuredClone(current.products);
     if (scope.ration) next.ration = structuredClone(current.ration);
+    if (scope.sport) next.sport = structuredClone(current.sport || emptySport());
     if (scope.journal) next.journal = (current.journal || []).slice();
     if (scope.assistant) next.assistant = structuredClone(current.assistant || defaultAssistantState());
     if (scope.requestId) {
@@ -510,7 +518,7 @@ export function openLocalData(storage) {
     // { ok, ... }; a failure discards the whole batch. Products the batch
     // creates or edits are journaled only when it names them in `productIds`.
     changePlan({ actor = "human", page = "", summary = "", productIds = [] } = {}, mutator) {
-      return apply({ ration: true, products: true, journal: true }, (next, context) => {
+      return apply({ ration: true, sport: true, products: true, journal: true }, (next, context) => {
         const ctx = actor === "ai" ? { ...context, actor: "ai" } : context;
         const result = mutator(next, ctx) || { ok: false };
         if (result.ok === false) return result;
@@ -522,7 +530,7 @@ export function openLocalData(storage) {
     },
 
     revertChangeSet(changeSetId, { actor = "human" } = {}) {
-      return apply({ ration: true, products: true, journal: true }, (next, context) =>
+      return apply({ ration: true, sport: true, products: true, journal: true }, (next, context) =>
         revertJournalChangeSet(next, changeSetId, { now: context.now, actor: actor === "ai" ? "ai" : context.actor })
       );
     },
@@ -626,6 +634,45 @@ export function openLocalData(storage) {
       return runRation({ type: "transferMeals", date: dateKey, mealId, minutes, confirmMidnight });
     },
 
+    // План тренировок: every change writes a Набор изменений.
+    setSportSpecialDay(dateKey, sessions) {
+      return runSport({ type: "setSpecialDay", date: dateKey, sessions });
+    },
+
+    removeSportSpecialDay(dateKey) {
+      return runSport({ type: "removeSpecialDay", date: dateKey });
+    },
+
+    addSportSession(dateKey, session) {
+      return runSport({ type: "addSession", date: dateKey, session });
+    },
+
+    updateSportSession(dateKey, sessionId, fields) {
+      return runSport({ type: "updateSession", date: dateKey, sessionId, fields });
+    },
+
+    removeSportSession(dateKey, sessionId) {
+      return runSport({ type: "removeSession", date: dateKey, sessionId });
+    },
+
+    // `days` start on `effectiveFrom`; seven days follow the weekdays.
+    releaseSportVersion({ effectiveFrom, days, weekdayBinding = days?.length === 7 } = {}) {
+      return runSport({ type: "releaseVersion", anchor: effectiveFrom, effectiveFrom, days, weekdayBinding });
+    },
+
+    // Учёт тренировок: a fact, never journaled.
+    markSportSession(dateKey, sessionId, state, actual = {}) {
+      return runSport({ type: "markSession", date: dateKey, sessionId, state, ...actual });
+    },
+
+    addUnplannedSport(dateKey, session) {
+      return runSport({ type: "addUnplanned", date: dateKey, session });
+    },
+
+    removeUnplannedSport(dateKey, sessionId) {
+      return runSport({ type: "removeUnplanned", date: dateKey, sessionId });
+    },
+
     createRequestFromRation({ dates, itemIds } = {}) {
       return apply({ addRequest: true }, (next, { now, actor }) => {
         const requestItems = plannedRationRequestItems(next, [...(dates || [])].sort(), new Set(itemIds || []));
@@ -649,6 +696,25 @@ export function openLocalData(storage) {
       });
     },
   };
+
+  function runSport(command) {
+    return apply({ sport: true, journal: true, assistant: true }, (next, context) => {
+      const result = applySportCommand(next, command, context);
+      if (result.ok === false) return result;
+      const diff = diffPlan(current, next);
+      if (diff) {
+        const set = appendChangeSet(next, {
+          now: context.now,
+          actor: context.actor === "ai" ? "ai" : "human",
+          page: "sport",
+          summary: describeSportCommand(command),
+          diff,
+        });
+        result.changeSetId = set.id;
+      }
+      return result;
+    });
+  }
 
   // Every ration command runs here. A command that changes the plan writes a
   // Набор изменений; marks and discrepancies are История and write none.
@@ -709,6 +775,7 @@ export function prepareState(source) {
     return normalized;
   }));
   result.requests = mergeRequests([], (result.requests || []).map((request) => migrateRequest(request)));
+  result.sport = normalizeSport(result.sport);
   result.journal = normalizeJournal(result.journal);
   result.assistant = normalizeAssistantState(result.assistant);
   return migrateRationState(result);
