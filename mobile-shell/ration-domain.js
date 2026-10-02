@@ -1,4 +1,4 @@
-export const RATION_SCHEMA_VERSION = 12;
+export const RATION_SCHEMA_VERSION = 13;
 
 export const RATION_MEAL_STATES = ["unmarked", "eaten", "changed", "skipped"];
 export const RATION_DISCREPANCY_KINDS = ["added", "excluded", "replaced", "amount"];
@@ -281,6 +281,41 @@ export function applyRationCommand(draft, command, context = {}) {
       : (context.now ? String(context.now).slice(0, 10) : todayDateKey()),
   };
   return runRationCommand(draft, command, ctx);
+}
+
+const COMMAND_SUMMARIES = {
+  addMeal: "Добавлен приём пищи",
+  updateMeal: "Изменён приём пищи",
+  removeMeal: "Удалён приём пищи",
+  addItem: "Добавлен продукт",
+  saveItem: "Изменён продукт",
+  removeItem: "Удалён продукт",
+  setPortion: "Изменена порция",
+  restoreMeal: "Возвращён приём пищи",
+  restoreItem: "Возвращён продукт",
+  setSpecialDay: "Особый день",
+  removeSpecialDay: "Особый день отменён",
+  withdrawRepeat: "Повтор отменён",
+  setRationProfile: "Изменён профиль рациона",
+};
+
+// Short human summary of a plan command for the change journal.
+export function describeRationCommand(command) {
+  const type = String(command?.type || "");
+  if (type === "repeatDays") {
+    return `${Number(command.length) === 7 ? "Неделя повторяется" : "День повторяется"} с ${shortRationDate(command.from)}`;
+  }
+  if (type === "releaseVersion" || type === "createCycle") {
+    return `Новый план с ${shortRationDate(command.effectiveFrom || command.anchor)}`;
+  }
+  const summary = COMMAND_SUMMARIES[type] || "Изменение рациона";
+  return command?.date ? `${summary} · ${shortRationDate(command.date)}` : summary;
+}
+
+function shortRationDate(value) {
+  const date = validDate(value);
+  if (!date || !DATE_PATTERN.test(String(value || ""))) return String(value || "");
+  return new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" }).format(date);
 }
 
 export function plannedRationRequestItems(state, dates, selectedItemIds) {

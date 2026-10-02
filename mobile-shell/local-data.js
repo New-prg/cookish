@@ -3,6 +3,7 @@ import {
   RATION_MEAL_STATES,
   RATION_SCHEMA_VERSION,
   createId,
+  describeRationCommand,
   emptyRation,
   applyRationCommand,
   formatRationDate,
@@ -21,6 +22,13 @@ import {
   todayDateKey,
   validateRationProfile,
 } from "./ration-domain.js";
+import {
+  appendChangeSet,
+  diffPlan,
+  normalizeJournal,
+  readChangeSets,
+  revertChangeSet as revertJournalChangeSet,
+} from "./plan-journal.js";
 
 export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationMeasure, rationOwner, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
@@ -33,6 +41,7 @@ export function emptyState() {
     products: [],
     requests: [],
     ration: emptyRation(),
+    journal: [],
     user: null,
     onboardingCompleted: true,
   };
@@ -120,6 +129,7 @@ export function openLocalData(storage) {
     const next = { ...current };
     if (scope.products) next.products = structuredClone(current.products);
     if (scope.ration) next.ration = structuredClone(current.ration);
+    if (scope.journal) next.journal = (current.journal || []).slice();
     if (scope.requestId) {
       next.requests = current.requests.map((request) =>
         request.id === scope.requestId ? structuredClone(request) : request
@@ -485,6 +495,32 @@ export function openLocalData(storage) {
       return runRation({ type: "removeItem", date: dateKey, mealId, itemId });
     },
 
+    // Applies several plan changes as one Набор изменений. `mutator(draft,
+    // context)` changes the draft through domain commands and returns
+    // { ok, ... }; a failure discards the whole batch. Products the batch
+    // creates or edits are journaled only when it names them in `productIds`.
+    changePlan({ actor = "human", page = "", summary = "", productIds = [] } = {}, mutator) {
+      return apply({ ration: true, products: true, journal: true }, (next, context) => {
+        const ctx = actor === "ai" ? { ...context, actor: "ai" } : context;
+        const result = mutator(next, ctx) || { ok: false };
+        if (result.ok === false) return result;
+        const diff = diffPlan(current, next, { productIds: [...productIds, ...(result.productIds || [])] });
+        if (!diff) return { ...result, ok: true, changed: false };
+        const set = appendChangeSet(next, { now: ctx.now, actor, page, summary: result.summary || summary, diff });
+        return { ...result, ok: true, changeSetId: set.id };
+      });
+    },
+
+    revertChangeSet(changeSetId, { actor = "human" } = {}) {
+      return apply({ ration: true, products: true, journal: true }, (next, context) =>
+        revertJournalChangeSet(next, changeSetId, { now: context.now, actor: actor === "ai" ? "ai" : context.actor })
+      );
+    },
+
+    changeSets(options) {
+      return readChangeSets(current, options);
+    },
+
     // `undo` is the payload returned by removeRationMeal/removeRationFood.
     undoRationRemoval(undo) {
       if (!["restoreMeal", "restoreItem"].includes(undo?.type)) return { ok: false, reason: "Нечего отменять." };
@@ -548,8 +584,25 @@ export function openLocalData(storage) {
     },
   };
 
+  // Every ration command runs here. A command that changes the plan writes a
+  // Набор изменений; marks and discrepancies are История and write none.
   function runRation(command) {
-    return apply({ ration: true, products: true }, (next, context) => applyRationCommand(next, command, context));
+    return apply({ ration: true, products: true, journal: true }, (next, context) => {
+      const result = applyRationCommand(next, command, context);
+      if (result.ok === false) return result;
+      const diff = diffPlan(current, next);
+      if (diff) {
+        const set = appendChangeSet(next, {
+          now: context.now,
+          actor: context.actor === "ai" ? "ai" : "human",
+          page: "ration",
+          summary: describeRationCommand(command),
+          diff,
+        });
+        result.changeSetId = set.id;
+      }
+      return result;
+    });
   }
 }
 
@@ -586,6 +639,7 @@ export function prepareState(source) {
     return normalized;
   }));
   result.requests = mergeRequests([], (result.requests || []).map((request) => migrateRequest(request)));
+  result.journal = normalizeJournal(result.journal);
   return migrateRationState(result);
 }
 

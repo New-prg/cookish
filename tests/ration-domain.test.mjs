@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  RATION_SCHEMA_VERSION,
   activeRationVersion,
   cycleDayFor,
   executeRationCommand,
@@ -85,7 +86,7 @@ function v11Blob() {
 test("old v11 blob opens after migration without losing data", () => {
   const state = openLocalData(memoryStorage(v11Blob())).load();
 
-  assert.equal(state.schemaVersion, 12);
+  assert.equal(state.schemaVersion, RATION_SCHEMA_VERSION);
   assert.equal(state.products.length, 2);
   const request = state.requests.find((item) => item.id === "request_1");
   assert.equal(request.responses[0].items[0].quantity, 1);

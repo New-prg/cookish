@@ -3,6 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 
 import {
+  SCHEMA_VERSION,
   activeResponses,
   appendRequestVersion,
   ensureSingleReceipt,
@@ -96,7 +97,7 @@ test("local data loads and commits through a memory adapter", () => {
     spreadsheetId: "legacy_sheet",
   });
   const loaded = openLocalData(storage).load();
-  assert.equal(loaded.schemaVersion, 12);
+  assert.equal(loaded.schemaVersion, SCHEMA_VERSION);
   assert.equal(loaded.onboardingCompleted, true);
   assert.equal(loaded.products[0].id, baseProduct.id);
   assert.equal(loaded.spreadsheetId, "legacy_sheet");
@@ -111,7 +112,7 @@ test("prepared state preserves completed first-run setup", () => {
     user: { email: "a@example.com" },
   });
 
-  assert.equal(result.schemaVersion, 12);
+  assert.equal(result.schemaVersion, SCHEMA_VERSION);
   assert.equal(result.onboardingCompleted, true);
 });
 
@@ -564,7 +565,7 @@ test("ration sync preserves an arbitrary number of meals and their products", ()
     rationAnchor: date,
   });
 
-  assert.equal(result.schemaVersion, 12);
+  assert.equal(result.schemaVersion, SCHEMA_VERSION);
   assert.equal(result.rationView, undefined);
   assert.equal(result.rationAnchor, undefined);
   const day = rationDayFor(result, date);
