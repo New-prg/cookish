@@ -186,7 +186,7 @@ import { planOwnerKey } from "./plan-cycle.js";
     pageModes[route] = pageModes[route] === "log" ? "plan" : "log";
     render();
     restoreModeScroll();
-    playModeTransition();
+    playModeTransition(pageModes[route]);
   });
 
   bindPageSwipe();
@@ -333,10 +333,14 @@ import { planOwnerKey } from "./plan-cycle.js";
     if (ROOT_PAGES.includes(next)) revealListItems(feedItems());
   }
 
-  function playModeTransition() {
+  // Учёт sits above План: План scrolls up from below, Учёт comes down from above.
+  function playModeTransition(mode) {
     if (!motionAllowed()) return;
-    app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
-    revealListItems(feedItems());
+    const from = mode === "plan" ? 40 : -40;
+    app.animate([
+      { transform: `translate3d(0,${from}%,0)`, opacity: 0.2 },
+      { transform: "none", opacity: 1 },
+    ], { duration: 280, easing: MOTION_EASING });
   }
 
   // Cards and rows of the current list, in screen order.
