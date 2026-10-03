@@ -15,6 +15,7 @@ import {
   rationMeasure,
   rationOwner,
   readRationDay,
+  readRationDayActual,
   readRationDayNutrition,
   readRationHistoryDay,
   readRationRange,
@@ -45,7 +46,7 @@ import {
   STRICTNESS_LEVELS,
 } from "./nudges.js";
 
-export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationMeasure, rationOwner, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
+export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationMeasure, rationOwner, readRationDayActual, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
 export const STORAGE_KEY = "cookish.android.data.v1";
 export const SCHEMA_VERSION = RATION_SCHEMA_VERSION;

@@ -3,7 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" content="#f5f4ef" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#121412" media="(prefers-color-scheme: dark)" />
     <title>Cookish</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -31,12 +32,9 @@
 
     <button id="page-slider" class="page-slider" type="button">
       <span class="page-slider-pages">
-        <span id="page-slider-prev" class="page-slider-neighbour"></span>
+        <span class="page-slider-side prev"><span id="page-slider-prev" class="page-slider-neighbour"></span></span>
         <strong id="page-slider-current"></strong>
-        <span id="page-slider-next" class="page-slider-neighbour"></span>
-      </span>
-      <span id="page-slider-modes" class="page-slider-modes">
-        <span data-mode="log">учёт</span><span aria-hidden="true">·</span><span data-mode="plan">план</span>
+        <span class="page-slider-side next"><span id="page-slider-next" class="page-slider-neighbour"></span></span>
       </span>
     </button>
 
