@@ -8,6 +8,7 @@ import {
   executeRationCommand,
   migrateRationState,
   readRationDay,
+  readRationDayActual,
   readRationDayNutrition,
   readRationHistoryDay,
   readRationRange,
@@ -750,4 +751,54 @@ test("ration: a profile filled in before any plan survives a restart", () => {
   assert.equal(state.ration.profile.weightKg, 72);
   assert.equal(state.ration.profile.targetCalories, 2100);
   assert.deepEqual(state.ration.versions, []);
+});
+
+test("the actual day counts only eaten meals and follows their discrepancies", () => {
+  const date = "2026-10-03";
+  const state = {
+    products: [
+      { id: "oats", name: "Овсянка", unit: "г", nutrition: { calories: 350, protein: 12, fat: 6, carbs: 60 } },
+      { id: "kefir", name: "Кефир", unit: "мл", nutrition: { calories: 50, protein: 3, fat: 2.5, carbs: 4 } },
+      { id: "rice", name: "Рис", unit: "г", nutrition: { calories: 340, protein: 7, fat: 1, carbs: 75 } },
+      { id: "bread", name: "Хлеб", unit: "шт.", nutrition: { calories: 250 } },
+    ],
+    ration: {
+      versions: [],
+      specialDays: {
+        [`local|${date}`]: {
+          date,
+          owner: "local",
+          meals: [
+            { id: "breakfast", name: "Завтрак", time: "08:00", items: [{ id: "i1", productId: "oats", portionSize: 100 }, { id: "i2", productId: "kefir", portionSize: 200 }] },
+            { id: "lunch", name: "Обед", time: "13:00", items: [{ id: "i3", productId: "rice", portionSize: 100 }] },
+            { id: "dinner", name: "Ужин", time: "19:00", items: [{ id: "i4", productId: "bread", portionSize: 1 }] },
+          ],
+        },
+      },
+      history: {
+        [`local|${date}`]: {
+          date,
+          owner: "local",
+          meals: {
+            breakfast: { state: "changed", discrepancies: [
+              { kind: "amount", productId: "oats", amount: 50, measureUnit: "г" },
+              { kind: "excluded", productId: "kefir" },
+              { kind: "added", productId: "rice", name: "Рис", amount: 10, measureUnit: "г" },
+              { kind: "added", name: "Печенье" },
+            ] },
+            lunch: { state: "unmarked", discrepancies: [] },
+          },
+        },
+      },
+    },
+  };
+  const day = readRationDayActual(state, date);
+  assert.equal(day.planned.calories, 350 + 100 + 340, "a piece without weight has no ккал");
+  const breakfast = day.meals.find((meal) => meal.mealId === "breakfast");
+  assert.equal(breakfast.ate, true);
+  assert.equal(breakfast.actual.calories, 175 + 34, "half the oats, no kefir, 10 г of rice; unknown food counts as zero");
+  assert.deepEqual(breakfast.items.map((item) => [item.amount, item.excluded]), [[50, false], [200, true]]);
+  assert.deepEqual(breakfast.added.map((item) => item.name), ["Рис", "Печенье"]);
+  assert.equal(day.meals.find((meal) => meal.mealId === "lunch").actual.calories, 0, "an unmarked meal is not eaten");
+  assert.equal(day.eaten.calories, 209);
 });

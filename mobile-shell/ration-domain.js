@@ -211,6 +211,86 @@ export function readRationDayNutrition(state, dateKey) {
   return result;
 }
 
+// One day of Учёт by meal: the plan as it stands and what was actually eaten.
+// A meal counts as eaten only in «съедено» or «изменено»; discrepancies then
+// drop products (excluded), change amounts (amount), swap products (replaced)
+// and add products outside the plan (added). Unknown КБЖУ counts as zero.
+export function readRationDayActual(state, dateKey) {
+  const day = readRationDay(state, dateKey);
+  const history = readRationHistoryDay(state, dateKey);
+  const products = state?.products || [];
+  const productOf = (productId) => products.find((value) => value.id === productId && !value.deletedAt)
+    || products.find((value) => value.id === productId) || null;
+  const zero = () => ({ calories: 0, protein: 0, fat: 0, carbs: 0 });
+  const nutritionOf = (product, amount, unit) => {
+    const result = zero();
+    const portion = portionToBase(amount, unit);
+    if (portion.kind === "piece" || !product?.nutrition) return result;
+    ["calories", "protein", "fat", "carbs"].forEach((field) => {
+      const value = Number(product.nutrition[field]);
+      if (Number.isFinite(value)) result[field] = value * portion.base / 100;
+    });
+    return result;
+  };
+  const add = (target, values) => ["calories", "protein", "fat", "carbs"].forEach((field) => { target[field] += values[field]; });
+  const rounded = (values) => Object.fromEntries(Object.entries(values).map(([key, value]) => [key, round2(value)]));
+  const planned = zero();
+  const eaten = zero();
+  const meals = (day?.meals || []).map((meal) => {
+    const record = history?.meals?.[meal.id] || {};
+    const mealState = MEAL_STATES.has(record.state) ? record.state : "unmarked";
+    const discrepancies = Array.isArray(record.discrepancies) ? record.discrepancies : [];
+    const ate = mealState === "eaten" || mealState === "changed";
+    const mealPlanned = zero();
+    const mealActual = zero();
+    const items = (meal.items || []).map((item) => {
+      const product = productOf(item.productId);
+      const measure = rationMeasure(product);
+      const unit = String(item.measureUnit || measure.unit);
+      const plannedAmount = Number(item.portionSize) || measure.defaultPortion;
+      const find = (kind) => discrepancies.findIndex((entry) => entry.kind === kind && item.productId && entry.productId === item.productId);
+      const excludedIndex = find("excluded");
+      const amountIndex = find("amount");
+      const replacedIndex = find("replaced");
+      const replaced = replacedIndex >= 0 ? discrepancies[replacedIndex] : null;
+      const amount = amountIndex >= 0 ? Number(discrepancies[amountIndex].amount) || 0 : plannedAmount;
+      const eatenProduct = replaced?.replacedProductId ? productOf(replaced.replacedProductId) : product;
+      const plannedValues = nutritionOf(product, plannedAmount, unit);
+      const actualValues = nutritionOf(eatenProduct, amount, unit);
+      add(mealPlanned, plannedValues);
+      const excluded = excludedIndex >= 0;
+      if (ate && !excluded) add(mealActual, actualValues);
+      return {
+        itemId: item.id,
+        productId: item.productId || "",
+        name: product?.name || item.name || "Продукт",
+        replacedName: replaced ? (productOf(replaced.replacedProductId)?.name || replaced.replacedName || "") : "",
+        unit,
+        plannedAmount,
+        amount,
+        excluded,
+        excludedIndex,
+        amountIndex,
+        calories: round2(actualValues.calories),
+        plannedCalories: round2(plannedValues.calories),
+      };
+    });
+    const added = discrepancies.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry.kind === "added").map(({ entry, index }) => {
+      const product = entry.productId ? productOf(entry.productId) : null;
+      const measure = rationMeasure(product);
+      const unit = String(entry.measureUnit || measure.unit);
+      const amount = Number(entry.amount) || measure.defaultPortion;
+      const values = nutritionOf(product, amount, unit);
+      if (ate) add(mealActual, values);
+      return { index, productId: entry.productId || "", name: product?.name || entry.name || "Продукт", amount, unit, calories: round2(values.calories) };
+    });
+    add(planned, mealPlanned);
+    add(eaten, mealActual);
+    return { mealId: meal.id, state: mealState, ate, items, added, planned: rounded(mealPlanned), actual: rounded(mealActual), discrepancies: discrepancies.length };
+  });
+  return { date: dateKey, meals, planned: rounded(planned), eaten: rounded(eaten) };
+}
+
 function portionToBase(amount, unit) {
   const value = String(unit || "").toLowerCase();
   if (value.includes("шт")) return { kind: "piece" };

@@ -14,6 +14,7 @@ import {
   productPurchasedTotal,
   rationDayFor,
   rationMeasure,
+  readRationDayActual,
   readRationDayNutrition,
   readRationHistoryDay,
   receiptLine,
@@ -42,6 +43,7 @@ import {
   readSportDayEnergy,
   readSportLogDay,
 } from "./sport-domain.js";
+import { planOwnerKey } from "./plan-cycle.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
   // на 100 г (для напитков — на 100 мл) и могут отличаться у конкретных марок.
@@ -79,6 +81,7 @@ import {
   const ROOT_PAGES = ["ration", "sport", "requests"];
   const PAGE_TITLES = { ration: "Рацион", sport: "Спорт", requests: "Покупки" };
   const PAGE_MODE_LABELS = { log: "учёт", plan: "план" };
+  const PAGE_MODE_TITLES = { log: "Учёт", plan: "План" };
 
   const localData = openLocalData(browserStorage(window.localStorage));
   let state = localData.load();
@@ -114,9 +117,19 @@ import {
   // Pages with modes remember them for the session; Покупки has none.
   const pageModes = { ration: "log", sport: "log" };
   // Each mode keeps its feed length and scroll position until the end of the session.
-  const FEED_STEP = 14;
-  const feedDays = { ration: { log: FEED_STEP, plan: FEED_STEP }, sport: { log: FEED_STEP, plan: FEED_STEP } };
+  // A feed opens on one day; the button under it adds 3 days, 3 more, then the rest.
+  const FEED_PLAN_DAYS = 14;
+  const feedDays = { ration: { log: 1, plan: 1 }, sport: { log: 1, plan: 1 } };
+  // With more than one day each day is a row; one row per mode is open.
+  const openFeedDay = { ration: { log: "", plan: "" }, sport: { log: "", plan: "" } };
+  // The open meal row ("date|mealId") and the meal whose «вне плана» form is open.
+  let openMealKey = "";
+  let extraMealKey = "";
   const modeScroll = { ration: { log: 0, plan: 0 }, sport: { log: 0, plan: 0 } };
+  // Motion: screens slide by depth, root pages by their order (see navigate).
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+  const ROUTE_DEPTH = { profile: 1, "ration-profile": 1, "request-edit": 1, "product-edit": 2, "request-answer": 2 };
+  const MOTION_EASING = "cubic-bezier(.2, .8, .2, 1)";
   let lastRootPage = "ration";
   let profileReturn = "ration";
   let routeId = null;
@@ -179,6 +192,7 @@ import {
     pageModes[route] = pageModes[route] === "log" ? "plan" : "log";
     render();
     restoreModeScroll();
+    playModeTransition(pageModes[route]);
   });
 
   bindPageSwipe();
@@ -289,6 +303,7 @@ import {
       draftItems = [];
     }
     rememberModeScroll();
+    const previous = route;
     route = next;
     routeId = id;
     routeSubId = subId;
@@ -297,7 +312,67 @@ import {
     // The page itself never scrolls: only <main> does (see styles.css).
     app.scrollTop = 0;
     render();
+    // request-detail redirects to request-edit inside render(): that call animates.
+    if (route !== next) return;
     restoreModeScroll();
+    playRouteTransition(previous, next, options.step);
+  }
+
+  // The first cards of a list rise one after another. Reduced motion turns it off.
+  function motionAllowed() {
+    return !reducedMotion?.matches && typeof app.animate === "function";
+  }
+
+  function playRouteTransition(previous, next, step = 0) {
+    if (previous === next || !motionAllowed()) return;
+    const rootStep = step || Math.sign(ROOT_PAGES.indexOf(next) - ROOT_PAGES.indexOf(previous));
+    if (ROOT_PAGES.includes(previous) && ROOT_PAGES.includes(next)) {
+      app.animate([{ transform: `translate3d(${rootStep * 32}%,0,0)`, opacity: 0.4 }, { transform: "none", opacity: 1 }], { duration: 180, easing: "ease-out" });
+      revealListItems(feedItems());
+      return;
+    }
+    const forward = (ROUTE_DEPTH[next] || 0) >= (ROUTE_DEPTH[previous] || 0);
+    app.animate([
+      { transform: `translate3d(${forward ? 28 : -28}px,0,0)`, opacity: 0 },
+      { transform: "none", opacity: 1 },
+    ], { duration: 220, easing: MOTION_EASING });
+    if (ROOT_PAGES.includes(next)) revealListItems(feedItems());
+  }
+
+  // Учёт sits above План: План scrolls up from below, Учёт comes down from above.
+  function playModeTransition(mode) {
+    if (!motionAllowed()) return;
+    const from = mode === "plan" ? 40 : -40;
+    app.animate([
+      { transform: `translate3d(0,${from}%,0)`, opacity: 0.2 },
+      { transform: "none", opacity: 1 },
+    ], { duration: 280, easing: MOTION_EASING });
+  }
+
+  // Cards and rows of the current list, in screen order.
+  function feedItems() {
+    return [...app.querySelectorAll(".ration-feed > *, #app > .request-link")];
+  }
+
+  function feedItemKey(item) {
+    return item.dataset.date || item.dataset.gap || item.dataset.from || item.dataset.id || "";
+  }
+
+  function revealListItems(items, { limit = 8 } = {}) {
+    if (!motionAllowed()) return;
+    items.slice(0, limit).forEach((item, index) => {
+      item.animate([
+        { opacity: 0, transform: "translate3d(0,12px,0)" },
+        { opacity: 1, transform: "none" },
+      ], { duration: 260, delay: index * 35, easing: MOTION_EASING, fill: "backwards" });
+    });
+  }
+
+  // Re-renders the list and lets only the cards that were not there rise in.
+  function renderRevealingNew(draw) {
+    const before = new Set(feedItems().map(feedItemKey));
+    draw();
+    revealListItems(feedItems().filter((item) => feedItemKey(item) && !before.has(feedItemKey(item))));
   }
 
   function rememberModeScroll() {
@@ -479,6 +554,8 @@ import {
     const rootPage = ROOT_PAGES.includes(route);
     if (rootPage) lastRootPage = route;
     document.body.classList.toggle("root-page", rootPage);
+    // The mode colors the whole UI: green in Учёт, blue in План.
+    document.body.dataset.mode = pageModes[rootPage ? route : lastRootPage] || "log";
     renderPageSlider();
     renderAssistantHandle();
     configureHeader();
@@ -500,8 +577,9 @@ import {
 
   function configureHeader() {
     const config = {
-      ration: [PAGE_TITLES.ration, pageModes.ration === "plan" ? "Запросить" : ""],
-      sport: [PAGE_TITLES.sport, pageModes.sport === "plan" ? "Расписание" : ""],
+      // Root pages with modes name the mode; the slider names the page.
+      ration: [PAGE_MODE_TITLES[pageModes.ration], ""],
+      sport: [PAGE_MODE_TITLES[pageModes.sport], ""],
       requests: [PAGE_TITLES.requests, "Создать"],
       "product-edit": ["Продукт", "Сохранить"],
       "request-edit": ["", "Готово"],
@@ -534,10 +612,6 @@ import {
     document.getElementById("page-slider-prev").textContent = PAGE_TITLES[ROOT_PAGES[index - 1]] || "";
     document.getElementById("page-slider-current").textContent = PAGE_TITLES[route];
     document.getElementById("page-slider-next").textContent = PAGE_TITLES[ROOT_PAGES[index + 1]] || "";
-    document.getElementById("page-slider-modes").hidden = !mode;
-    pageSlider.querySelectorAll("[data-mode]").forEach((label) => {
-      label.classList.toggle("active", label.dataset.mode === mode);
-    });
     pageSlider.setAttribute("aria-disabled", String(!mode));
     pageSlider.setAttribute("aria-label", mode
       ? `${PAGE_TITLES[route]}, режим ${PAGE_MODE_LABELS[mode]}. Переключить на ${PAGE_MODE_LABELS[mode === "log" ? "plan" : "log"]}`
@@ -565,9 +639,8 @@ import {
     let start = null;
     let dragging = false;
     let suppressClick = false;
-    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     const animate = (frames) => {
-      if (!reducedMotion?.matches && typeof app.animate === "function") app.animate(frames, { duration: 180, easing: "ease-out" });
+      if (motionAllowed()) app.animate(frames, { duration: 180, easing: "ease-out" });
     };
     const stopDrag = () => {
       start = null;
@@ -621,8 +694,7 @@ import {
         animate([{ transform: offset }, { transform: "none" }]);
         return;
       }
-      navigate(next);
-      animate([{ transform: `translate3d(${step * 32}%,0,0)`, opacity: 0.4 }, { transform: "none", opacity: 1 }]);
+      navigate(next, null, null, { step });
     });
     app.addEventListener("pointercancel", stopDrag);
     // A drag that ends over a button must not also press it.
@@ -1141,17 +1213,202 @@ import {
   }
 
   function sportLogFeed(today) {
-    const pastDates = Array.from({ length: feedDays.sport.log }, (_, index) => addRationDays(today, -(index + 1)));
-    return `${sportTodayCard(today)}
-      ${pastDates.map((dateKey) => sportPastDayCard(dateKey, today)).join("")}
-      <button class="feed-more" data-page="sport" type="button">Показать ещё</button>`;
+    const available = feedAvailable("sport", "log", today);
+    const dates = feedDates("sport", "log", today);
+    const body = dates.length === 1 ? sportTodayCard(today) : dates.map((dateKey) => feedDayRow("sport", dateKey, today, {
+      kind: "sport-log-day",
+      ...sportDaySummary(dateKey, true),
+      body: () => dateKey === today ? sportTodayCard(today) : sportPastDayCard(dateKey, today),
+    })).join("");
+    return `${feedHead("log", dates, available)}${body}${feedFooter("sport", "log", dates.length, available)}`;
   }
 
+
   function sportPlanFeed(today) {
-    const dates = Array.from({ length: feedDays.sport.plan }, (_, index) => addRationDays(today, index + 1));
-    return `${dates.map((dateKey) => sportPlanDayCard(dateKey, today)).join("")}
-      <button class="feed-more" data-page="sport" type="button">Показать ещё</button>`;
+    const dates = feedDates("sport", "plan", today);
+    const body = dates.length === 1 ? sportPlanDayCard(dates[0], today) : dates.map((dateKey) => feedDayRow("sport", dateKey, today, {
+      kind: "sport-plan-row",
+      ...sportDaySummary(dateKey, false),
+      body: () => sportPlanDayCard(dateKey, today),
+    })).join("");
+    const week = `<button class="text-button sport-week-open" type="button">Расписание недели</button>`;
+    const available = feedAvailable("sport", "plan", today);
+    return `${feedHead("plan", dates, available)}${body}${feedFooter("sport", "plan", dates.length, available, week)}`;
   }
+
+  // The row of a Спорт day: what was planned or done, in a few words.
+  function sportDaySummary(dateKey, actual) {
+    const day = readSportDay(state, dateKey);
+    const log = readSportLogDay(state, dateKey);
+    const sessions = sportSortedSessions(day);
+    const unplanned = log?.unplanned || [];
+    const energy = readSportDayEnergy(state, dateKey);
+    const kcal = energy.weightKnown && (sessions.length || unplanned.length)
+      ? `≈ ${number(actual ? energy.actual : energy.planned)} ккал` : "";
+    if (!sessions.length && !unplanned.length) return { dot: "none", status: day ? "отдых" : "тренировок нет", kcal };
+    const parts = sessions.map((session) => {
+      const record = log?.sessions?.[session.id];
+      const stateLabel = actual && record?.state && record.state !== "unmarked" ? ` · ${SPORT_STATE_LABELS[record.state]}` : "";
+      return `${SPORT_TYPE_LABELS[session.type]} ${number(session.durationMin)} мин${stateLabel}`;
+    });
+    unplanned.forEach((session) => parts.push(`${SPORT_TYPE_LABELS[session.type]} · вне плана`));
+    const states = sessions.map((session) => log?.sessions?.[session.id]?.state || "unmarked");
+    const dot = !actual ? (day?.source === "special" ? "warn" : "ok")
+      : states.some((value) => value === "skipped" || value === "changed") ? "warn"
+      : states.some((value) => value === "done") || unplanned.length ? "ok" : "none";
+    return { dot, status: parts.join(", "), kcal };
+  }
+
+
+  // The first date a page has anything for: a plan version, a Особый день or
+  // a mark. Days before it are empty for sure, so the feed does not show them.
+  function feedDataStart(plan, log) {
+    const owner = planOwnerKey(state.user?.email || "local");
+    const dates = (plan?.versions || [])
+      .filter((version) => planOwnerKey(version.owner) === owner)
+      .map((version) => version.effectiveFrom);
+    [plan?.specialDays, log].forEach((map) => Object.keys(map || {}).forEach((key) => {
+      const [keyOwner, dateKey] = key.split("|");
+      if (keyOwner === owner) dates.push(dateKey);
+    }));
+    return dates.filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))).sort()[0] || "";
+  }
+  function feedAvailable(page, mode, today) {
+    const source = page === "ration" ? state.ration : state.sport;
+    // Without any plan more empty days add nothing.
+    if (mode === "plan") return feedDataStart(source, null) ? FEED_PLAN_DAYS : 1;
+    const start = feedDataStart(source, page === "ration" ? source?.history : source?.log);
+    if (!start || start >= today) return 1;
+    return Math.min(366, Math.round((parseRationDate(today) - parseRationDate(start)) / 86400000) + 1);
+  }
+
+  // Учёт runs from today back, План from tomorrow on.
+  function feedDates(page, mode, today) {
+    const count = Math.max(1, Math.min(feedDays[page][mode], feedAvailable(page, mode, today)));
+    return Array.from({ length: count }, (_, index) => addRationDays(today, mode === "plan" ? index + 1 : -index));
+  }
+
+  function feedNextCount(count, available) {
+    return Math.min(available, count <= 1 ? 4 : count < 7 ? 7 : available);
+  }
+
+  function dayWord(count) {
+    const tail = count % 100;
+    if (tail >= 11 && tail <= 14) return "дней";
+    if (count % 10 === 1) return "день";
+    return count % 10 >= 2 && count % 10 <= 4 ? "дня" : "дней";
+  }
+
+  function feedHead(mode, dates, available) {
+    const log = mode === "log";
+    const count = dates.length;
+    const first = dates[0];
+    const last = dates[count - 1];
+    const title = count === 1 ? (log ? "Сегодня" : "Завтра")
+      : count >= available && available > 7 ? (log ? "Вся история" : "Весь план")
+      : count === 7 ? (log ? "Последняя неделя" : "Следующая неделя")
+      : `${log ? "Последние" : "Следующие"} ${count} ${dayWord(count)}`;
+    const subtitle = count === 1 ? rationLongDate(first)
+      : log ? `${rationDayMonth(last)} — ${rationDayMonth(first)}` : `${rationDayMonth(first)} — ${rationDayMonth(last)}`;
+    return `<header class="feed-head"><h2>${title}</h2><p>${subtitle}</p></header>`;
+  }
+
+  function feedFooter(page, mode, count, available, extra = "") {
+    const log = mode === "log";
+    const next = feedNextCount(count, available);
+    const label = count <= 1 ? (log ? "Показать вчера и раньше" : "Показать следующие дни")
+      : next >= available && available > 7 ? (log ? "Вся история" : "Весь план на две недели")
+      : `Ещё ${next - count} ${dayWord(next - count)}`;
+    const more = count < available ? `<button class="feed-more text-button" data-page="${page}" type="button">${label}</button>` : "";
+    const less = count > 1 ? `<button class="feed-less text-button" data-page="${page}" type="button">Свернуть</button>` : "";
+    return more || less || extra ? `<footer class="feed-footer">${more}${less}${extra}</footer>` : "";
+  }
+
+  function feedDayTitle(dateKey, today) {
+    if (dateKey === today) return "Сегодня";
+    if (dateKey === addRationDays(today, -1)) return "Вчера";
+    if (dateKey === addRationDays(today, 1)) return "Завтра";
+    return `${rationShortWeekday(dateKey)}, ${rationDayMonth(dateKey)}`;
+  }
+
+  const ICON_CHEVRON = `<svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const ICON_CHECK = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const ICON_DASH = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 12h10" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>`;
+  const ICON_SPARK = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 3c.6 4.6 2.4 6.4 7 7-4.6.6-6.4 2.4-7 7-.6-4.6-2.4-6.4-7-7 4.6-.6 6.4-2.4 7-7z" fill="currentColor"/></svg>`;
+
+  // A day as one row: a dot for its state, the date, a short status and ккал.
+  function feedDayRow(page, dateKey, today, { kind, dot = "none", status = "", kcal = "", body }) {
+    const open = openFeedDay[page][pageModes[page]] === dateKey;
+    return `<article class="feed-day ${kind}${dateKey === today ? " is-today" : ""}${open ? " open" : ""}" data-date="${dateKey}">
+      <button class="feed-day-toggle" data-page="${page}" data-date="${dateKey}" type="button" aria-expanded="${open}">
+        <span class="feed-dot dot-${dot}" aria-hidden="true"></span>
+        <span class="feed-day-text"><strong>${feedDayTitle(dateKey, today)}</strong><small>${escapeHtml(status)}</small></span>
+        ${kcal ? `<span class="feed-day-kcal">${kcal}</span>` : ""}
+        ${ICON_CHEVRON}
+      </button>
+      ${open ? `<div class="feed-day-body">${body()}</div>` : ""}
+    </article>`;
+  }
+
+  function feedEmptyState({ icon, title, text, cta, secondary = "" }) {
+    return `<section class="feed-empty">
+      <span class="feed-empty-icon" aria-hidden="true">${icon}</span>
+      <h3>${title}</h3>
+      <p>${text}</p>
+      <button class="button feed-assistant" type="button">${ICON_SPARK}<span>${cta}</span></button>
+      ${secondary}
+    </section>`;
+  }
+
+  function bindFeed() {
+    document.querySelectorAll(".feed-more").forEach((button) => {
+      button.onclick = () => {
+        const page = button.dataset.page;
+        const mode = pageModes[page];
+        const today = todayDateKey();
+        feedDays[page][mode] = feedNextCount(Math.min(feedDays[page][mode], feedAvailable(page, mode, today)), feedAvailable(page, mode, today));
+        openFeedDay[page][mode] = "";
+        openMealKey = "";
+        renderRevealingNew(render);
+      };
+    });
+    document.querySelectorAll(".feed-less").forEach((button) => {
+      button.onclick = () => {
+        const page = button.dataset.page;
+        feedDays[page][pageModes[page]] = 1;
+        openFeedDay[page][pageModes[page]] = "";
+        openMealKey = "";
+        render();
+        app.scrollTop = 0;
+        playModeTransition(pageModes[page]);
+      };
+    });
+    document.querySelectorAll(".feed-day-toggle").forEach((button) => {
+      button.onclick = () => {
+        const page = button.dataset.page;
+        const mode = pageModes[page];
+        openFeedDay[page][mode] = openFeedDay[page][mode] === button.dataset.date ? "" : button.dataset.date;
+        openMealKey = "";
+        render();
+        revealPanel(`.feed-day[data-date="${button.dataset.date}"] .feed-day-body`);
+      };
+    });
+    document.querySelectorAll(".feed-assistant").forEach((button) => {
+      button.onclick = () => openAssistant();
+    });
+  }
+
+  // A panel that just opened grows in from its row.
+  function revealPanel(selector) {
+    if (!motionAllowed()) return;
+    document.querySelectorAll(selector).forEach((panel) => {
+      panel.animate([{ opacity: 0, transform: "translate3d(0,-6px,0)" }, { opacity: 1, transform: "none" }], { duration: 220, easing: MOTION_EASING });
+    });
+  }
+
+
+
+
 
   function sportSortedSessions(day) {
     return [...(day?.sessions || [])].sort((a, b) => String(a.time).localeCompare(String(b.time)));
@@ -1254,17 +1511,29 @@ import {
       <span class="meal-event-time">${escapeHtml(session.time)}</span>
       <div><strong>${SPORT_TYPE_LABELS[session.type]}</strong><small>${sportSessionLine(session)}</small></div>
     </button>`).join("");
+    const add = `<button class="text-button sport-plan-add" data-date="${dateKey}" type="button">＋ Тренировка</button>`;
+    const label = rationDayLabel(dateKey, today);
+    const special = day?.source === "special" ? `<p class="feed-note">Особый день</p>` : "";
+    // A day without sessions is one line: the date, «отдых» and the add button.
+    if (!sessions.length) {
+      return `<article class="ration-day-card sport-plan-day is-empty" data-date="${dateKey}">
+        ${special}
+        <header class="ration-day-card-header">
+          <div class="ration-day-card-date"><span>${label}</span><h3>${rationDayMonth(dateKey)}</h3></div>
+          <small class="muted ration-day-card-empty">${day ? "отдых" : ""}</small>
+          ${add}
+        </header>
+      </article>`;
+    }
     return `<article class="ration-day-card sport-plan-day" data-date="${dateKey}">
+      ${special}
       <header class="ration-day-card-header">
-        <div class="ration-day-card-date">
-          <span>${rationDayLabel(dateKey, today)}${day?.source === "special" ? " · Особый день" : ""}</span>
-          <h3>${rationDayMonth(dateKey)}</h3>
-        </div>
+        <div class="ration-day-card-date"><span>${label}</span><h3>${rationDayMonth(dateKey)}</h3></div>
         ${sportEnergyTotals(dateKey)}
       </header>
-      ${sessions.length ? `<div class="sport-plan-sessions">${rows}</div>` : `<p class="muted ration-day-card-empty">Отдых.</p>`}
+      <div class="sport-plan-sessions">${rows}</div>
       ${sportWeightHint(dateKey)}
-      <button class="text-button sport-plan-add" data-date="${dateKey}" type="button">＋ Тренировка</button>
+      ${add}
     </article>`;
   }
 
@@ -1299,19 +1568,16 @@ import {
     document.querySelectorAll(".sport-plan-add").forEach((button) => {
       button.onclick = () => openSportSessionDialog({ mode: "plan-add", date: button.dataset.date });
     });
+    document.querySelectorAll(".sport-week-open").forEach((button) => {
+      button.onclick = () => openSportWeekEditor();
+    });
     document.querySelectorAll(".sport-set-weight").forEach((button) => {
       button.onclick = () => {
         rationProfileReturn = "sport";
         navigate("ration-profile");
       };
     });
-    document.querySelectorAll(".feed-more").forEach((button) => {
-      button.onclick = () => {
-        const mode = pageModes[button.dataset.page];
-        feedDays[button.dataset.page][mode] = Math.min(feedDays[button.dataset.page][mode] + FEED_STEP, 366);
-        render();
-      };
-    });
+    bindFeed();
   }
 
   function markSport(dateKey, sessionId, mark, actual = {}) {
@@ -3394,47 +3660,222 @@ import {
     if (focusItemId) document.querySelector(`.ration-food-row[data-item-id="${focusItemId}"] .ration-food-input`)?.focus();
   }
 
-  // Учёт: the «Сегодня» card, then past days in reverse order.
+  // Учёт: «Сегодня» with its meals; more days come as rows that open.
   function rationLogFeed(today) {
-    const day = rationDayFor(state, today) || { date: today, meals: [] };
-    const historyDay = readRationHistoryDay(state, today);
-    const nutrition = readRationDayNutrition(state, today);
-    const profile = state.ration?.profile || {};
-    const meals = rationSortedMeals(day);
-    const pastDates = Array.from({ length: feedDays.ration.log }, (_, index) => addRationDays(today, -(index + 1)));
-    return `
-      <section class="ration-today ration-day-card" data-date="${today}">
-        <header class="ration-today-header">
-          <div class="ration-today-date">
-            <span>Сегодня · ${rationWeekday(today)}</span>
-            <h2>${rationDayMonth(today)}</h2>
-          </div>
-          <div class="ration-today-totals">
-            <strong>${number(nutrition.totals.calories)} ккал</strong>
-            <span>Б ${number(nutrition.totals.protein)} · Ж ${number(nutrition.totals.fat)} · У ${number(nutrition.totals.carbs)}</span>
-            ${Number(profile.targetCalories)
-              ? `<em>Цель ${number(profile.targetCalories)} ккал</em>`
-              : `<button id="ration-set-goal" class="text-button ration-set-goal" type="button">Задать цель</button>`}
-          </div>
-        </header>
-        <div class="ration-today-meals">
-          ${meals.length ? meals.map((meal) => rationTodayMealCard(today, meal, historyDay, nutrition)).join("") : `<p class="ration-today-empty muted">На сегодня приёмов пока нет. Добавьте первый приём пищи или переключитесь на План.</p>`}
-        </div>
-        <button id="ration-add-meal" class="keep-add-item" type="button"><span>＋</span> Добавить приём пищи</button>
-      </section>
-      ${pastDates.map((dateKey) => rationPastDayCard(dateKey, today)).join("")}
-      <button class="feed-more" data-page="ration" type="button">Показать ещё</button>
-    `;
+    const available = feedAvailable("ration", "log", today);
+    const dates = feedDates("ration", "log", today);
+    const body = dates.length === 1 ? `<section class="ration-today" data-date="${today}">${rationLogDay(today, true)}</section>` : dates.map((dateKey) => feedDayRow("ration", dateKey, today, {
+      kind: `ration-log-day${dateKey === today ? " ration-today" : " ration-past-day"}`,
+      ...rationLogSummary(dateKey),
+      body: () => rationLogDay(dateKey, false),
+    })).join("");
+    return `${feedHead("log", dates, available)}${body}${feedFooter("ration", "log", dates.length, available)}`;
   }
 
-  // План: tomorrow first, then the following days.
-  function rationPlanFeed(today) {
-    const dates = Array.from({ length: feedDays.ration.plan }, (_, index) => addRationDays(today, index + 1));
-    return `
-      ${dates.map((dateKey) => rationPlanDayCard(dateKey, today)).join("")}
-      <button class="feed-more" data-page="ration" type="button">Показать ещё</button>
-    `;
+  function rationLogSummary(dateKey) {
+    const actual = readRationDayActual(state, dateKey);
+    const meals = actual.meals;
+    if (!meals.length) return { dot: "none", status: "приёмов пищи не было", kcal: "" };
+    const done = meals.filter((meal) => meal.ate).length;
+    const changed = meals.filter((meal) => meal.state === "changed").length;
+    const skipped = meals.filter((meal) => meal.state === "skipped").length;
+    const marked = done + skipped;
+    const status = !marked ? "не отмечено"
+      : done === meals.length && !changed ? `всё съедено · ${meals.length} ${mealWord(meals.length)}`
+      : [`${done} из ${meals.length} съедено`, changed ? `${changed} изменено` : "", skipped ? `${skipped} не съедено` : ""].filter(Boolean).join(" · ");
+    return {
+      dot: !marked ? "none" : changed || skipped ? "warn" : "ok",
+      status,
+      kcal: done ? `${number(Math.round(actual.eaten.calories))} ккал` : "—",
+    };
   }
+
+  function mealWord(count) {
+    const tail = count % 100;
+    if (tail >= 11 && tail <= 14) return "приёмов";
+    if (count % 10 === 1) return "приём";
+    return count % 10 >= 2 && count % 10 <= 4 ? "приёма" : "приёмов";
+  }
+
+  // One day of Учёт: the summary (when it is the only day), the meals and, for today, adding a meal.
+  function rationLogDay(dateKey, single) {
+    const day = rationDayFor(state, dateKey);
+    const meals = rationSortedMeals(day);
+    const isToday = dateKey === todayDateKey();
+    const addMeal = isToday ? `<button id="ration-add-meal" class="text-button feed-add" type="button">＋ Добавить приём пищи</button>` : "";
+    if (!meals.length) {
+      if (single) {
+        return feedEmptyState({
+          icon: `<svg viewBox="0 0 24 24" width="28" height="28"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>`,
+          title: "На сегодня рацион пуст",
+          text: "Составьте рацион вместе с ассистентом или добавьте приём пищи вручную.",
+          cta: "Составить с ассистентом",
+          secondary: addMeal,
+        });
+      }
+      return `<p class="muted feed-day-empty ration-today-empty">Приёмов пищи не было.</p>${addMeal}`;
+    }
+    const actual = readRationDayActual(state, dateKey);
+    return `${single ? rationSummaryCard(actual, "log") : ""}
+      <div class="meal-list ration-today-meals">${meals.map((meal) => rationMealRow(dateKey, meal, actual.meals.find((entry) => entry.mealId === meal.id), "log")).join("")}</div>
+      ${addMeal}`;
+  }
+
+  // Ккал and БЖУ of the day against the goal: eaten in Учёт, planned in План.
+  function rationSummaryCard(actual, mode) {
+    const profile = state.ration?.profile || {};
+    const target = Number(profile.targetCalories) || 0;
+    const values = mode === "log" ? actual.eaten : actual.planned;
+    const done = mode === "log" ? "съедено" : "по плану";
+    const percent = target ? Math.min(100, Math.round(values.calories / target * 100)) : 0;
+    const macro = (value, goal, label) => `<div><strong>${number(Math.round(value))}</strong>${Number(goal) ? ` / ${number(goal)}` : ""} г ${label}</div>`;
+    return `<section class="day-summary ration-today-totals">
+      <div class="day-summary-main">
+        <strong>${number(Math.round(values.calories))}</strong>
+        <span>${target ? `из ${number(target)} ккал ${done}` : `ккал ${done}`}</span>
+        ${target ? "" : `<button id="ration-set-goal" class="text-button ration-set-goal" type="button">Задать цель</button>`}
+      </div>
+      ${target ? `<div class="day-summary-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width: ${percent}%"></span></div>` : ""}
+      <div class="day-summary-macros">
+        ${macro(values.protein, profile.targetProtein, "белка")}${macro(values.fat, profile.targetFat, "жиров")}${macro(values.carbs, profile.targetCarbs, "углев.")}
+      </div>
+    </section>`;
+  }
+
+  // A meal as a row: time, name, ккал, products and the state; it opens to edit.
+  function rationMealRow(dateKey, meal, actual, mode) {
+    const log = mode === "log";
+    const key = `${dateKey}|${meal.id}`;
+    const open = openMealKey === key;
+    const record = readRationHistoryDay(state, dateKey)?.meals?.[meal.id] || {};
+    const stateKey = RATION_STATE_LABELS[actual.state] ? actual.state : "unmarked";
+    const shift = Number(record.transferredMinutes) || 0;
+    const time = shiftedRationMealTime(rationMealTime(meal), shift);
+    const kcal = log && actual.ate ? actual.actual.calories : actual.planned.calories;
+    const names = actual.items.map((item) => item.replacedName || item.name).concat(log && actual.ate ? actual.added.map((item) => item.name) : []).join(", ");
+    const stateText = stateKey === "changed" ? `изменено · по плану ${number(Math.round(actual.planned.calories))}` : RATION_STATE_LABELS[stateKey];
+    const eaten = actual.ate;
+    const skipped = stateKey === "skipped";
+    return `<article class="meal-row${log ? ` ration-today-meal state-${stateKey}` : " meal-row-plan"}${open ? " open" : ""}" data-date="${dateKey}" data-meal-id="${meal.id}">
+      <div class="meal-row-main">
+        <button class="meal-row-toggle" data-key="${escapeAttr(key)}" type="button" aria-expanded="${open}">
+          <span class="meal-row-time">${time}</span>
+          <span class="meal-row-text">
+            <span class="meal-row-title"><strong>${escapeHtml(meal.name)}</strong><span>${number(Math.round(kcal))} ккал</span></span>
+            ${names ? `<small class="meal-row-items">${escapeHtml(names)}</small>` : ""}
+            ${log ? `<span class="meal-row-state ration-state-chip">${stateText}</span>` : ""}
+          </span>
+          ${ICON_CHEVRON}
+        </button>
+        ${log ? `<button class="meal-check ration-eat-button${eaten ? " done" : ""}${skipped ? " skipped" : ""}${stateKey === "changed" ? " changed" : ""}" data-date="${dateKey}" data-meal-id="${meal.id}" type="button" role="checkbox" aria-checked="${eaten}" aria-label="${escapeAttr(eaten ? `${meal.name}: снять отметку` : `${meal.name}: всё съедено`)}"><span>${skipped ? ICON_DASH : ICON_CHECK}</span></button>` : ""}
+      </div>
+      ${open ? rationMealPanel(dateKey, meal, actual, mode) : ""}
+    </article>`;
+  }
+
+  // The open meal: each product with a check and an amount, food outside the
+  // plan, and «Всё съедено» / «Не ел». In План the amounts change the plan.
+  function rationMealPanel(dateKey, meal, actual, mode) {
+    const log = mode === "log";
+    const key = `${dateKey}|${meal.id}`;
+    const products = actual.items.map((item) => {
+      const on = !log || (actual.ate && !item.excluded);
+      const amount = log ? item.amount : item.plannedAmount;
+      const amountChanged = log && item.amount !== item.plannedAmount;
+      const name = item.replacedName || item.name;
+      const kcal = log ? item.calories : item.plannedCalories;
+      const sub = `${number(Math.round(kcal))} ккал${amountChanged ? ` · по плану ${number(item.plannedAmount)} ${item.unit}` : ""}${item.replacedName ? ` · вместо «${escapeHtml(item.name)}»` : ""}`;
+      return `<div class="meal-product${on ? "" : " off"}" data-item-id="${item.itemId}">
+        ${log ? `<button class="meal-product-check" data-item-id="${item.itemId}" type="button" role="checkbox" aria-checked="${on}" aria-label="${escapeAttr(`${name}: ${on ? "не ел" : "съел"}`)}"${item.productId ? "" : " disabled"}><span>${ICON_CHECK}</span></button>` : ""}
+        <span class="meal-product-name"><span>${escapeHtml(name)}</span><small${amountChanged ? ` class="warn"` : ""}>${sub}</small></span>
+        <button class="meal-amount-step" data-item-id="${item.itemId}" data-step="-1" type="button" aria-label="${escapeAttr(`${name}: меньше`)}"${item.productId || !log ? "" : " disabled"}>−</button>
+        <span class="meal-amount">${number(amount)} ${item.unit}</span>
+        <button class="meal-amount-step" data-item-id="${item.itemId}" data-step="1" type="button" aria-label="${escapeAttr(`${name}: больше`)}"${item.productId || !log ? "" : " disabled"}>+</button>
+      </div>`;
+    }).join("");
+    const extras = log ? actual.added.map((extra) => `<div class="meal-product extra" data-index="${extra.index}">
+        <button class="meal-extra-remove" data-index="${extra.index}" type="button" role="checkbox" aria-checked="true" aria-label="${escapeAttr(`${extra.name}: убрать`)}"><span>${ICON_CHECK}</span></button>
+        <span class="meal-product-name"><span>${escapeHtml(extra.name)}</span><small class="warn">вне плана · ${number(Math.round(extra.calories))} ккал</small></span>
+        <span class="meal-amount">${number(extra.amount)} ${extra.unit}</span>
+      </div>`).join("") : "";
+    const extraForm = extraMealKey === key ? `<form class="meal-extra-form">
+        <input name="name" list="meal-extra-products" autocomplete="off" placeholder="Что съели" aria-label="Что съели вне плана">
+        <input name="amount" type="number" min="0" step="any" inputmode="decimal" placeholder="Сколько" aria-label="Сколько">
+        <button class="button" type="submit">Добавить</button>
+        <datalist id="meal-extra-products">${productSuggestionOptions("")}</datalist>
+      </form>` : `<button class="text-button meal-extra-add" type="button">${actual.added.length ? "+ Добавить ещё вне плана" : "+ Съел что-то вне плана"}</button>`;
+    const actions = log ? `${extraForm}
+      <div class="meal-panel-actions">
+        <button class="meal-all-eaten${actual.state === "eaten" ? " active" : ""}" type="button">Всё съедено</button>
+        <button class="meal-skip${actual.state === "skipped" ? " active" : ""}" type="button">Не ел</button>
+      </div>` : `<button class="text-button meal-replace-assistant feed-assistant" type="button">Заменить продукт с ассистентом</button>`;
+    return `<div class="meal-panel">
+      ${products}${extras}
+      ${!products && !extras ? `<p class="muted">В приёме нет продуктов.</p>` : ""}
+      ${actions}
+      <button class="text-button meal-details" type="button">${log ? "Подробнее" : "Изменить день"}</button>
+    </div>`;
+  }
+
+
+  // План: «Завтра» with its meals; more days come as rows that open.
+  function rationPlanFeed(today) {
+    const dates = feedDates("ration", "plan", today);
+    const body = dates.length === 1 ? rationPlanDay(dates[0], true) : dates.map((dateKey) => feedDayRow("ration", dateKey, today, {
+      kind: "ration-plan-row",
+      ...rationPlanSummary(dateKey),
+      body: () => rationPlanDay(dateKey, false),
+    })).join("");
+    const planned = dates.some((dateKey) => rationDayFor(state, dateKey)?.meals?.length);
+    const request = planned ? `<button class="text-button feed-request" data-from="${dates[0]}" data-to="${dates[dates.length - 1]}" type="button">Собрать запрос на ${dates.length === 1 ? "завтра" : `${dates.length} ${dayWord(dates.length)}`}</button>` : "";
+    const available = feedAvailable("ration", "plan", today);
+    return `${feedHead("plan", dates, available)}${body}${feedFooter("ration", "plan", dates.length, available, request)}`;
+  }
+
+  function rationPlanSummary(dateKey) {
+    const day = rationDayFor(state, dateKey);
+    const meals = rationSortedMeals(day);
+    if (!meals.length) return { dot: "none", status: "приёмов пока нет", kcal: "" };
+    const calories = readRationDayActual(state, dateKey).planned.calories;
+    return {
+      dot: day?.source === "special" ? "warn" : "ok",
+      status: `${day?.source === "special" ? "Особый день · " : ""}${meals.map((meal) => meal.name).join(", ")}`,
+      kcal: calories ? `${number(Math.round(calories))} ккал` : "",
+    };
+  }
+
+  // One day of План: the meals to adjust, or the day editor while it is open.
+  function rationPlanDay(dateKey, single) {
+    const day = rationDayFor(state, dateKey);
+    const meals = rationSortedMeals(day);
+    const special = day?.source === "special" ? `<p class="feed-note">Особый день</p>` : "";
+    if (rationPlanDate === dateKey) {
+      return `<section class="ration-plan-day expanded" data-date="${dateKey}">
+        ${special}${rationNutritionGaps(dateKey)}${rationDayEditor(dateKey, false)}${rationRepeatActions(dateKey)}
+        <button class="ration-plan-edit button full" data-date="${dateKey}" type="button" aria-expanded="true">Готово</button>
+      </section>`;
+    }
+    if (!meals.length) {
+      const edit = `<button class="ration-plan-edit text-button" data-date="${dateKey}" type="button" aria-expanded="false">＋ Спланировать вручную</button>`;
+      if (single) {
+        return `<section class="ration-plan-day is-empty" data-date="${dateKey}">${special}${feedEmptyState({
+          icon: `<svg viewBox="0 0 24 24" width="28" height="28"><rect x="4" y="5" width="16" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 10h16M9 3v4M15 3v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+          title: "На завтра план пуст",
+          text: "Попросите ассистента спланировать дни вперёд или составьте день вручную.",
+          cta: "Спланировать с ассистентом",
+          secondary: edit,
+        })}</section>`;
+      }
+      return `<section class="ration-plan-day is-empty" data-date="${dateKey}">${special}<p class="muted feed-day-empty">Приёмов пока нет.</p>${edit}</section>`;
+    }
+    const actual = readRationDayActual(state, dateKey);
+    return `<section class="ration-plan-day" data-date="${dateKey}">
+      ${special}${single ? rationSummaryCard(actual, "plan") : ""}${rationNutritionGaps(dateKey)}
+      <div class="meal-list">${meals.map((meal) => rationMealRow(dateKey, meal, actual.meals.find((entry) => entry.mealId === meal.id), "plan")).join("")}</div>
+      <button class="ration-plan-edit text-button" data-date="${dateKey}" type="button" aria-expanded="false">Изменить день</button>
+    </section>`;
+  }
+
 
   function rationSortedMeals(day) {
     return [...(day?.meals || [])].sort((a, b) => rationMealTime(a).localeCompare(rationMealTime(b)));
@@ -3446,71 +3887,7 @@ import {
     return rationWeekday(dateKey);
   }
 
-  function rationPastDayCard(dateKey, today) {
-    const day = rationDayFor(state, dateKey);
-    const record = readRationHistoryDay(state, dateKey);
-    const meals = rationSortedMeals(day);
-    const counts = { eaten: 0, changed: 0, skipped: 0 };
-    meals.forEach((meal) => {
-      const mealState = record?.meals?.[meal.id]?.state;
-      if (counts[mealState] != null) counts[mealState] += 1;
-    });
-    const summary = counts.eaten + counts.changed + counts.skipped
-      ? `Съедено ${counts.eaten} · изменено ${counts.changed} · не съедено ${counts.skipped}`
-      : "Нет отметок";
-    const rows = meals.map((meal) => {
-      const mealRecord = record?.meals?.[meal.id] || {};
-      const stateKey = RATION_STATE_LABELS[mealRecord.state] ? mealRecord.state : "unmarked";
-      const shift = Number(mealRecord.transferredMinutes) || 0;
-      const discrepancies = (mealRecord.discrepancies || []).length;
-      return `<button class="ration-past-meal state-${stateKey}" data-date="${dateKey}" data-meal-id="${meal.id}" type="button" aria-label="Открыть приём пищи ${escapeAttr(meal.name)}, ${rationDayMonth(dateKey)}">
-        <span class="meal-event-time">${shiftedRationMealTime(rationMealTime(meal), shift)}</span>
-        <strong>${escapeHtml(meal.name)}</strong>
-        <span class="ration-state-chip">${RATION_STATE_LABELS[stateKey]}</span>
-        ${discrepancies ? `<small>Расхождений: ${discrepancies}</small>` : ""}
-      </button>`;
-    }).join("");
-    return `<article class="ration-day-card ration-past-day" data-date="${dateKey}">
-      <header class="ration-day-card-header">
-        <div class="ration-day-card-date"><span>${rationDayLabel(dateKey, today)}</span><h3>${rationDayMonth(dateKey)}</h3></div>
-        ${meals.length ? `<small class="ration-day-card-summary">${summary}</small>` : ""}
-      </header>
-      ${meals.length ? `<div class="ration-past-meals">${rows}</div>` : `<p class="muted ration-day-card-empty">Приёмов пищи не было.</p>`}
-    </article>`;
-  }
 
-  function rationPlanDayCard(dateKey, today) {
-    const day = rationDayFor(state, dateKey);
-    const meals = rationSortedMeals(day);
-    const nutrition = meals.length ? readRationDayNutrition(state, dateKey) : null;
-    const expanded = rationPlanDate === dateKey;
-    const summary = meals.map((meal) => {
-      const kcal = nutrition.perMeal.find((entry) => entry.mealId === meal.id)?.calories || 0;
-      const products = (meal.items || []).map((item) => getProduct(item.productId)?.name || item.name).filter(Boolean).join(", ");
-      return `<li>
-        <span class="meal-event-time">${rationMealTime(meal)}</span>
-        <div><strong>${escapeHtml(meal.name)}</strong>${products ? `<small>${escapeHtml(products)}</small>` : ""}</div>
-        ${kcal ? `<em>${number(kcal)} ккал</em>` : ""}
-      </li>`;
-    }).join("");
-    const body = expanded
-      ? `${rationNutritionGaps(dateKey)}${rationDayEditor(dateKey, false)}${rationRepeatActions(dateKey)}`
-      : meals.length ? `<ul class="ration-plan-meals">${summary}</ul>` : `<p class="muted ration-day-card-empty">Приёмов пока нет.</p>`;
-    return `<article class="ration-day-card ration-plan-day${expanded ? " expanded" : ""}" data-date="${dateKey}">
-      <header class="ration-day-card-header">
-        <div class="ration-day-card-date">
-          <span>${rationDayLabel(dateKey, today)}${day?.source === "special" ? " · Особый день" : ""}</span>
-          <h3>${rationDayMonth(dateKey)}</h3>
-        </div>
-        ${nutrition?.totals.calories ? `<div class="ration-day-card-totals">
-          <strong>${number(nutrition.totals.calories)} ккал</strong>
-          <span>Б ${number(nutrition.totals.protein)} · Ж ${number(nutrition.totals.fat)} · У ${number(nutrition.totals.carbs)}</span>
-        </div>` : ""}
-      </header>
-      ${body}
-      <button class="ration-plan-edit text-button" data-date="${dateKey}" type="button" aria-expanded="${expanded}">${expanded ? "Готово" : "Изменить"}</button>
-    </article>`;
-  }
 
   function rationNutritionGaps(dateKey) {
     const gaps = new Set(readRationDayNutrition(state, dateKey).missing.map((entry) => entry.itemId)).size;
@@ -3550,32 +3927,6 @@ import {
     return match ? Number(match[1]) * 60 + Number(match[2]) : 0;
   }
 
-  function rationTodayMealCard(dateKey, meal, historyDay, nutrition) {
-    const record = historyDay?.meals?.[meal.id] || {};
-    const stateKey = RATION_STATE_LABELS[record.state] ? record.state : "unmarked";
-    const shift = Number(record.transferredMinutes) || 0;
-    const time = shiftedRationMealTime(rationMealTime(meal), shift);
-    const mealTotals = nutrition.perMeal.find((entry) => entry.mealId === meal.id)
-      || { calories: 0, protein: 0, fat: 0, carbs: 0 };
-    const rows = (meal.items || []).map((item) => {
-      const product = getProduct(item.productId);
-      const measure = rationMeasure(product);
-      const portion = Number(item.portionSize) || measure.defaultPortion;
-      return `<li>${escapeHtml(product?.name || item.name || "Продукт")}<small>${number(portion)} ${measure.unit}</small></li>`;
-    }).join("");
-    return `<article class="ration-today-meal state-${stateKey}" data-meal-id="${meal.id}">
-      <header class="ration-today-meal-header">
-        <span class="meal-event-time">${time}${shift ? `<small>${shift > 0 ? "+" : ""}${shift} мин</small>` : ""}</span>
-        <button class="ration-today-meal-open" data-meal-id="${meal.id}" type="button" aria-label="Открыть приём пищи ${escapeAttr(meal.name)}">
-          <strong>${escapeHtml(meal.name)}</strong>
-          <span class="ration-state-chip">${RATION_STATE_LABELS[stateKey]}</span>
-          <small>${number(mealTotals.calories)} ккал · Б ${number(mealTotals.protein)} · Ж ${number(mealTotals.fat)} · У ${number(mealTotals.carbs)}</small>
-        </button>
-        <button class="ration-eat-button ${stateKey === "eaten" ? "done" : ""}" data-meal-id="${meal.id}" type="button" aria-label="${stateKey === "eaten" ? "Снять отметку" : "Отметить съедено"}">${stateKey === "eaten" ? "✓" : "Съесть"}</button>
-      </header>
-      ${(meal.items || []).length ? `<ul class="ration-today-items">${rows}</ul>` : ""}
-    </article>`;
-  }
 
   function rationRepeatActions(dateKey) {
     return `<div class="ration-repeat">
@@ -3854,41 +4205,24 @@ import {
   }
 
   function bindRation(today) {
-    document.querySelectorAll(".ration-today-meal-open").forEach((button) => {
-      button.onclick = () => {
-        routeSubId = button.dataset.mealId;
-        rationMealDate = today;
-        renderRation();
-      };
-    });
-    document.querySelectorAll(".ration-past-meal").forEach((button) => {
-      button.onclick = () => {
-        routeSubId = button.dataset.mealId;
-        rationMealDate = button.dataset.date;
-        renderRation();
-      };
-    });
+    bindFeed();
+    bindRationMealRows();
     document.querySelectorAll(".ration-plan-edit").forEach((button) => {
       button.onclick = () => {
         rationPlanDate = rationPlanDate === button.dataset.date ? "" : button.dataset.date;
         renderRation();
+        if (rationPlanDate && motionAllowed()) {
+          document.querySelectorAll(".ration-plan-day.expanded > :not(header)").forEach((part) => {
+            part.animate([{ opacity: 0, transform: "translate3d(0,-6px,0)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: MOTION_EASING });
+          });
+        }
       };
     });
-    document.querySelectorAll(".feed-more").forEach((button) => {
+    document.querySelectorAll(".feed-request").forEach((button) => {
       button.onclick = () => {
-        const mode = pageModes[button.dataset.page];
-        feedDays[button.dataset.page][mode] = Math.min(feedDays[button.dataset.page][mode] + FEED_STEP, 366);
-        render();
-      };
-    });
-    document.querySelectorAll(".ration-eat-button").forEach((button) => {
-      button.onclick = () => {
-        const mealId = button.dataset.mealId;
-        const current = readRationHistoryDay(state, today)?.meals?.[mealId]?.state;
-        const result = localData.markRationMeal(today, mealId, current === "eaten" ? "unmarked" : "eaten");
-        if (!applyLocal(result)) return showToast(result.reason);
-        renderRation();
-        showToast(current === "eaten" ? "Отметка снята." : "Приём пищи съеден.");
+        document.getElementById("ration-request-from").value = button.dataset.from;
+        document.getElementById("ration-request-to").value = button.dataset.to;
+        openRationRequestDialog();
       };
     });
     document.querySelectorAll(".ration-state-set").forEach((button) => {
@@ -4014,6 +4348,170 @@ import {
       });
       mealDialog.showModal();
     }
+  }
+
+  // Meal rows of Рацион. In Учёт each change is a discrepancy in the History
+  // of the meal, and the meal state follows: «изменено» while there are any.
+  function bindRationMealRows() {
+    document.querySelectorAll(".meal-row-toggle").forEach((button) => {
+      button.onclick = () => {
+        openMealKey = openMealKey === button.dataset.key ? "" : button.dataset.key;
+        extraMealKey = "";
+        renderRation();
+        revealPanel(`.meal-row.open .meal-panel`);
+      };
+    });
+    document.querySelectorAll(".meal-row").forEach((row) => {
+      const { date, mealId } = row.dataset;
+      const plan = !row.classList.contains("ration-today-meal");
+      const on = (selector, handler) => row.querySelectorAll(selector).forEach((button) => {
+        button.onclick = (event) => {
+          event.stopPropagation();
+          handler(button);
+        };
+      });
+      on(".meal-check", () => {
+        const meal = rationMealActual(date, mealId);
+        if (!meal) return;
+        const done = rationMealSteps(date, mealId, meal.ate ? "unmarked" : "eaten", { clear: true });
+        if (done) showToast(meal.ate ? "Отметка снята." : "Приём пищи съеден.");
+      });
+      on(".meal-all-eaten", () => rationMealSteps(date, mealId, "eaten", { clear: true }));
+      on(".meal-skip", () => rationMealSteps(date, mealId, "skipped", { clear: true }));
+      on(".meal-product-check", (button) => toggleRationMealProduct(date, mealId, button.dataset.itemId));
+      on(".meal-amount-step", (button) => stepRationMealAmount(date, mealId, button.dataset.itemId, Number(button.dataset.step), plan));
+      on(".meal-extra-remove", (button) => {
+        if (!applyLocal(localData.removeRationDiscrepancy(date, mealId, Number(button.dataset.index)))) return;
+        settleRationMeal(date, mealId);
+      });
+      on(".meal-extra-add", () => {
+        extraMealKey = `${date}|${mealId}`;
+        renderRation();
+        document.querySelector(".meal-extra-form input[name=name]")?.focus();
+      });
+      on(".meal-details", () => {
+        if (plan) {
+          rationPlanDate = date;
+          openMealKey = "";
+          renderRation();
+          return;
+        }
+        routeSubId = mealId;
+        rationMealDate = date;
+        renderRation();
+      });
+      row.querySelector(".meal-extra-form")?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        addRationMealExtra(date, mealId, event.target);
+      });
+    });
+  }
+
+  function rationMealActual(dateKey, mealId) {
+    return readRationDayActual(state, dateKey).meals.find((meal) => meal.mealId === mealId) || null;
+  }
+
+  // Clears the discrepancies of a meal (newest first, so indexes stay valid).
+  function clearRationMealDiscrepancies(dateKey, mealId) {
+    const count = readRationHistoryDay(state, dateKey)?.meals?.[mealId]?.discrepancies?.length || 0;
+    for (let index = count - 1; index >= 0; index -= 1) {
+      if (!applyLocal(localData.removeRationDiscrepancy(dateKey, mealId, index))) return false;
+    }
+    return true;
+  }
+
+  function rationMealSteps(dateKey, mealId, mealState, { clear = false } = {}) {
+    if (clear && !clearRationMealDiscrepancies(dateKey, mealId)) return false;
+    if (!applyLocal(localData.markRationMeal(dateKey, mealId, mealState))) return false;
+    renderRation();
+    return true;
+  }
+
+  // After a discrepancy the meal is «изменено», «съедено» without any, and
+  // «не съедено» when every product was left out and nothing was added.
+  function settleRationMeal(dateKey, mealId) {
+    const meal = rationMealActual(dateKey, mealId);
+    if (!meal) return renderRation();
+    if (meal.items.length && meal.items.every((item) => item.excluded) && !meal.added.length) {
+      rationMealSteps(dateKey, mealId, "skipped", { clear: true });
+      return;
+    }
+    const next = meal.discrepancies ? "changed" : "eaten";
+    if (meal.state !== next && !applyLocal(localData.markRationMeal(dateKey, mealId, next))) return;
+    renderRation();
+  }
+
+  // Before the first discrepancy of an unmarked meal, the meal counts as eaten
+  // except the products that were not checked.
+  function excludeOtherRationProducts(dateKey, mealId, keepItemId = "") {
+    const meal = rationMealActual(dateKey, mealId);
+    if (!meal || meal.ate) return true;
+    if (!clearRationMealDiscrepancies(dateKey, mealId)) return false;
+    return meal.items.filter((item) => item.productId && item.itemId !== keepItemId).every((item) =>
+      applyLocal(localData.recordRationDiscrepancy(dateKey, mealId, { kind: "excluded", productId: item.productId, name: item.name })));
+  }
+
+  function toggleRationMealProduct(dateKey, mealId, itemId) {
+    const meal = rationMealActual(dateKey, mealId);
+    const item = meal?.items.find((value) => value.itemId === itemId);
+    if (!item?.productId) return;
+    if (!meal.ate) {
+      if (!excludeOtherRationProducts(dateKey, mealId, itemId)) return;
+    } else if (item.excluded) {
+      if (!applyLocal(localData.removeRationDiscrepancy(dateKey, mealId, item.excludedIndex))) return;
+    } else if (!applyLocal(localData.recordRationDiscrepancy(dateKey, mealId, { kind: "excluded", productId: item.productId, name: item.name }))) {
+      return;
+    }
+    settleRationMeal(dateKey, mealId);
+  }
+
+  function rationAmountStep(unit) {
+    if (String(unit).includes("шт")) return 1;
+    return String(unit) === "мл" ? 50 : 10;
+  }
+
+  function stepRationMealAmount(dateKey, mealId, itemId, direction, plan) {
+    const meal = rationMealActual(dateKey, mealId);
+    const item = meal?.items.find((value) => value.itemId === itemId);
+    if (!item) return;
+    const step = rationAmountStep(item.unit);
+    if (plan) {
+      const next = Math.max(step, item.plannedAmount + direction * step);
+      if (next === item.plannedAmount) return;
+      applyLocal(localData.setRationPortion(dateKey, mealId, itemId, { portionSize: next, measureUnit: item.unit }));
+      renderRation();
+      return;
+    }
+    if (!item.productId) return;
+    const next = Math.max(0, item.amount + direction * step);
+    if (next === item.amount) return;
+    if (!meal.ate && !excludeOtherRationProducts(dateKey, mealId, itemId)) return;
+    const current = rationMealActual(dateKey, mealId).items.find((value) => value.itemId === itemId);
+    if (current.excluded && !applyLocal(localData.removeRationDiscrepancy(dateKey, mealId, current.excludedIndex))) return;
+    const latest = rationMealActual(dateKey, mealId).items.find((value) => value.itemId === itemId);
+    if (latest.amountIndex >= 0 && !applyLocal(localData.removeRationDiscrepancy(dateKey, mealId, latest.amountIndex))) return;
+    if (next !== item.plannedAmount && !applyLocal(localData.recordRationDiscrepancy(dateKey, mealId, {
+      kind: "amount", productId: item.productId, name: item.name, amount: next, measureUnit: item.unit,
+    }))) return;
+    settleRationMeal(dateKey, mealId);
+  }
+
+  function addRationMealExtra(dateKey, mealId, form) {
+    const name = form.elements.name.value.trim();
+    if (!name) return showToast("Укажите, что съели.");
+    const product = liveProductByName(name);
+    const amount = Number(form.elements.amount.value);
+    if (!excludeOtherRationProducts(dateKey, mealId)) return;
+    const discrepancy = { kind: "added", name };
+    if (product) discrepancy.productId = product.id;
+    if (amount > 0) {
+      discrepancy.amount = amount;
+      discrepancy.measureUnit = rationMeasure(product).unit;
+    }
+    if (!applyLocal(localData.recordRationDiscrepancy(dateKey, mealId, discrepancy))) return;
+    extraMealKey = "";
+    settleRationMeal(dateKey, mealId);
   }
 
   function rationShiftFor(dateKey, mealId, delta) {
@@ -4613,6 +5111,7 @@ import {
   }
 
   render();
+  revealListItems(feedItems());
   requestAppUpdateCheck(false);
   // Тычки queued before a restart or while offline go out when possible.
   nudgeWorker.schedule();

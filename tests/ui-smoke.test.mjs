@@ -125,6 +125,25 @@ async function openProductCard(page, productId) {
   await page.waitForSelector("#product-form");
 }
 
+// Opens a meal row of Рацион Учёт; a past day first gets its row in the feed.
+async function openMealRow(page, date, mealId) {
+  if (date !== dateKey(0)) {
+    for (let step = 0; step < 3 && !await page.locator(`.feed-day[data-date="${date}"]`).count(); step += 1) await page.click(".feed-more");
+  }
+  const day = page.locator(`.feed-day[data-date="${date}"]`);
+  if (await day.count() && !await day.evaluate((node) => node.classList.contains("open"))) await day.locator(".feed-day-toggle").click();
+  const row = page.locator(`.meal-row[data-date="${date}"][data-meal-id="${mealId}"]`);
+  if (!await row.evaluate((node) => node.classList.contains("open"))) await row.locator(".meal-row-toggle").click();
+  return page.locator(`.meal-row.open[data-date="${date}"][data-meal-id="${mealId}"]`);
+}
+
+// The full meal card (state, transfer, discrepancies) opens from «Подробнее».
+async function openMealDetails(page, date, mealId) {
+  const row = await openMealRow(page, date, mealId);
+  await row.locator(".meal-details").click();
+  await page.waitForSelector("#ration-meal-dialog[open]");
+}
+
 test("smoke: request with two items and one purchase mark", async () => {
   const { context, page } = await openPage();
   try {
@@ -173,37 +192,39 @@ test("smoke: request with two items and one purchase mark", async () => {
   }
 });
 
-test("smoke: Рацион opens in Учёт on «Сегодня» and the past follows below", async () => {
+test("smoke: Рацион opens in Учёт on «Сегодня»; the button below adds 3 days, 3 more, then the history", async () => {
   const { context, page } = await openPage();
   try {
-    await seedState(page, planState(dateKey(-5), {
+    await seedState(page, planState(dateKey(-40), {
       meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [] }],
     }));
     await openRoute(page, "ration");
     await page.waitForSelector(".ration-today");
     assert.equal(await page.locator(".ration-rail, .ration-overlay").count(), 0, "the flags and overlays are gone");
-    assert.equal(await page.locator("#ration-view-button").count(), 0);
-
-    const cards = page.locator(".ration-day-card");
-    assert.equal(await cards.nth(0).getAttribute("data-date"), dateKey(0));
-    assert.match(await cards.nth(0).innerText(), /Сегодня/);
-    assert.equal(await cards.nth(1).getAttribute("data-date"), dateKey(-1));
-    assert.match(await cards.nth(1).innerText(), /Вчера/);
-    assert.equal(await cards.nth(2).getAttribute("data-date"), dateKey(-2));
+    assert.equal(await page.locator("#page-title").innerText(), "Учёт", "the header names the mode");
+    assert.equal(await page.locator(".feed-head h2").innerText(), "Сегодня");
+    assert.equal(await page.locator(".feed-day").count(), 0, "the page opens on one day");
 
     const bodyText = await page.locator("#app").innerText();
     assert.doesNotMatch(bodyText, /Цикл|Версия/);
     assert.match(bodyText, /не отмечено/);
 
-    // Scrolling down brings yesterday into view below «Сегодня».
-    const yesterday = page.locator(`.ration-past-day[data-date="${dateKey(-1)}"]`);
-    assert.ok((await yesterday.boundingBox()).y > (await cards.nth(0).boundingBox()).y);
-    await page.locator("main").evaluate((main) => main.scrollTo(0, main.scrollHeight));
-    await page.locator(`.ration-past-day[data-date="${dateKey(-14)}"]`).waitFor();
-    assert.ok(await page.locator(`.ration-past-day[data-date="${dateKey(-14)}"]`).isVisible());
     await page.click(".feed-more");
-    assert.equal(await page.locator(`.ration-past-day[data-date="${dateKey(-28)}"]`).count(), 1, "«Показать ещё» extends the past");
-    await page.locator("main").evaluate((main) => main.scrollTo(0, 0));
+    const rows = page.locator(".feed-day");
+    assert.equal(await rows.count(), 4, "«Показать вчера и раньше» adds 3 days");
+    assert.equal(await rows.nth(0).getAttribute("data-date"), dateKey(0));
+    assert.match(await rows.nth(0).innerText(), /Сегодня/);
+    assert.match(await rows.nth(1).innerText(), /Вчера/);
+    assert.equal(await page.locator(".ration-today-meal").count(), 0, "today folds into a row like the other days");
+    await page.click(`.feed-day-toggle[data-date="${dateKey(-1)}"]`);
+    assert.equal(await page.locator(`.feed-day[data-date="${dateKey(-1)}"] .ration-today-meal`).count(), 1, "a row opens its meals");
+    await page.click(".feed-more");
+    assert.equal(await rows.count(), 7);
+    await page.click(".feed-more");
+    assert.equal(await rows.count(), 41, "then the whole history back to the plan start");
+    assert.equal(await page.locator(".feed-more").count(), 0);
+    await page.click(".feed-less");
+    assert.equal(await rows.count(), 0, "«Свернуть» returns to today");
 
     await page.click("#ration-add-meal");
     await page.waitForSelector("#ration-meal-dialog[open]");
@@ -228,12 +249,12 @@ test("smoke: План starts with tomorrow, edits a future day and requests a ra
     await openRoute(page, "ration");
     await page.click("#page-slider");
     await page.waitForSelector(".ration-plan-day");
+    assert.equal(await page.locator("#page-title").innerText(), "План");
     const days = page.locator(".ration-plan-day");
-    assert.equal(await days.count(), 14);
+    assert.equal(await days.count(), 1, "План opens on one day");
     assert.equal(await days.first().getAttribute("data-date"), dateKey(1));
-    assert.match(await days.first().innerText(), /Завтра/);
+    assert.equal(await page.locator(".feed-head h2").innerText(), "Завтра");
     assert.equal(await page.locator(".ration-today, .ration-past-day").count(), 0, "План shows no past and no «Сегодня»");
-    assert.equal(await page.locator("#header-action").innerText(), "Запросить");
 
     await days.first().locator(".ration-plan-edit").click();
     await page.waitForSelector(".ration-plan-day.expanded .add-ration-meal");
@@ -251,7 +272,7 @@ test("smoke: План starts with tomorrow, edits a future day and requests a ra
     assert.deepEqual(specialDates, [`local|${dateKey(1)}`]);
     assert.match(await days.first().innerText(), /Особый день/);
 
-    await page.click("#header-action");
+    await page.click(".feed-request");
     await page.waitForSelector("#ration-request-dialog[open]");
     await page.click("#ration-plan-request button[type=submit]");
     await page.waitForSelector("#request-items");
@@ -263,14 +284,65 @@ test("smoke: План starts with tomorrow, edits a future day and requests a ra
   }
 });
 
+test("smoke: empty days stay quiet in Учёт and План", async () => {
+  const { context, page } = await openPage();
+  try {
+    await openRoute(page, "ration");
+    await page.waitForSelector(".ration-today");
+    assert.match(await page.locator(".feed-empty").innerText(), /рацион пуст/);
+    assert.equal(await page.locator(".feed-more, .ration-today-totals").count(), 0, "no history to show and no zero totals");
+
+    await page.click("#page-slider");
+    await page.waitForSelector(".ration-plan-day");
+    assert.match(await page.locator(".feed-empty").innerText(), /план пуст/);
+    assert.equal(await page.locator(".feed-more").count(), 0, "an empty plan has no more days to show");
+    await page.click("#page-slider");
+
+    // A plan from 9 days ago with three empty days: their rows say so.
+    const state = planState(dateKey(-9), { meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [] }] });
+    state.ration.specialDays = Object.fromEntries([-2, -3, -4].map((offset) => [`local|${dateKey(offset)}`, { date: dateKey(offset), meals: [] }]));
+    await seedState(page, state);
+    await page.waitForSelector(".ration-today");
+    await page.click(".feed-more");
+    assert.match(await page.locator(`.feed-day[data-date="${dateKey(-2)}"]`).innerText(), /не было/);
+    await page.click(".feed-more");
+    await page.click(".feed-more");
+    assert.equal(await page.locator(".feed-day").count(), 10, "nothing before the plan starts");
+    assert.equal(await page.locator(".feed-more").count(), 0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a Спорт day row opens to add an activity to that day", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, sportState());
+    await openRoute(page, "sport");
+    await page.waitForSelector(".sport-today");
+    await page.click(".feed-more");
+    assert.equal(await page.locator(".feed-day").count(), 4);
+    assert.match(await page.locator(`.feed-day[data-date="${dateKey(-2)}"]`).innerText(), /Бег 40 мин/);
+    await page.click(`.feed-day-toggle[data-date="${dateKey(-2)}"]`);
+    await page.waitForSelector(`.feed-day[data-date="${dateKey(-2)}"] .sport-add-past`);
+  } finally {
+    await context.close();
+  }
+});
+
 test("smoke: each ration mode keeps its scroll position for the session", async () => {
   const { context, page } = await openPage({ width: 412, height: 600 });
   try {
+    await seedState(page, planState(dateKey(-40), {
+      meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [] }],
+    }));
     const main = page.locator("main");
+    for (let step = 0; step < 3; step += 1) await page.click(".feed-more");
     await main.evaluate((node) => node.scrollTo(0, 400));
     await page.click("#page-slider");
     await page.waitForSelector(".ration-plan-day");
     assert.equal(await main.evaluate((node) => node.scrollTop), 0, "План opens on tomorrow");
+    for (let step = 0; step < 3; step += 1) await page.click(".feed-more");
     await main.evaluate((node) => node.scrollTo(0, 250));
     await page.click("#page-slider");
     await page.waitForSelector(".ration-today");
@@ -369,8 +441,7 @@ test("smoke: Учёт corrects the state of a past meal, not today", async () =>
     });
     await openRoute(page, "ration");
     const pastDate = dateKey(-2);
-    await page.click(`.ration-past-meal[data-date="${pastDate}"]`);
-    await page.waitForSelector("#ration-meal-dialog[open]");
+    await openMealDetails(page, pastDate, "meal_1");
     assert.equal(await page.locator("#ration-meal-dialog .ration-food-input, #ration-meal-dialog .ration-transfer-button").count(), 0, "the past plan is read-only");
     await page.click('#ration-meal-dialog .ration-state-set[data-state="skipped"]');
     await page.waitForTimeout(80);
@@ -379,7 +450,7 @@ test("smoke: Учёт corrects the state of a past meal, not today", async () =>
     assert.deepEqual(Object.keys(history), [`local|${pastDate}`]);
     assert.equal(history[`local|${pastDate}`].meals.meal_1.state, "skipped");
     await page.click("#close-ration-meal");
-    assert.match(await page.locator(`.ration-past-meal[data-date="${pastDate}"]`).innerText(), /не съедено/);
+    assert.match(await page.locator(`.meal-row[data-date="${pastDate}"]`).innerText(), /не съедено/);
   } finally {
     await context.close();
   }
@@ -482,8 +553,7 @@ test("smoke: undo after removing a ration product returns the day to its plan", 
       },
     });
     await openRoute(page, "ration");
-    await page.click('.ration-today-meal-open[data-meal-id="meal_1"]');
-    await page.waitForSelector("#ration-meal-dialog[open]");
+    await openMealDetails(page, today, "meal_1");
     await page.click('#ration-meal-dialog .ration-food-row[data-item-id="item_1"] .remove-ration-food');
     await page.waitForTimeout(80);
     assert.equal(Object.keys((await storedState(page)).ration.specialDays).length, 1);
@@ -519,6 +589,7 @@ function planState(fromKey, { products = [], meals } = {}) {
 test("smoke: ration profile form saves targets and the today screen shows the goal", async () => {
   const { context, page } = await openPage();
   try {
+    await seedState(page, planState(dateKey(0), { meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [] }] }));
     await openRoute(page, "ration");
     await page.click("#ration-set-goal");
     await page.waitForSelector("#ration-profile-form");
@@ -544,7 +615,7 @@ test("smoke: ration profile form saves targets and the today screen shows the go
     await page.click("#header-action");
     await page.waitForSelector(".ration-today");
 
-    assert.match(await page.locator(".ration-today-totals").innerText(), /Цель 2[\s ]?100 ккал/);
+    assert.match(await page.locator(".ration-today-totals").innerText(), /из 2[\s ]?100 ккал съедено/);
     const { profile } = (await storedState(page)).ration;
     assert.equal(profile.heightCm, 176);
     assert.equal(profile.goal, "Поддержание веса");
@@ -581,14 +652,15 @@ test("smoke: План shows КБЖУ and repeats a day with undo", async () => {
     await page.click("#page-slider");
     const first = page.locator(".ration-plan-day").first();
     assert.match(await first.innerText(), /350 ккал/);
-    assert.match(await first.locator(".ration-day-card-totals").innerText(), /350 ккал\s*Б 12/);
-    assert.doesNotMatch(await page.locator(".ration-plan-day").nth(1).innerText(), /ккал/);
+    assert.match(await first.locator(".day-summary").innerText(), /350\s*ккал по плану[\s\S]*12/);
 
     await first.locator(".ration-plan-edit").click();
     await page.click('.ration-repeat-button[data-length="1"]');
     await page.click("#app-confirm-ok");
     await page.waitForTimeout(80);
-    assert.match(await page.locator(".ration-plan-day").nth(5).innerText(), /Завтрак.*350 ккал/s);
+    await page.click(".feed-more");
+    await page.click(".feed-more");
+    assert.match(await page.locator(`.feed-day[data-date="${dateKey(6)}"]`).innerText(), /Завтрак.*350 ккал/s);
     assert.doesNotMatch(await page.locator(".ration-feed").innerText(), /Цикл|Версия/);
     const repeated = (await storedState(page)).ration;
     assert.equal(repeated.versions.length, 1);
@@ -612,8 +684,7 @@ test("smoke: meal card records and removes discrepancies; History corrects a pas
       meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [{ id: "item_1", productId: "product_tea", name: "Чай" }] }],
     }));
     await openRoute(page, "ration");
-    await page.click('.ration-today-meal-open[data-meal-id="meal_1"]');
-    await page.waitForSelector("#ration-meal-dialog[open]");
+    await openMealDetails(page, dateKey(0), "meal_1");
     const form = page.locator("#ration-meal-dialog .ration-discrepancy-form");
     await form.locator("[name=kind]").selectOption("amount");
     await form.locator("[name=amount]").fill("50");
@@ -637,11 +708,8 @@ test("smoke: meal card records and removes discrepancies; History corrects a pas
     assert.equal(today.state, "changed");
 
     await page.click("#close-ration-meal");
-    const pastMeal = page.locator(".ration-past-meal").first();
-    const pastDate = await pastMeal.getAttribute("data-date");
-    assert.equal(pastDate, dateKey(-1));
-    await pastMeal.click();
-    await page.waitForSelector("#ration-meal-dialog[open]");
+    const pastDate = dateKey(-1);
+    await openMealDetails(page, pastDate, "meal_1");
     const pastForm = page.locator("#ration-meal-dialog .ration-discrepancy-form");
     await pastForm.locator("[name=kind]").selectOption("replaced");
     await pastForm.locator("[name=name]").fill("Кофе");
@@ -697,14 +765,15 @@ test("smoke: Android back on Рацион closes the request dialog, then leaves
   const { context, page } = await openPage();
   try {
     const back = () => page.evaluate(() => window.__handleNativeBack());
+    await seedState(page, planState(dateKey(0), { meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [] }] }));
     await openRoute(page, "ration");
     await page.click("#page-slider");
-    await page.click("#header-action");
+    await page.click(".feed-request");
     await page.waitForSelector("#ration-request-dialog[open]");
     assert.equal(await back(), true);
     assert.equal(await page.locator("#ration-request-dialog[open]").count(), 0);
     assert.equal(await back(), false, "План is a mode, not an overlay");
-    assert.equal(await page.locator("#page-slider-modes .active").innerText(), "план");
+    assert.equal(await page.locator("#page-title").innerText(), "План");
   } finally {
     await context.close();
   }
@@ -725,7 +794,7 @@ test("smoke: launch opens Рацион and a swipe moves Рацион → Спо
 
     await swipePage(page, 1);
     await expectPage(page, "sport");
-    assert.match(await page.locator(".sport-today").innerText(), /Сегодня/);
+    assert.match(await page.locator(".sport-feed .feed-head").innerText(), /Сегодня/);
     assert.equal(await page.locator("#page-slider-prev").innerText(), "Рацион");
     assert.equal(await page.locator("#page-slider-next").innerText(), "Покупки");
 
@@ -755,26 +824,28 @@ test("smoke: a tap on the slider switches the mode on Рацион and does noth
   const { context, page } = await openPage();
   try {
     const slider = page.locator("#page-slider");
-    const activeMode = () => page.locator("#page-slider-modes .active").innerText();
-    assert.equal(await activeMode(), "учёт");
+    const activeMode = () => page.locator("#page-title").innerText();
+    assert.equal(await activeMode(), "Учёт");
     await slider.click();
-    assert.equal(await activeMode(), "план");
+    assert.equal(await activeMode(), "План");
     assert.equal(await currentPage(page), "ration", "the slider does not switch pages");
 
     await openRoute(page, "sport");
-    assert.equal(await activeMode(), "учёт", "every page keeps its own mode");
+    assert.equal(await activeMode(), "Учёт", "every page keeps its own mode");
+    assert.equal(await page.evaluate(() => document.body.dataset.mode), "log", "Учёт colors the page green");
 
     await openRoute(page, "requests");
-    assert.equal(await page.locator("#page-slider-modes").isVisible(), false);
+    assert.equal(await activeMode(), "Покупки");
     assert.equal(await slider.getAttribute("aria-disabled"), "true");
     await slider.click({ force: true });
     assert.equal(await currentPage(page), "requests");
-    assert.equal(await page.locator("#page-slider-modes").isVisible(), false);
+    assert.equal(await activeMode(), "Покупки");
 
     await openRoute(page, "ration");
-    assert.equal(await activeMode(), "план", "the mode lasts for the session");
+    assert.equal(await activeMode(), "План", "the mode lasts for the session");
+    assert.equal(await page.evaluate(() => document.body.dataset.mode), "plan", "План colors the page blue");
     await page.reload({ waitUntil: "load" });
-    assert.equal(await activeMode(), "учёт", "a new launch opens Рацион in Учёт");
+    assert.equal(await activeMode(), "Учёт", "a new launch opens Рацион in Учёт");
   } finally {
     await context.close();
   }
@@ -879,6 +950,56 @@ test("smoke: opening another screen starts it from the top", async () => {
   }
 });
 
+test("smoke: an open meal row edits what was eaten and recounts ккал at once", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, planState(dateKey(-5), {
+      products: [
+        { id: "product_oats", name: "Овсянка", unit: "г", nutrition: { calories: 350, protein: 12, fat: 6, carbs: 60, fiber: 10 } },
+        { id: "product_kefir", name: "Кефир", unit: "мл", nutrition: { calories: 50, protein: 3, fat: 2.5, carbs: 4, fiber: 0 } },
+      ],
+      meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [
+        { id: "item_1", productId: "product_oats", name: "Овсянка", portionSize: 100 },
+        { id: "item_2", productId: "product_kefir", name: "Кефир", portionSize: 200 },
+      ] }],
+    }));
+    await openRoute(page, "ration");
+    const eaten = () => page.locator(".day-summary-main strong").innerText();
+    assert.equal(await eaten(), "0");
+    let row = await openMealRow(page, dateKey(0), "meal_1");
+    await row.locator(".meal-all-eaten").click();
+    assert.equal(await eaten(), "450", "everything eaten: 350 + 100 ккал");
+    assert.match(await page.locator(".meal-row .ration-state-chip").innerText(), /^съедено$/);
+
+    row = page.locator(".meal-row.open");
+    await row.locator('.meal-amount-step[data-item-id="item_1"][data-step="1"]').click();
+    assert.equal(await eaten(), "485", "10 г more oats add 35 ккал");
+    assert.match(await page.locator(".meal-row .ration-state-chip").innerText(), /изменено · по плану 450/);
+
+    await page.locator('.meal-row.open .meal-product-check[data-item-id="item_2"]').click();
+    assert.equal(await eaten(), "385", "unchecked kefir is not counted");
+
+    await page.locator(".meal-row.open .meal-extra-add").click();
+    await page.fill(".meal-extra-form [name=name]", "Овсянка");
+    await page.fill(".meal-extra-form [name=amount]", "20");
+    await page.click(".meal-extra-form button[type=submit]");
+    assert.equal(await eaten(), "455", "food outside the plan adds its ккал");
+    let meal = (await storedState(page)).ration.history[`local|${dateKey(0)}`].meals.meal_1;
+    assert.equal(meal.state, "changed");
+    assert.deepEqual(meal.discrepancies.map((item) => item.kind).sort(), ["added", "amount", "excluded"]);
+
+    await page.locator(".meal-row.open .meal-skip").click();
+    assert.equal(await eaten(), "0");
+    meal = (await storedState(page)).ration.history[`local|${dateKey(0)}`].meals.meal_1;
+    assert.equal(meal.state, "skipped");
+    assert.equal(meal.discrepancies.length, 0);
+    await page.locator(".meal-row.open .meal-all-eaten").click();
+    assert.equal(await eaten(), "450");
+  } finally {
+    await context.close();
+  }
+});
+
 test("smoke: unchecking a product in the meal card records that it was not eaten", async () => {
   const { context, page } = await openPage();
   try {
@@ -887,8 +1008,7 @@ test("smoke: unchecking a product in the meal card records that it was not eaten
       meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [{ id: "item_1", productId: "product_tea", name: "Чай" }] }],
     }));
     await openRoute(page, "ration");
-    await page.click('.ration-today-meal-open[data-meal-id="meal_1"]');
-    await page.waitForSelector("#ration-meal-dialog[open]");
+    await openMealDetails(page, dateKey(0), "meal_1");
     const check = () => page.locator('#ration-meal-dialog .ration-food-row[data-item-id="item_1"] .ration-item-check');
     assert.equal(await check().isChecked(), true);
     await check().uncheck();
@@ -1249,7 +1369,7 @@ test("smoke: marking a meal «не съедено» queues a Тычок, and Pro
   try {
     await seedState(page, assistantPlanState());
     await openRoute(page, "ration");
-    await page.click('.ration-today-meal-open[data-meal-id="meal_2"]');
+    await openMealDetails(page, dateKey(0), "meal_2");
     await page.click('#ration-meal-dialog .ration-state-set[data-state="skipped"]');
     await page.waitForTimeout(80);
     const { nudges } = (await storedState(page)).assistant;
@@ -1414,6 +1534,8 @@ test("smoke: Спорт Учёт marks a session and records unplanned activity 
     assert.equal(stored.journal?.length ?? 0, 0, "the log is not journaled");
 
     // A past session is corrected from its card with actual values.
+    await page.click(".feed-more");
+    await page.click(`.feed-day-toggle[data-date="${dateKey(-1)}"]`);
     await page.click(`.sport-past-session[data-date="${dateKey(-1)}"]`);
     await page.waitForSelector("#sport-session-dialog[open]");
     await page.click('#sport-session-states [data-state="changed"]');
@@ -1436,7 +1558,7 @@ test("smoke: Спорт План edits one date as a Особый день and t
     await page.click("#page-slider");
     const first = page.locator(".sport-plan-day").first();
     assert.equal(await first.getAttribute("data-date"), dateKey(1));
-    assert.equal(await page.locator("#header-action").innerText(), "Расписание");
+    assert.equal(await page.locator(".sport-week-open").innerText(), "Расписание недели");
 
     await first.locator(".sport-plan-add").click();
     await page.waitForSelector("#sport-session-dialog[open]");
@@ -1451,7 +1573,7 @@ test("smoke: Спорт План edits one date as a Особый день and t
     assert.equal(stored.journal.length, 1);
     assert.equal(stored.journal[0].page, "sport");
 
-    await page.click("#header-action");
+    await page.click(".sport-week-open");
     await page.waitForSelector("#sport-week-dialog[open]");
     const from = dateKey(3);
     await page.fill("#sport-week-from", from);
@@ -1472,9 +1594,10 @@ test("smoke: Спорт План edits one date as a Особый день and t
     assert.equal(version.effectiveFrom, from);
     assert.equal(version.cycle.weekdayBinding, true);
     assert.deepEqual(version.cycle.days[0].sessions.map((session) => session.type), ["strength"]);
-    assert.match(await page.locator(`.sport-plan-day[data-date="${from}"]`).innerText(), /Силовая/);
-    assert.match(await page.locator(`.sport-plan-day[data-date="${dateKey(2)}"]`).innerText(), /Бег/, "days before the date keep the old schedule");
-    assert.match(await page.locator(`.sport-plan-day[data-date="${dateKey(1)}"]`).innerText(), /Плавание/, "the Особый день stays");
+    await page.click(".feed-more");
+    assert.match(await page.locator(`.feed-day[data-date="${from}"]`).innerText(), /Силовая/);
+    assert.match(await page.locator(`.feed-day[data-date="${dateKey(2)}"]`).innerText(), /Бег/, "days before the date keep the old schedule");
+    assert.match(await page.locator(`.feed-day[data-date="${dateKey(1)}"]`).innerText(), /Плавание/, "the Особый день stays");
   } finally {
     await context.close();
   }
