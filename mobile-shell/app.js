@@ -42,6 +42,7 @@ import {
   readSportDayEnergy,
   readSportLogDay,
 } from "./sport-domain.js";
+import { planOwnerKey } from "./plan-cycle.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
   // на 100 г (для напитков — на 100 мл) и могут отличаться у конкретных марок.
@@ -117,6 +118,12 @@ import {
   const FEED_STEP = 14;
   const feedDays = { ration: { log: FEED_STEP, plan: FEED_STEP }, sport: { log: FEED_STEP, plan: FEED_STEP } };
   const modeScroll = { ration: { log: 0, plan: 0 }, sport: { log: 0, plan: 0 } };
+  // Motion: screens slide by depth, root pages by their order (see navigate).
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+  const ROUTE_DEPTH = { profile: 1, "ration-profile": 1, "request-edit": 1, "product-edit": 2, "request-answer": 2 };
+  const MOTION_EASING = "cubic-bezier(.2, .8, .2, 1)";
+  // Folded runs of empty days the user opened on Спорт, by "page|newest date".
+  const openFeedGaps = new Set();
   let lastRootPage = "ration";
   let profileReturn = "ration";
   let routeId = null;
@@ -179,6 +186,7 @@ import {
     pageModes[route] = pageModes[route] === "log" ? "plan" : "log";
     render();
     restoreModeScroll();
+    playModeTransition();
   });
 
   bindPageSwipe();
@@ -289,6 +297,7 @@ import {
       draftItems = [];
     }
     rememberModeScroll();
+    const previous = route;
     route = next;
     routeId = id;
     routeSubId = subId;
@@ -297,7 +306,63 @@ import {
     // The page itself never scrolls: only <main> does (see styles.css).
     app.scrollTop = 0;
     render();
+    // request-detail redirects to request-edit inside render(): that call animates.
+    if (route !== next) return;
     restoreModeScroll();
+    playRouteTransition(previous, next, options.step);
+  }
+
+  // The first cards of a list rise one after another. Reduced motion turns it off.
+  function motionAllowed() {
+    return !reducedMotion?.matches && typeof app.animate === "function";
+  }
+
+  function playRouteTransition(previous, next, step = 0) {
+    if (previous === next || !motionAllowed()) return;
+    const rootStep = step || Math.sign(ROOT_PAGES.indexOf(next) - ROOT_PAGES.indexOf(previous));
+    if (ROOT_PAGES.includes(previous) && ROOT_PAGES.includes(next)) {
+      app.animate([{ transform: `translate3d(${rootStep * 32}%,0,0)`, opacity: 0.4 }, { transform: "none", opacity: 1 }], { duration: 180, easing: "ease-out" });
+      revealListItems(feedItems());
+      return;
+    }
+    const forward = (ROUTE_DEPTH[next] || 0) >= (ROUTE_DEPTH[previous] || 0);
+    app.animate([
+      { transform: `translate3d(${forward ? 28 : -28}px,0,0)`, opacity: 0 },
+      { transform: "none", opacity: 1 },
+    ], { duration: 220, easing: MOTION_EASING });
+    if (ROOT_PAGES.includes(next)) revealListItems(feedItems());
+  }
+
+  function playModeTransition() {
+    if (!motionAllowed()) return;
+    app.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
+    revealListItems(feedItems());
+  }
+
+  // Cards and rows of the current list, in screen order.
+  function feedItems() {
+    return [...app.querySelectorAll(".ration-feed > *, #app > .request-link")];
+  }
+
+  function feedItemKey(item) {
+    return item.dataset.date || item.dataset.gap || item.dataset.from || item.dataset.id || "";
+  }
+
+  function revealListItems(items, { limit = 8 } = {}) {
+    if (!motionAllowed()) return;
+    items.slice(0, limit).forEach((item, index) => {
+      item.animate([
+        { opacity: 0, transform: "translate3d(0,12px,0)" },
+        { opacity: 1, transform: "none" },
+      ], { duration: 260, delay: index * 35, easing: MOTION_EASING, fill: "backwards" });
+    });
+  }
+
+  // Re-renders the list and lets only the cards that were not there rise in.
+  function renderRevealingNew(draw) {
+    const before = new Set(feedItems().map(feedItemKey));
+    draw();
+    revealListItems(feedItems().filter((item) => feedItemKey(item) && !before.has(feedItemKey(item))));
   }
 
   function rememberModeScroll() {
@@ -565,9 +630,8 @@ import {
     let start = null;
     let dragging = false;
     let suppressClick = false;
-    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     const animate = (frames) => {
-      if (!reducedMotion?.matches && typeof app.animate === "function") app.animate(frames, { duration: 180, easing: "ease-out" });
+      if (motionAllowed()) app.animate(frames, { duration: 180, easing: "ease-out" });
     };
     const stopDrag = () => {
       start = null;
@@ -621,8 +685,7 @@ import {
         animate([{ transform: offset }, { transform: "none" }]);
         return;
       }
-      navigate(next);
-      animate([{ transform: `translate3d(${step * 32}%,0,0)`, opacity: 0.4 }, { transform: "none", opacity: 1 }]);
+      navigate(next, null, null, { step });
     });
     app.addEventListener("pointercancel", stopDrag);
     // A drag that ends over a button must not also press it.
@@ -1141,16 +1204,82 @@ import {
   }
 
   function sportLogFeed(today) {
-    const pastDates = Array.from({ length: feedDays.sport.log }, (_, index) => addRationDays(today, -(index + 1)));
+    const past = feedPastDays("sport", today, state.sport, state.sport?.log, (dateKey) => {
+      const log = readSportLogDay(state, dateKey);
+      return !readSportDay(state, dateKey)?.sessions?.length && !log?.unplanned?.length;
+    });
     return `${sportTodayCard(today)}
-      ${pastDates.map((dateKey) => sportPastDayCard(dateKey, today)).join("")}
-      <button class="feed-more" data-page="sport" type="button">Показать ещё</button>`;
+      ${feedPastRuns(past, (dateKey) => sportPastDayCard(dateKey, today), { page: "sport", label: "Тренировок не было", expandable: true })}`;
   }
 
   function sportPlanFeed(today) {
     const dates = Array.from({ length: feedDays.sport.plan }, (_, index) => addRationDays(today, index + 1));
+    const more = feedDataStart(state.sport, null) ? `<button class="feed-more" data-page="sport" type="button">Показать ещё</button>` : "";
     return `${dates.map((dateKey) => sportPlanDayCard(dateKey, today)).join("")}
-      <button class="feed-more" data-page="sport" type="button">Показать ещё</button>`;
+      ${more}`;
+  }
+
+  // The first date a page has anything for: a plan version, a Особый день or
+  // a mark. Days before it are empty for sure, so the feed does not show them.
+  function feedDataStart(plan, log) {
+    const owner = planOwnerKey(state.user?.email || "local");
+    const dates = (plan?.versions || [])
+      .filter((version) => planOwnerKey(version.owner) === owner)
+      .map((version) => version.effectiveFrom);
+    [plan?.specialDays, log].forEach((map) => Object.keys(map || {}).forEach((key) => {
+      const [keyOwner, dateKey] = key.split("|");
+      if (keyOwner === owner) dates.push(dateKey);
+    }));
+    return dates.filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))).sort()[0] || "";
+  }
+
+  // Past days of Учёт, newest first, cut at the first day with data.
+  function feedPastDays(page, today, plan, log, isEmpty) {
+    const start = feedDataStart(plan, log);
+    const days = [];
+    if (!start || start >= today) return { days, more: false };
+    for (let index = 1; index <= feedDays[page].log; index += 1) {
+      const dateKey = addRationDays(today, -index);
+      if (dateKey < start) return { days, more: false };
+      days.push({ dateKey, empty: isEmpty(dateKey) });
+    }
+    return { days, more: addRationDays(today, -(feedDays[page].log + 1)) >= start };
+  }
+
+  // Days with data get a card; a run of empty days folds into one quiet line.
+  // On Спорт a past day still takes an activity, so the line opens the run.
+  function feedPastRuns({ days, more }, card, { page, label, expandable = false }) {
+    const parts = [];
+    for (let index = 0; index < days.length;) {
+      if (!days[index].empty) {
+        parts.push(card(days[index].dateKey));
+        index += 1;
+        continue;
+      }
+      let end = index;
+      while (end + 1 < days.length && days[end + 1].empty) end += 1;
+      const newest = days[index].dateKey;
+      const oldest = days[end].dateKey;
+      const key = `${page}|${newest}`;
+      if (expandable && openFeedGaps.has(key)) {
+        for (let cursor = index; cursor <= end; cursor += 1) parts.push(card(days[cursor].dateKey));
+      } else {
+        const range = newest === oldest ? rationDayMonth(newest) : feedDateRange(oldest, newest);
+        const text = `<span>${label}</span><small>${range}</small>`;
+        parts.push(expandable
+          ? `<button class="feed-gap" data-gap="${escapeAttr(key)}" type="button" aria-label="${escapeAttr(`${label}: ${range}. Показать дни`)}">${text}</button>`
+          : `<p class="feed-gap" data-from="${oldest}" data-to="${newest}">${text}</p>`);
+      }
+      index = end + 1;
+    }
+    if (more) parts.push(`<button class="feed-more" data-page="${page}" type="button">Показать ещё</button>`);
+    return parts.join("");
+  }
+
+  function feedDateRange(from, to) {
+    const [fromDay, fromMonth] = rationDayMonth(from).split(" ");
+    const [, toMonth] = rationDayMonth(to).split(" ");
+    return fromMonth === toMonth ? `${fromDay}–${rationDayMonth(to)}` : `${rationDayMonth(from)} – ${rationDayMonth(to)}`;
   }
 
   function sportSortedSessions(day) {
@@ -1254,17 +1383,26 @@ import {
       <span class="meal-event-time">${escapeHtml(session.time)}</span>
       <div><strong>${SPORT_TYPE_LABELS[session.type]}</strong><small>${sportSessionLine(session)}</small></div>
     </button>`).join("");
+    const add = `<button class="text-button sport-plan-add" data-date="${dateKey}" type="button">＋ Тренировка</button>`;
+    const label = `${rationDayLabel(dateKey, today)}${day?.source === "special" ? " · Особый день" : ""}`;
+    // A day without sessions is one line: the date, «отдых» and the add button.
+    if (!sessions.length) {
+      return `<article class="ration-day-card sport-plan-day is-empty" data-date="${dateKey}">
+        <header class="ration-day-card-header">
+          <div class="ration-day-card-date"><span>${label}</span><h3>${rationDayMonth(dateKey)}</h3></div>
+          <small class="muted ration-day-card-empty">${day ? "отдых" : ""}</small>
+          ${add}
+        </header>
+      </article>`;
+    }
     return `<article class="ration-day-card sport-plan-day" data-date="${dateKey}">
       <header class="ration-day-card-header">
-        <div class="ration-day-card-date">
-          <span>${rationDayLabel(dateKey, today)}${day?.source === "special" ? " · Особый день" : ""}</span>
-          <h3>${rationDayMonth(dateKey)}</h3>
-        </div>
+        <div class="ration-day-card-date"><span>${label}</span><h3>${rationDayMonth(dateKey)}</h3></div>
         ${sportEnergyTotals(dateKey)}
       </header>
-      ${sessions.length ? `<div class="sport-plan-sessions">${rows}</div>` : `<p class="muted ration-day-card-empty">Отдых.</p>`}
+      <div class="sport-plan-sessions">${rows}</div>
       ${sportWeightHint(dateKey)}
-      <button class="text-button sport-plan-add" data-date="${dateKey}" type="button">＋ Тренировка</button>
+      ${add}
     </article>`;
   }
 
@@ -1299,6 +1437,12 @@ import {
     document.querySelectorAll(".sport-plan-add").forEach((button) => {
       button.onclick = () => openSportSessionDialog({ mode: "plan-add", date: button.dataset.date });
     });
+    document.querySelectorAll(".feed-gap[data-gap]").forEach((button) => {
+      button.onclick = () => {
+        openFeedGaps.add(button.dataset.gap);
+        renderRevealingNew(renderSport);
+      };
+    });
     document.querySelectorAll(".sport-set-weight").forEach((button) => {
       button.onclick = () => {
         rationProfileReturn = "sport";
@@ -1309,7 +1453,7 @@ import {
       button.onclick = () => {
         const mode = pageModes[button.dataset.page];
         feedDays[button.dataset.page][mode] = Math.min(feedDays[button.dataset.page][mode] + FEED_STEP, 366);
-        render();
+        renderRevealingNew(render);
       };
     });
   }
@@ -3401,38 +3545,40 @@ import {
     const nutrition = readRationDayNutrition(state, today);
     const profile = state.ration?.profile || {};
     const meals = rationSortedMeals(day);
-    const pastDates = Array.from({ length: feedDays.ration.log }, (_, index) => addRationDays(today, -(index + 1)));
+    const past = feedPastDays("ration", today, state.ration, state.ration?.history, (dateKey) => !rationDayFor(state, dateKey)?.meals?.length);
+    const empty = !meals.length && !nutrition.totals.calories;
     return `
-      <section class="ration-today ration-day-card" data-date="${today}">
+      <section class="ration-today ration-day-card${empty ? " is-empty" : ""}" data-date="${today}">
         <header class="ration-today-header">
           <div class="ration-today-date">
             <span>Сегодня · ${rationWeekday(today)}</span>
             <h2>${rationDayMonth(today)}</h2>
           </div>
           <div class="ration-today-totals">
-            <strong>${number(nutrition.totals.calories)} ккал</strong>
-            <span>Б ${number(nutrition.totals.protein)} · Ж ${number(nutrition.totals.fat)} · У ${number(nutrition.totals.carbs)}</span>
+            ${empty ? "" : `<strong>${number(nutrition.totals.calories)} ккал</strong>
+            <span>Б ${number(nutrition.totals.protein)} · Ж ${number(nutrition.totals.fat)} · У ${number(nutrition.totals.carbs)}</span>`}
             ${Number(profile.targetCalories)
               ? `<em>Цель ${number(profile.targetCalories)} ккал</em>`
               : `<button id="ration-set-goal" class="text-button ration-set-goal" type="button">Задать цель</button>`}
           </div>
         </header>
         <div class="ration-today-meals">
-          ${meals.length ? meals.map((meal) => rationTodayMealCard(today, meal, historyDay, nutrition)).join("") : `<p class="ration-today-empty muted">На сегодня приёмов пока нет. Добавьте первый приём пищи или переключитесь на План.</p>`}
+          ${meals.length ? meals.map((meal) => rationTodayMealCard(today, meal, historyDay, nutrition)).join("") : `<p class="ration-today-empty muted">Приёмов пока нет.</p>`}
         </div>
         <button id="ration-add-meal" class="keep-add-item" type="button"><span>＋</span> Добавить приём пищи</button>
       </section>
-      ${pastDates.map((dateKey) => rationPastDayCard(dateKey, today)).join("")}
-      <button class="feed-more" data-page="ration" type="button">Показать ещё</button>
+      ${feedPastRuns(past, (dateKey) => rationPastDayCard(dateKey, today), { page: "ration", label: "Приёмов пищи не было" })}
     `;
   }
 
   // План: tomorrow first, then the following days.
   function rationPlanFeed(today) {
     const dates = Array.from({ length: feedDays.ration.plan }, (_, index) => addRationDays(today, index + 1));
+    // Without any plan more empty days add nothing.
+    const more = feedDataStart(state.ration, null) ? `<button class="feed-more" data-page="ration" type="button">Показать ещё</button>` : "";
     return `
       ${dates.map((dateKey) => rationPlanDayCard(dateKey, today)).join("")}
-      <button class="feed-more" data-page="ration" type="button">Показать ещё</button>
+      ${more}
     `;
   }
 
@@ -3493,9 +3639,21 @@ import {
         ${kcal ? `<em>${number(kcal)} ккал</em>` : ""}
       </li>`;
     }).join("");
+    // A day without meals is one line: the date and the button to plan it.
+    if (!meals.length && !expanded) {
+      return `<article class="ration-day-card ration-plan-day is-empty" data-date="${dateKey}">
+        <header class="ration-day-card-header">
+          <div class="ration-day-card-date">
+            <span>${rationDayLabel(dateKey, today)}${day?.source === "special" ? " · Особый день" : ""}</span>
+            <h3>${rationDayMonth(dateKey)}</h3>
+          </div>
+          <button class="ration-plan-edit text-button" data-date="${dateKey}" type="button" aria-expanded="false">＋ Спланировать</button>
+        </header>
+      </article>`;
+    }
     const body = expanded
       ? `${rationNutritionGaps(dateKey)}${rationDayEditor(dateKey, false)}${rationRepeatActions(dateKey)}`
-      : meals.length ? `<ul class="ration-plan-meals">${summary}</ul>` : `<p class="muted ration-day-card-empty">Приёмов пока нет.</p>`;
+      : `<ul class="ration-plan-meals">${summary}</ul>`;
     return `<article class="ration-day-card ration-plan-day${expanded ? " expanded" : ""}" data-date="${dateKey}">
       <header class="ration-day-card-header">
         <div class="ration-day-card-date">
@@ -3872,13 +4030,18 @@ import {
       button.onclick = () => {
         rationPlanDate = rationPlanDate === button.dataset.date ? "" : button.dataset.date;
         renderRation();
+        if (rationPlanDate && motionAllowed()) {
+          document.querySelectorAll(".ration-plan-day.expanded > :not(header)").forEach((part) => {
+            part.animate([{ opacity: 0, transform: "translate3d(0,-6px,0)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: MOTION_EASING });
+          });
+        }
       };
     });
     document.querySelectorAll(".feed-more").forEach((button) => {
       button.onclick = () => {
         const mode = pageModes[button.dataset.page];
         feedDays[button.dataset.page][mode] = Math.min(feedDays[button.dataset.page][mode] + FEED_STEP, 366);
-        render();
+        renderRevealingNew(render);
       };
     });
     document.querySelectorAll(".ration-eat-button").forEach((button) => {
@@ -4613,6 +4776,7 @@ import {
   }
 
   render();
+  revealListItems(feedItems());
   requestAppUpdateCheck(false);
   // Тычки queued before a restart or while offline go out when possible.
   nudgeWorker.schedule();

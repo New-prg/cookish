@@ -176,7 +176,7 @@ test("smoke: request with two items and one purchase mark", async () => {
 test("smoke: Рацион opens in Учёт on «Сегодня» and the past follows below", async () => {
   const { context, page } = await openPage();
   try {
-    await seedState(page, planState(dateKey(-5), {
+    await seedState(page, planState(dateKey(-40), {
       meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [] }],
     }));
     await openRoute(page, "ration");
@@ -263,9 +263,58 @@ test("smoke: План starts with tomorrow, edits a future day and requests a ra
   }
 });
 
+test("smoke: empty days stay quiet in Учёт and План", async () => {
+  const { context, page } = await openPage();
+  try {
+    await openRoute(page, "ration");
+    await page.waitForSelector(".ration-today");
+    assert.equal(await page.locator(".ration-past-day, .feed-gap, .feed-more").count(), 0, "without data Учёт shows only «Сегодня»");
+    assert.doesNotMatch(await page.locator(".ration-today-totals").innerText(), /ккал/, "no zero totals on an empty day");
+
+    await page.click("#page-slider");
+    await page.waitForSelector(".ration-plan-day");
+    assert.equal(await page.locator(".ration-plan-day.is-empty").count(), 14, "an empty plan day is one line");
+    assert.equal(await page.locator(".feed-more").count(), 0, "an empty plan has no «Показать ещё»");
+    await page.click("#page-slider");
+
+    // A plan from 9 days ago with three empty days: they fold into one row.
+    const state = planState(dateKey(-9), { meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [] }] });
+    state.ration.specialDays = Object.fromEntries([-2, -3, -4].map((offset) => [`local|${dateKey(offset)}`, { date: dateKey(offset), meals: [] }]));
+    await seedState(page, state);
+    await page.waitForSelector(".ration-today");
+    assert.equal(await page.locator(".ration-past-day").count(), 6, "only days with meals get a card");
+    assert.equal(await page.locator(".feed-gap").count(), 1, "three empty days in a row are one line");
+    assert.equal(await page.locator(`.ration-past-day[data-date="${dateKey(-10)}"]`).count(), 0, "nothing before the plan starts");
+    assert.equal(await page.locator(".feed-more").count(), 0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a folded run of empty Спорт days opens to add an activity", async () => {
+  const { context, page } = await openPage();
+  try {
+    const state = sportState();
+    state.sport.specialDays = Object.fromEntries([-2, -3].map((offset) => [`local|${dateKey(offset)}`, { date: dateKey(offset), sessions: [] }]));
+    await seedState(page, state);
+    await openRoute(page, "sport");
+    await page.waitForSelector(".sport-today");
+    assert.equal(await page.locator(".sport-past-day").count(), 8);
+    await page.click("button.feed-gap");
+    await page.waitForSelector(`.sport-past-day[data-date="${dateKey(-3)}"] .sport-add-past`);
+    assert.equal(await page.locator(".sport-past-day").count(), 10, "the run opens into its days");
+    assert.equal(await page.locator(".feed-gap").count(), 0);
+  } finally {
+    await context.close();
+  }
+});
+
 test("smoke: each ration mode keeps its scroll position for the session", async () => {
   const { context, page } = await openPage({ width: 412, height: 600 });
   try {
+    await seedState(page, planState(dateKey(-40), {
+      meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [] }],
+    }));
     const main = page.locator("main");
     await main.evaluate((node) => node.scrollTo(0, 400));
     await page.click("#page-slider");

@@ -2094,6 +2094,37 @@ body.root-page dialog > #toast {
 
 .feed-more { min-height: 44px; border: 1px dashed #cfd6d1; border-radius: var(--radius-md); background: #fff; color: var(--accent); font-weight: 600; }
 
+/* Empty states stay quiet: an empty plan day is one line, a run of empty
+   past days folds into one muted row. */
+.ration-day-card.is-empty:not(.ration-today) { padding: 8px 12px; border-style: dashed; background: transparent; }
+.ration-day-card.is-empty:not(.ration-today) { padding: 2px 4px 2px 12px; }
+.ration-day-card.is-empty .ration-day-card-header { align-items: center; }
+.ration-day-card.is-empty .ration-day-card-date { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; min-width: 0; }
+.ration-day-card.is-empty .ration-day-card-date h3 { order: -1; margin: 0; font-size: 15px; font-weight: 600; }
+.ration-day-card.is-empty .ration-day-card-empty { margin-left: auto; font-size: 12px; }
+.ration-day-card.is-empty .text-button { min-height: 40px; font-size: 14px; white-space: nowrap; }
+.ration-today.is-empty .ration-today-header { margin-bottom: 8px; }
+.ration-today.is-empty .ration-today-empty { margin: 0 0 8px; }
+.feed-gap { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; min-height: 40px; margin: 0; padding: 6px 12px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--muted); font: inherit; font-size: 13px; text-align: left; }
+.feed-gap small { font-size: 12px; white-space: nowrap; }
+button.feed-gap { border: 1px dashed #dce2dd; }
+button.feed-gap small::after { content: " ›"; color: var(--accent); }
+
+/* Dialogs rise in; the backdrop fades. `translate` keeps each dialog's own transform. */
+dialog[open] { animation: dialog-rise-in 200ms cubic-bezier(.2, .8, .2, 1); }
+dialog[open]::backdrop { animation: dialog-backdrop-in 200ms ease-out; }
+@keyframes dialog-rise-in {
+  from { opacity: 0; translate: 0 14px; }
+  to { opacity: 1; translate: 0 0; }
+}
+@keyframes dialog-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  dialog[open], dialog[open]::backdrop { animation: none; }
+}
+
 /* Assistant: the handle at the right edge of root pages and the chat overlay.
    The handle keeps one height on every page; its area is excluded from the
    Android back gesture, and content leaves room for it on the right. */
