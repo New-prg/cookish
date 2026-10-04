@@ -309,7 +309,7 @@ test("assistant: the loop stops after eight turns", async () => {
   const result = await assistant.run(thread, "Думай");
   assert.equal(result.ok, false);
   assert.equal(provider.requests.length, ASSISTANT_MAX_TURNS);
-  assert.match(thread.log.at(-1).text, /Не успел/);
+  assert.match(thread.log.at(-1).text, /Не получилось закончить/);
 });
 
 test("assistant: a provider failure is shown as an error line", async () => {

@@ -936,6 +936,58 @@ test("smoke: a tap on the check marks a request line bought and a second tap unm
   }
 });
 
+test("smoke: Профиль switches the theme and keeps it after a restart", async () => {
+  const { context, page } = await openPage();
+  try {
+    const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    const light = await background();
+    await openRoute(page, "profile");
+    await page.click('.theme-option[data-theme-value="dark"]');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "dark");
+    assert.notEqual(await background(), light);
+    assert.equal(await page.locator('.theme-option[aria-checked="true"]').innerText(), "Тёмная");
+    await page.reload({ waitUntil: "load" });
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "dark");
+    await openRoute(page, "profile");
+    await page.click('.theme-option[data-theme-value="system"]');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), undefined);
+    assert.equal(await background(), light);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: product suggestions open next to the input, never over it", async () => {
+  for (const height of [915, 520]) {
+    const { context, page } = await openPage({ width: 412, height });
+    try {
+      await seedState(page, planState(dateKey(-5), {
+        products: [{ id: "product_oats", name: "Овсянка", unit: "г", nutrition: { calories: 350, protein: 12, fat: 6, carbs: 60, fiber: 10 } }],
+        meals: [{ id: "meal_1", name: "Завтрак", time: "08:00", items: [{ id: "item_1", productId: "product_oats", name: "Овсянка", portionSize: 60 }] }],
+      }));
+      await openRoute(page, "ration");
+      await openMealRow(page, dateKey(0), "meal_1");
+      await page.locator(".meal-row.open .meal-extra-add").click();
+      const input = page.locator(".meal-extra-form [name=name]");
+      await input.evaluate((node) => node.scrollIntoView({ block: "end" }));
+      await input.pressSequentially("овс");
+      const menu = page.locator(".product-suggestion-menu.floating");
+      await menu.waitFor({ state: "visible" });
+      const field = await input.boundingBox();
+      const list = await menu.boundingBox();
+      assert.ok(list.y >= field.y + field.height || list.y + list.height <= field.y, `the list does not cover the input at ${height}px: ${JSON.stringify({ field, list })}`);
+      const option = menu.locator(".product-suggestion").first();
+      assert.match(await option.innerText(), /Овсянка[\s\S]*350\s*ккал[\s\S]*на 100 г/);
+      await option.click();
+      assert.equal(await input.inputValue(), "Овсянка");
+      assert.ok(await menu.isHidden());
+      assert.equal(await page.evaluate(() => document.activeElement?.name), "amount");
+    } finally {
+      await context.close();
+    }
+  }
+});
+
 test("smoke: opening another screen starts it from the top", async () => {
   const { context, page } = await openPage({ width: 412, height: 400 });
   try {
