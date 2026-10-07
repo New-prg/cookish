@@ -44,6 +44,7 @@ import {
   readSportLogDay,
 } from "./sport-domain.js";
 import { planOwnerKey } from "./plan-cycle.js";
+import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
   // на 100 г (для напитков — на 100 мл) и могут отличаться у конкретных марок.
@@ -126,6 +127,39 @@ import { planOwnerKey } from "./plan-cycle.js";
   let openMealKey = "";
   let extraMealKey = "";
   const modeScroll = { ration: { log: 0, plan: 0 }, sport: { log: 0, plan: 0 } };
+  // Theme from Профиль (see theme.js); here it also follows the system.
+  const themes = themeStore(window.localStorage);
+  const systemDark = window.matchMedia?.("(prefers-color-scheme: dark)");
+
+  function themePreference() {
+    return themes.read();
+  }
+
+  function setThemePreference(value) {
+    themes.write(value);
+    applyTheme();
+  }
+
+  function applyTheme() {
+    const preference = themePreference();
+    if (preference === "system") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = preference;
+    const dark = preference === "dark" || (preference === "system" && Boolean(systemDark?.matches));
+    const background = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || (dark ? "#121412" : "#f5f4ef");
+    document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => meta.setAttribute("content", background));
+    const statusBar = window.Capacitor?.Plugins?.StatusBar;
+    if (statusBar) {
+      // Style "DARK" is light text for a dark background.
+      Promise.resolve(statusBar.setStyle?.({ style: dark ? "DARK" : "LIGHT" })).catch(() => {});
+      Promise.resolve(statusBar.setBackgroundColor?.({ color: background })).catch(() => {});
+    }
+  }
+
+  applyTheme();
+  systemDark?.addEventListener?.("change", () => {
+    if (themePreference() === "system") applyTheme();
+  });
+
   // Motion: screens slide by depth, root pages by their order (see navigate).
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
   const ROUTE_DEPTH = { profile: 1, "ration-profile": 1, "request-edit": 1, "product-edit": 2, "request-answer": 2 };
@@ -710,11 +744,11 @@ import { planOwnerKey } from "./plan-cycle.js";
   // The chat knows the page and mode it was opened from; changes come as
   // Предложения that write nothing until applied.
   const ASSISTANT_SUGGESTIONS = {
-    "ration:log": ["Как я соблюдал рацион последние недели?", "Чем заменить пропущенный приём пищи?", "Какие расхождения у меня бывают чаще всего?"],
+    "ration:log": ["Насколько точно соблюдается рацион последние недели?", "Чем заменить пропущенный приём пищи?", "Какие расхождения у меня бывают чаще всего?"],
     "ration:plan": ["Сделай завтра день без мяса", "Добавь больше белка в план на неделю", "Укладывается ли план в мою цель?"],
     "sport:log": ["Как прошли мои тренировки за месяц?", "Сколько энергии я трачу на тренировках?", "Подстрой питание под дни тренировок"],
     "sport:plan": ["Составь расписание тренировок на неделю", "Добавь лёгкую тренировку в выходные", "Подстрой рацион под дни тренировок"],
-    "requests:": ["Сколько я потратил на продукты за месяц?", "Какие продукты нужны по плану на неделю?"],
+    "requests:": ["Сколько ушло на продукты за месяц?", "Какие продукты нужны по плану на неделю?"],
   };
   const PROPOSAL_STATUS = {
     pending: "Предложение",
@@ -1844,17 +1878,6 @@ import { planOwnerKey } from "./plan-cycle.js";
     return "";
   }
 
-  function suggestionLabel(product) {
-    const nutrition = product.nutrition;
-    const origin = state.products.some((item) => item.id === product.id)
-      ? "В ваших продуктах"
-      : product.catalogSource === "Open Food Facts"
-        ? `Open Food Facts${product.brand ? ` · ${product.brand}` : ""}`
-        : "Справочник";
-    if (!nutrition) return `${origin} · ${product.category || "без категории"}`;
-    return `${origin} · ${number(nutrition.calories)} ккал · Б ${number(nutrition.protein)} · Ж ${number(nutrition.fat)} · У ${number(nutrition.carbs)}`;
-  }
-
   function nutritionLine(nutrition) {
     if (!nutrition) return "";
     return `<span class="nutrition-line">На 100 г/мл: ${number(nutrition.calories)} ккал · Б ${number(nutrition.protein)} · Ж ${number(nutrition.fat)} · У ${number(nutrition.carbs)}</span>`;
@@ -1923,20 +1946,136 @@ import { planOwnerKey } from "./plan-cycle.js";
     return candidates.slice(0, 5);
   }
 
-  function productSuggestionOptions(query = "") {
-    return matchingProductSuggestions(query)
-      .map((product) =>
-      `<option value="${escapeAttr(product.name)}" label="${escapeAttr(suggestionLabel(product))}"></option>`
-    ).join("");
+  // One row of a product suggestion list: the name (the typed part in bold)
+  // with КБЖУ and the source under it, ккал per usual portion on the right.
+  function productSuggestionRow(product, query = "") {
+    const nutrition = product.nutrition;
+    const measure = rationMeasure(product);
+    const pieces = measure.unit === "шт.";
+    const portion = pieces ? 100 : measure.defaultPortion;
+    const basis = pieces ? "г" : measure.unit;
+    const own = state.products.some((item) => item.id === product.id);
+    const source = own ? "" : product.catalogSource === "Open Food Facts"
+      ? (product.brand ? `${product.brand} · OFF` : "Open Food Facts")
+      : "справочник";
+    const details = nutrition
+      ? `Б ${number(nutrition.protein)} · Ж ${number(nutrition.fat)} · У ${number(nutrition.carbs)}`
+      : (product.category || "КБЖУ не заданы");
+    const kcal = Number(nutrition?.calories);
+    const energy = nutrition && Number.isFinite(kcal)
+      ? `<span class="product-suggestion-kcal"><span><b>${number(Math.round(kcal * portion / 100))}</b> ккал</span><small>на ${number(portion)} ${basis}</small></span>`
+      : "";
+    return `<button class="product-suggestion" type="button" role="option" data-name="${escapeAttr(product.name)}">
+        <span class="product-suggestion-text">
+          <span class="product-suggestion-name">${highlightMatch(product.name, query)}</span>
+          <small>${escapeHtml(details)}${source ? ` · <span class="product-suggestion-source">${escapeHtml(source)}</span>` : ""}</small>
+        </span>
+        ${energy}
+      </button>`;
+  }
+
+  function highlightMatch(text, query) {
+    const needle = String(query || "").trim().toLocaleLowerCase("ru-RU");
+    const index = needle ? String(text).toLocaleLowerCase("ru-RU").indexOf(needle) : -1;
+    if (index < 0) return escapeHtml(text);
+    return `${escapeHtml(text.slice(0, index))}<b>${escapeHtml(text.slice(index, index + needle.length))}</b>${escapeHtml(text.slice(index + needle.length))}`;
   }
 
   function productSuggestionMenuOptions(query = "") {
-    return matchingProductSuggestions(query).map((product) => `
-      <button class="product-suggestion" type="button" role="option" data-name="${escapeAttr(product.name)}">
-        <strong>${escapeHtml(product.name)}</strong>
-        <small>${escapeHtml(suggestionLabel(product))}</small>
-      </button>
-    `).join("");
+    return matchingProductSuggestions(query).map((product) => productSuggestionRow(product, query)).join("");
+  }
+
+  // Product inputs outside Покупки share one floating list. It opens under
+  // the input, or above it when the keyboard leaves too little room below,
+  // so it never covers what is being typed.
+  let productSuggestInput = null;
+  let productSuggestMenu = null;
+
+  function productSuggestMenuElement() {
+    if (productSuggestMenu) return productSuggestMenu;
+    productSuggestMenu = document.createElement("div");
+    productSuggestMenu.className = "product-suggestion-menu floating";
+    productSuggestMenu.setAttribute("role", "listbox");
+    productSuggestMenu.setAttribute("aria-label", "Подходящие продукты");
+    productSuggestMenu.hidden = true;
+    productSuggestMenu.addEventListener("pointerdown", (event) => event.preventDefault());
+    productSuggestMenu.addEventListener("click", (event) => {
+      const option = event.target.closest(".product-suggestion");
+      const input = productSuggestInput;
+      if (!option || !input) return;
+      input.value = option.dataset.name || "";
+      hideProductSuggest();
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.productSuggestPick?.(option.dataset.name || "");
+    });
+    document.body.append(productSuggestMenu);
+    const reposition = () => positionProductSuggest();
+    window.addEventListener("resize", reposition);
+    window.visualViewport?.addEventListener("resize", reposition);
+    document.addEventListener("scroll", reposition, true);
+    return productSuggestMenu;
+  }
+
+  function bindProductSuggest(input, onPick) {
+    if (!input) return;
+    input.productSuggestPick = onPick;
+    const show = () => {
+      if (document.activeElement !== input) return;
+      const menu = productSuggestMenuElement();
+      productSuggestInput = input;
+      // A modal dialog is in the top layer: the list has to live inside it.
+      const host = input.closest("dialog[open]") || document.body;
+      if (menu.parentElement !== host) host.append(menu);
+      menu.innerHTML = productSuggestionMenuOptions(input.value);
+      menu.hidden = !menu.childElementCount || suggestionByName(input.value)?.name === input.value.trim();
+      input.setAttribute("aria-expanded", String(!menu.hidden));
+      positionProductSuggest();
+    };
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-expanded", "false");
+    input.addEventListener("focus", show);
+    input.addEventListener("input", show);
+    input.addEventListener("blur", () => setTimeout(() => {
+      if (productSuggestInput === input && document.activeElement !== input) hideProductSuggest();
+    }, 80));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") hideProductSuggest();
+    });
+  }
+
+  function hideProductSuggest() {
+    if (productSuggestMenu) productSuggestMenu.hidden = true;
+    productSuggestInput?.setAttribute("aria-expanded", "false");
+    productSuggestInput = null;
+  }
+
+  function positionProductSuggest() {
+    const menu = productSuggestMenu;
+    const input = productSuggestInput;
+    if (!menu || menu.hidden || !input) return;
+    if (!input.isConnected) return hideProductSuggest();
+    const rect = input.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    const height = viewport?.height || window.innerHeight;
+    const width = viewport?.width || window.innerWidth;
+    const top = document.querySelector(".topbar")?.getBoundingClientRect().bottom || 0;
+    const gap = 6;
+    menu.style.maxHeight = "";
+    const natural = Math.min(menu.scrollHeight, 252);
+    const below = height - rect.bottom - gap - 8;
+    const above = rect.top - top - gap - 8;
+    const downward = below >= Math.min(natural, 150) || below >= above;
+    const menuWidth = Math.min(Math.max(rect.width, 300), width - 24);
+    const menuHeight = Math.max(96, Math.min(natural, downward ? below : above));
+    // A dialog may be the containing block of a fixed element: measure its origin.
+    menu.style.left = "0px";
+    menu.style.top = "0px";
+    const origin = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(12, Math.min(rect.left, width - menuWidth - 12)) - origin.left}px`;
+    menu.style.top = `${(downward ? rect.bottom + gap : rect.top - gap - menuHeight) - origin.top}px`;
+    menu.style.width = `${menuWidth}px`;
+    menu.style.maxHeight = `${menuHeight}px`;
   }
 
   function updateProductDatalists() {
@@ -1944,6 +2083,7 @@ import { planOwnerKey } from "./plan-cycle.js";
       const editor = row.querySelector(".request-line-editor");
       if (editor) updateProductSuggestionMenu(row, editor);
     });
+    if (productSuggestInput) productSuggestInput.dispatchEvent(new Event("input"));
   }
 
   async function lookupProductBarcode() {
@@ -3774,7 +3914,7 @@ import { planOwnerKey } from "./plan-cycle.js";
   }
 
   // The open meal: each product with a check and an amount, food outside the
-  // plan, and «Всё съедено» / «Не ел». In План the amounts change the plan.
+  // plan, and «Всё съедено» / «Не съедено». In План the amounts change the plan.
   function rationMealPanel(dateKey, meal, actual, mode) {
     const log = mode === "log";
     const key = `${dateKey}|${meal.id}`;
@@ -3786,7 +3926,7 @@ import { planOwnerKey } from "./plan-cycle.js";
       const kcal = log ? item.calories : item.plannedCalories;
       const sub = `${number(Math.round(kcal))} ккал${amountChanged ? ` · по плану ${number(item.plannedAmount)} ${item.unit}` : ""}${item.replacedName ? ` · вместо «${escapeHtml(item.name)}»` : ""}`;
       return `<div class="meal-product${on ? "" : " off"}" data-item-id="${item.itemId}">
-        ${log ? `<button class="meal-product-check" data-item-id="${item.itemId}" type="button" role="checkbox" aria-checked="${on}" aria-label="${escapeAttr(`${name}: ${on ? "не ел" : "съел"}`)}"${item.productId ? "" : " disabled"}><span>${ICON_CHECK}</span></button>` : ""}
+        ${log ? `<button class="meal-product-check" data-item-id="${item.itemId}" type="button" role="checkbox" aria-checked="${on}" aria-label="${escapeAttr(`${name}: ${on ? "не съедено" : "съедено"}`)}"${item.productId ? "" : " disabled"}><span>${ICON_CHECK}</span></button>` : ""}
         <span class="meal-product-name"><span>${escapeHtml(name)}</span><small${amountChanged ? ` class="warn"` : ""}>${sub}</small></span>
         <button class="meal-amount-step" data-item-id="${item.itemId}" data-step="-1" type="button" aria-label="${escapeAttr(`${name}: меньше`)}"${item.productId || !log ? "" : " disabled"}>−</button>
         <span class="meal-amount">${number(amount)} ${item.unit}</span>
@@ -3799,15 +3939,14 @@ import { planOwnerKey } from "./plan-cycle.js";
         <span class="meal-amount">${number(extra.amount)} ${extra.unit}</span>
       </div>`).join("") : "";
     const extraForm = extraMealKey === key ? `<form class="meal-extra-form">
-        <input name="name" list="meal-extra-products" autocomplete="off" placeholder="Что съели" aria-label="Что съели вне плана">
+        <input name="name" autocomplete="off" placeholder="Что съели" aria-label="Что съели вне плана">
         <input name="amount" type="number" min="0" step="any" inputmode="decimal" placeholder="Сколько" aria-label="Сколько">
         <button class="button" type="submit">Добавить</button>
-        <datalist id="meal-extra-products">${productSuggestionOptions("")}</datalist>
-      </form>` : `<button class="text-button meal-extra-add" type="button">${actual.added.length ? "+ Добавить ещё вне плана" : "+ Съел что-то вне плана"}</button>`;
+      </form>` : `<button class="text-button meal-extra-add" type="button">${actual.added.length ? "+ Добавить ещё вне плана" : "+ Добавить вне плана"}</button>`;
     const actions = log ? `${extraForm}
       <div class="meal-panel-actions">
         <button class="meal-all-eaten${actual.state === "eaten" ? " active" : ""}" type="button">Всё съедено</button>
-        <button class="meal-skip${actual.state === "skipped" ? " active" : ""}" type="button">Не ел</button>
+        <button class="meal-skip${actual.state === "skipped" ? " active" : ""}" type="button">Не съедено</button>
       </div>` : `<button class="text-button meal-replace-assistant feed-assistant" type="button">Заменить продукт с ассистентом</button>`;
     return `<div class="meal-panel">
       ${products}${extras}
@@ -3963,10 +4102,10 @@ import { planOwnerKey } from "./plan-cycle.js";
   }
 
   const RATION_DISCREPANCY_OPTIONS = [
-    ["excluded", "Не ел продукт"],
-    ["replaced", "Заменил продукт"],
-    ["amount", "Съел другое количество"],
-    ["added", "Добавил продукт"],
+    ["excluded", "Продукт не съеден"],
+    ["replaced", "Замена продукта"],
+    ["amount", "Другое количество"],
+    ["added", "Продукт вне плана"],
   ];
 
   function liveProductByName(name) {
@@ -4061,7 +4200,7 @@ import { planOwnerKey } from "./plan-cycle.js";
           return;
         }
         renderRation();
-        showToast(input.checked ? `«${name}» съеден по плану.` : `Записано: не ел «${name}».`);
+        showToast(input.checked ? `«${name}» съеден по плану.` : `Записано: «${name}» не съедено.`);
       });
     });
   }
@@ -4076,6 +4215,7 @@ import { planOwnerKey } from "./plan-cycle.js";
       });
       form.elements.itemId.addEventListener("change", () => syncRationDiscrepancyForm(form));
       form.elements.name.addEventListener("input", () => syncRationDiscrepancyForm(form));
+      bindProductSuggest(form.elements.name);
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         const { discrepancy, error } = rationDiscrepancyFromForm(form);
@@ -4170,20 +4310,18 @@ import { planOwnerKey } from "./plan-cycle.js";
     if (!record) return "";
     if (!item.productId) return `<span aria-hidden="true"></span>`;
     const eaten = rationExcludedIndex(record, item.productId) < 0;
-    return `<input class="ration-item-check" type="checkbox" ${eaten ? "checked" : ""} aria-label="Съел: ${escapeAttr(name || "продукт")}">`;
+    return `<input class="ration-item-check" type="checkbox" ${eaten ? "checked" : ""} aria-label="Съедено: ${escapeAttr(name || "продукт")}">`;
   }
 
   function rationFoodRow(dateKey, mealId, item, record = null) {
     const product = getProduct(item.productId);
     const value = product?.name || item.name || "";
-    const listId = `ration-products-${item.id}`;
     const measure = rationMeasure(product);
     const portion = Number(item.portionSize) || measure.defaultPortion;
     return `
       <div class="ration-food-row${record ? "" : " no-check"}" data-item-id="${item.id}">
         ${rationEatenCheck(record, item, value)}
-        <input class="ration-food-input" list="${listId}" value="${escapeAttr(value)}" placeholder="Продукт" autocomplete="off">
-        <datalist id="${listId}">${productSuggestionOptions(value)}</datalist>
+        <input class="ration-food-input" value="${escapeAttr(value)}" placeholder="Продукт" autocomplete="off">
         <button class="save-ration-food" type="button" aria-label="Сохранить ${escapeAttr(value || "продукт")}">✓</button>
         <button class="ration-portion-button" type="button" aria-label="Настроить порцию ${escapeAttr(product?.name || item.query || "продукта")}">${number(portion)} ${measure.unit}</button>
         <button class="remove-ration-food" type="button" aria-label="Удалить ${escapeAttr(product?.name || item.query || "продукт")}">×</button>
@@ -4325,10 +4463,7 @@ import { planOwnerKey } from "./plan-cycle.js";
       button.onclick = () => openRationPortionDialog(button);
     });
     document.querySelectorAll(".ration-food-input").forEach((input) => {
-      input.oninput = () => {
-        const list = input.parentElement.querySelector("datalist");
-        if (list) list.innerHTML = productSuggestionOptions(input.value);
-      };
+      bindProductSuggest(input);
       input.onkeydown = (event) => {
         if (event.key !== "Enter") return;
         event.preventDefault();
@@ -4400,7 +4535,13 @@ import { planOwnerKey } from "./plan-cycle.js";
         rationMealDate = date;
         renderRation();
       });
-      row.querySelector(".meal-extra-form")?.addEventListener("submit", (event) => {
+      const extraForm = row.querySelector(".meal-extra-form");
+      bindProductSuggest(extraForm?.elements.name, (name) => {
+        const amount = extraForm.elements.amount;
+        amount.placeholder = `Сколько, ${rationMeasure(suggestionByName(name)).unit}`;
+        amount.focus();
+      });
+      extraForm?.addEventListener("submit", (event) => {
         event.preventDefault();
         event.stopPropagation();
         addRationMealExtra(date, mealId, event.target);
@@ -4860,6 +5001,31 @@ import { planOwnerKey } from "./plan-cycle.js";
       </section>`;
   }
 
+  function themeSection() {
+    const current = themePreference();
+    return `
+      <section class="section profile-theme">
+        <span class="eyebrow">Приложение</span>
+        <h2 class="profile-section-title">Тема</h2>
+        <div class="theme-switch" role="radiogroup" aria-label="Тема">
+          ${THEME_OPTIONS.map(([value, label]) => `<button class="theme-option${current === value ? " active" : ""}" type="button" role="radio" aria-checked="${current === value}" data-theme-value="${value}">${label}</button>`).join("")}
+        </div>
+      </section>`;
+  }
+
+  function bindThemeActions() {
+    document.querySelectorAll(".theme-option").forEach((button) => {
+      button.addEventListener("click", () => {
+        setThemePreference(button.dataset.themeValue);
+        document.querySelectorAll(".theme-option").forEach((option) => {
+          const active = option === button;
+          option.classList.toggle("active", active);
+          option.setAttribute("aria-checked", String(active));
+        });
+      });
+    });
+  }
+
   function strictnessSection() {
     const settings = state.assistant?.settings || {};
     return `
@@ -4926,6 +5092,7 @@ import { planOwnerKey } from "./plan-cycle.js";
       ${rationProfileSection()}
       ${aiKeySection()}
       ${strictnessSection()}
+      ${themeSection()}
       ${renderAppUpdateSection()}
       <section class="section danger-zone">
         <span class="eyebrow">Опасная зона</span>
@@ -4939,6 +5106,7 @@ import { planOwnerKey } from "./plan-cycle.js";
   function bindProfileActions() {
     bindAiKeyActions();
     bindStrictnessActions();
+    bindThemeActions();
     document.getElementById("edit-ration-profile")?.addEventListener("click", () => {
       rationProfileReturn = "profile";
       navigate("ration-profile");

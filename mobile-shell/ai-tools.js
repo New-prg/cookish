@@ -150,7 +150,7 @@ export function createAssistant({ provider, getState, changePlan, today = todayD
           thread.messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(output) });
         }
       }
-      const reply = "Не успел закончить за отведённые шаги. Уточните просьбу или попробуйте ещё раз.";
+      const reply = "Не получилось закончить за отведённые шаги. Уточните просьбу или попробуйте ещё раз.";
       emit({ type: "assistant", text: reply });
       return { ok: false, reason: reply };
     },

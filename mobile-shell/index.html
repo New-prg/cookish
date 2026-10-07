@@ -6,6 +6,13 @@
     <meta name="theme-color" content="#f5f4ef" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#121412" media="(prefers-color-scheme: dark)" />
     <title>Cookish</title>
+    <script>
+      // The theme chosen in Профиль (theme.js) applies before the first paint.
+      try {
+        const theme = localStorage.getItem("cookish.theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
