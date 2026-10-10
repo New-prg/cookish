@@ -22,8 +22,9 @@ overall history.
   Start points without dependencies: #60 (Haiku), #62 (input without КБЖУ),
   #63 (reference). Then #60 → #61; #63 → #64; #60 + #62 + #64 → #65.
 - Each issue lists its dependencies; do not start an issue before they are closed.
-- Backend, account, sync and AI proxy (#29–#32) come after #59. #36 holds AI
-  eval fixtures. #42 is the end-to-end QA and comes last.
+- After #59 comes epic #21 (milestone «Безопасность, импорт и backend»):
+  #36 (safety gate) → #35 (import), both in test mode; then #29 → #30 and
+  #29 → #31 → #32. #42 is the end-to-end QA and comes last.
 - The AI provider key is never committed or bundled. The app reads it from the
   temporary Profile field; `scripts/ai-lab/` reads it from the local opencode config.
 - Milestone «Бэклог» issues are parked; do not reopen them without the user.
