@@ -12,16 +12,17 @@ branch.
 
 ## Current development plan
 
-The plan lives in GitHub issues, not in repo files. Source of truth is epic #44
-(`gh issue view 44`): three root pages, Учёт/План modes and the test AI
-assistant. Epic #21 keeps the overall history; its AI phase moved to #44.
+The plan lives in GitHub issues, not in repo files. Source of truth is epic #59
+(`gh issue view 59`): the assistant on Claude Haiku 5.5, context compaction and
+AI filling of product nutrition from Open Food Facts and the built-in reference.
+Epic #44 (three pages and the test assistant) is done; epic #21 keeps the
+overall history.
 
-- Active slice: milestone «Три страницы и ассистент (тест)».
-  Start points without dependencies: #45 (docs), #46 (shell), #48 (plan journal),
-  #49 (AI key and transport). Then #46 → #47; #48 + #49 → #50 → #51 (+#46)
-  → #52, #56; #48 → #53 → #54 (+#46); #50 + #53 + #52 → #55.
+- Active slice: milestone «Haiku и заполнение каталога ИИ».
+  Start points without dependencies: #60 (Haiku), #62 (input without КБЖУ),
+  #63 (reference). Then #60 → #61; #63 → #64; #60 + #62 + #64 → #65.
 - Each issue lists its dependencies; do not start an issue before they are closed.
-- Backend, account, sync and AI proxy (#29–#32) come after #44. #36 holds AI
+- Backend, account, sync and AI proxy (#29–#32) come after #59. #36 holds AI
   eval fixtures. #42 is the end-to-end QA and comes last.
 - The AI provider key is never committed or bundled. The app reads it from the
   temporary Profile field; `scripts/ai-lab/` reads it from the local opencode config.
