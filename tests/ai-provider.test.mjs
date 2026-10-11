@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AI_MODELS,
   AI_PROVIDER_CONFIG,
   AiError,
   createMockProvider,
@@ -64,10 +65,29 @@ test("provider: a chat completion goes to routerai.ru with the configured model"
   assert.equal(call.headers.Authorization, `Bearer ${KEY}`);
   assert.equal(call.timeoutMs, 120_000);
   const body = JSON.parse(call.body);
+  assert.equal(body.model, "anthropic/claude-haiku-5.5");
+  assert.equal("temperature" in body, false, "Haiku takes no sampling parameters");
+  assert.deepEqual(body.reasoning, { effort: "low" });
+  assert.equal(AI_PROVIDER_CONFIG.model, "anthropic/claude-haiku-5.5");
+});
+
+test("provider: the system prompt and the tools before it are cached on Haiku", async () => {
+  const { instance, calls } = provider([completion("ok")]);
+  const messages = [{ role: "system", content: "Правила" }, { role: "user", content: "Привет" }];
+  await instance.complete({ messages });
+  const body = JSON.parse(calls[0].body);
+  assert.deepEqual(body.messages[0], { role: "system", content: [{ type: "text", text: "Правила", cache_control: { type: "ephemeral" } }] });
+  assert.deepEqual(body.messages[1], messages[1]);
+  assert.equal(messages[0].content, "Правила", "the caller's messages stay as they were");
+});
+
+test("provider: GLM stays as the fallback with its own parameters", async () => {
+  const { instance, calls } = provider([completion("ok")], AI_MODELS.glm);
+  await instance.complete({ messages: [{ role: "system", content: "Правила" }, { role: "user", content: "Привет" }] });
+  const body = JSON.parse(calls[0].body);
   assert.equal(body.model, "z-ai/glm-5.3-flash");
   assert.equal(body.temperature, 0.2);
-  assert.deepEqual(body.reasoning, { effort: "low" });
-  assert.equal(AI_PROVIDER_CONFIG.model, "z-ai/glm-5.3-flash");
+  assert.equal(body.messages[0].content, "Правила", "no cache marks for GLM");
 });
 
 test("provider: tools are offered with automatic choice", async () => {

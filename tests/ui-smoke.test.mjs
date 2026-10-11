@@ -1372,7 +1372,8 @@ test("smoke: «Применить все» writes one journal set and a card can
     assert.match(await card.innerText(), /Стало: 08:00 · Овсянка 200 г/);
     assert.match(await card.innerText(), /Δ \+/);
     assert.equal((await storedState(page)).journal?.length ?? 0, 0, "proposals write nothing");
-    const system = calls[0].body.messages[0].content;
+    // On Haiku the system prompt goes as one text part marked for the cache.
+    const system = calls[0].body.messages[0].content[0].text;
     assert.match(system, /«Рацион · Учёт»/);
     assert.ok(calls[0].body.tools.some((tool) => tool.function.name === "set_special_day"));
 
@@ -1753,7 +1754,7 @@ test("smoke: on Спорт the assistant proposes a workout change and applying 
     await askAssistant(page, "Сделай завтра полегче");
     await page.waitForSelector(".assistant-message.from-assistant");
     assert.equal(await page.locator("#assistant-title").innerText(), "Спорт · План");
-    assert.match(calls[0].body.messages[0].content, /«Спорт · План»/);
+    assert.match(calls[0].body.messages[0].content[0].text, /«Спорт · План»/);
     const card = page.locator(".assistant-proposal");
     assert.match(await card.innerText(), /Было: 07:30 Бег 40 мин, средняя/);
     assert.match(await card.innerText(), /Стало: 10:00 Велосипед 60 мин, низкая/);

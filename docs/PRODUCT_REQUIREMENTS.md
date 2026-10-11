@@ -454,7 +454,7 @@ backend AI proxy (#31).
 |---|---|
 | AST-24 | Profile has a temporary field «Ключ ИИ (тест)»: hidden input, «Проверить» shows whether the key works, «Удалить» removes it |
 | AST-25 | The key stays only on the device, apart from local data. It never enters export, sync, logs or error texts, and it is never in the repository or the APK |
-| AST-26 | Provider: routerai.ru, OpenAI-compatible chat completions; model `z-ai/glm-5.3-flash` by default, set in module config, not in UI; timeout 120 s; up to 2 retries on 5xx and network errors |
+| AST-26 | Provider: routerai.ru, OpenAI-compatible chat completions; model `anthropic/claude-haiku-5.5` by default (`z-ai/glm-5.3-flash` as the fallback), set in module config, not in UI; the system prompt and tool schemas are marked for the prompt cache; timeout 120 s; up to 2 retries on 5xx and network errors |
 | AST-27 | Before the first use a one-time warning says that plan and statistics data are sent to the external provider routerai.ru |
 
 ### 6.7 Profile & system

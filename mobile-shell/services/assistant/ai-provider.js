@@ -3,11 +3,17 @@
 // each request (ui/ai-key.js keeps it on the device). The mock adapter answers
 // tests. The key never appears in error texts.
 
+// The models the assistant can run on. The model changes only here, never in
+// the UI. Haiku takes no sampling parameters; its system prompt and tools are
+// cached. GLM stays as the fallback.
+export const AI_MODELS = Object.freeze({
+  haiku: Object.freeze({ model: "anthropic/claude-haiku-5.5", reasoningEffort: "low", temperature: null, promptCache: true }),
+  glm: Object.freeze({ model: "z-ai/glm-5.3-flash", reasoningEffort: "low", temperature: 0.2, promptCache: false }),
+});
+
 export const AI_PROVIDER_CONFIG = Object.freeze({
   baseUrl: "https://routerai.ru",
-  model: "z-ai/glm-5.3-flash",
-  reasoningEffort: "low",
-  temperature: 0.2,
+  ...AI_MODELS.haiku,
   maxTokens: 16000,
   timeoutMs: 120_000,
   retries: 2,
@@ -127,11 +133,11 @@ export function createRouterAiProvider({
       try {
         const payload = {
           model: settings.model,
-          messages,
-          temperature: settings.temperature,
+          messages: settings.promptCache ? cacheSystemPrompt(messages) : messages,
           max_tokens: settings.maxTokens,
           reasoning: { effort: settings.reasoningEffort },
         };
+        if (settings.temperature != null) payload.temperature = settings.temperature;
         if (tools?.length) {
           payload.tools = tools;
           payload.tool_choice = "auto";
@@ -150,7 +156,7 @@ export function createRouterAiProvider({
 
 // The mock adapter for tests: `respond(request)` returns an assistant message
 // (or { status } / throws AiError) for each completion; requests are recorded.
-export function createMockProvider(respond, { hasKey = true } = {}) {
+export function createMockProvider(respond, { hasKey = true, usage = () => null } = {}) {
   const requests = [];
   return {
     name: "mock",
@@ -166,12 +172,21 @@ export function createMockProvider(respond, { hasKey = true } = {}) {
       try {
         const message = await respond(request, requests.length - 1);
         if (message instanceof AiError) return failure(message);
-        return { ok: true, message: typeof message === "string" ? { role: "assistant", content: message } : message, usage: null };
+        return { ok: true, message: typeof message === "string" ? { role: "assistant", content: message } : message, usage: usage(request, requests.length - 1) };
       } catch (error) {
         return failure(error);
       }
     },
   };
+}
+
+// The tools and the system prompt open every request of a thread (the
+// provider puts the tools first): one breakpoint after the system prompt
+// caches both.
+function cacheSystemPrompt(messages) {
+  const [first, ...rest] = messages || [];
+  if (first?.role !== "system" || typeof first.content !== "string") return messages;
+  return [{ role: "system", content: [{ type: "text", text: first.content, cache_control: { type: "ephemeral" } }] }, ...rest];
 }
 
 function failure(error) {

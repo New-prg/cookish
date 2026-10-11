@@ -993,6 +993,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       createdAt: thread.createdAt,
       log: thread.log.filter((entry) => entry.type !== "proposal" || kept.has(entry.proposalId)),
       messages: bookmarkMessages(thread.messages),
+      // An upper bound when the messages above were trimmed.
+      promptTokens: thread.promptTokens || 0,
       proposals,
     };
     if (!applyLocal(localData.saveBookmark(bookmark))) return false;
@@ -1025,6 +1027,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       messages: structuredClone(bookmark.messages || []),
       proposals: structuredClone(bookmark.proposals || []),
       log: structuredClone(bookmark.log || []),
+      promptTokens: Number(bookmark.promptTokens) || 0,
     };
     // The plan may have changed since: stale Предложения get a conflict.
     recheckProposals(localData.snapshot(), assistantThread.proposals);

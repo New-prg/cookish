@@ -349,3 +349,14 @@ test("assistant: aggregates count marks, discrepancies and spend for 28 days", (
   assert.ok(stats.ration.averagePlannedPerDay.calories > 2000);
   assert.deepEqual(stats.spend, { receipts: 1, total: 120.5, currency: "RUB" });
 });
+
+test("assistant: the thread keeps the prompt size of the last model answer", async () => {
+  const state = makeState();
+  const { thread, data } = setup([], { state });
+  assert.equal(thread.promptTokens, 0);
+  const turns = [tools(call("get_profile", {})), say("Готово.")];
+  const provider = createMockProvider((request, index) => turns[index], { usage: (request, index) => ({ prompt_tokens: 7000 + index * 150 }) });
+  const assistant = assistantHarness({ data, provider, today: () => TODAY });
+  await assistant.run(thread, "Что в профиле?");
+  assert.equal(thread.promptTokens, 7150, "the second, last request of the turn");
+});

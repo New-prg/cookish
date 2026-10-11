@@ -124,6 +124,8 @@ export function createAssistant({ provider, getState, today = todayDateKey, maxT
           emit({ type: "error", text: answer.reason });
           return { ok: false, reason: answer.reason };
         }
+        // The size of the last request: context compaction is decided on it.
+        if (Number(answer.usage?.prompt_tokens) > 0) thread.promptTokens = Number(answer.usage.prompt_tokens);
         const message = answer.message || {};
         const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
         thread.messages.push({ role: "assistant", content: message.content || "", ...(toolCalls.length ? { tool_calls: toolCalls } : {}) });
