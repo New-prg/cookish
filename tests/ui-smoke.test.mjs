@@ -1967,3 +1967,125 @@ test("smoke: КБЖУ from the reference go to the catalog at once, and the card
     await context.close();
   }
 });
+
+// The Заполнитель (#65) waits 30 s for a batch: these tests drive the clock.
+async function openPageWithClock() {
+  const context = await browser.newContext({ viewport: { width: 412, height: 915 }, hasTouch: true });
+  const page = await context.newPage();
+  page.on("pageerror", (error) => {
+    throw new Error(`Unhandled page error: ${error.message}`);
+  });
+  await page.clock.install();
+  await page.goto(baseUrl, { waitUntil: "load" });
+  await appRendered(page);
+  return { context, page };
+}
+
+function fillerState({ enabled = true, queued = true } = {}) {
+  const state = assistantPlanState();
+  const now = new Date().toISOString();
+  state.products.push({ id: "product_millet", name: "Пшено", unit: "г", nutrition: null });
+  state.requests = [{ id: "request_card", status: "open", createdAt: now, updatedAt: now, items: [{ productId: "product_millet", quantity: 1 }], responses: [] }];
+  state.filler = { enabled, queue: queued ? [{ id: "fill_1", productId: "product_millet", addedAt: now }] : [], questions: [], proposals: [], misses: [] };
+  return state;
+}
+
+// The Заполнитель asks for «Пшено» from the reference; the chat is not asked.
+function fillerAi(context) {
+  return routeAi(context, (request) => {
+    const body = request.postDataJSON();
+    // On Haiku the system prompt is one text part marked for the cache.
+    const system = body.messages?.[0]?.content;
+    const text = Array.isArray(system) ? system[0]?.text : system;
+    if (!String(text || "").startsWith("Ты Заполнитель")) return aiMessage({ role: "assistant", content: "Чат." });
+    return body.messages.some((message) => message.role === "tool")
+      ? aiMessage({ role: "assistant", content: "" })
+      : aiMessage({ role: "assistant", content: "", tool_calls: [aiToolCall("upsert_product", { name: "Пшено", source: "reference", source_ref: "millet" }, "f1")] });
+  });
+}
+
+test("smoke: the queue of the last session goes as a batch, КБЖУ come with «Отменить»", async () => {
+  const { context, page } = await openPageWithClock();
+  try {
+    const calls = await fillerAi(context);
+    await withAssistantKey(page, fillerState());
+    await page.clock.fastForward(31_000);
+    await page.waitForFunction(() => /КБЖУ заполнены: «Пшено»/.test(document.getElementById("toast-message").textContent));
+    assert.equal(calls.length, 1, "one call for the batch");
+    let millet = (await storedState(page)).products.find((product) => product.id === "product_millet");
+    assert.deepEqual([millet.nutrition.calories, millet.nutrition.source], [378, "Справочник"]);
+    await page.click("#toast-action");
+    millet = (await storedState(page)).products.find((product) => product.id === "product_millet");
+    assert.equal(millet.nutrition, null, "«Отменить» takes them back");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: switched off, the Заполнитель calls nothing until «Заполнить ИИ»", async () => {
+  const { context, page } = await openPageWithClock();
+  try {
+    const calls = await fillerAi(context);
+    await withAssistantKey(page, fillerState({ enabled: false }));
+    await page.clock.fastForward(120_000);
+    assert.equal(calls.length, 0, "no AI call with the switch off");
+    await openRoute(page, "profile");
+    assert.equal(await page.locator('.profile-filler input[value="off"]').isChecked(), true);
+
+    await page.click("#header-back").catch(() => {});
+    await openRoute(page, "requests");
+    await page.locator(".request-link").first().click();
+    await page.tap('#request-items .product-chip[data-product-id="product_millet"]');
+    await page.waitForSelector("#product-form");
+    assert.equal(await page.locator(".nutrition-pending").innerText(), "нет КБЖУ");
+    await page.click("#fill-with-ai");
+    assert.equal(await page.locator(".nutrition-pending").innerText(), "КБЖУ заполняются…");
+    await page.clock.fastForward(2_000);
+    await page.waitForFunction(() => /КБЖУ заполнены/.test(document.getElementById("toast-message").textContent));
+    assert.equal(calls.length, 1);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a question of the Заполнитель waits in the feed with «?» on the product; a button or a scan answers it", async () => {
+  const { context, page } = await openPage(undefined, { hasTouch: true });
+  try {
+    await page.route("https://world.openfoodfacts.org/**", (route) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ status: 1, product: { code: "4607050690021", product_name_ru: "Пшено Мистраль", brands: "Мистраль", quantity: "800 г", nutriments: { "energy-kcal_100g": 342, proteins_100g: 11.5, fat_100g: 3.3, carbohydrates_100g: 66.5 } } }),
+    }));
+    const card = (calories, sourceRef) => ({ label: "Справочник", sourceRef, unit: "г", name: `Пшено ${calories}`, nutrition: { calories, protein: 11, fat: 4.2, carbs: (calories - 44 - 37.8) / 4, fiber: null } });
+    const state = fillerState({ queued: false });
+    state.products.push({ id: "product_millet_2", name: "Пшено второе", unit: "г", nutrition: null });
+    state.filler.questions = [
+      { id: "question_1", productId: "product_millet", kind: "choose", text: "Какое именно пшено?", candidates: [card(378, "millet"), card(300, "millet-light")] },
+      { id: "question_2", productId: "product_millet_2", kind: "choose", text: "Какое именно пшено?", candidates: [card(378, "millet"), card(300, "millet-light")] },
+    ];
+    await withAssistantKey(page, state);
+    await page.evaluate(() => {
+      window.NativeCookish = { ...window.NativeCookish, scanBarcode: () => setTimeout(() => window.__onNativeBarcodeScan(JSON.stringify({ ok: true, barcode: "4607050690021" }))) };
+    });
+    assert.match(await page.locator("#assistant-teaser").innerText(), /Заполнитель ждёт вашего ответа о КБЖУ: 2/);
+    await openRoute(page, "requests");
+    await page.locator(".request-link").first().click();
+    assert.equal(await page.locator('#request-items .product-chip.has-question[data-product-id="product_millet"]').count(), 1);
+    await page.click("#header-action");
+
+    await page.click("#assistant-handle");
+    await page.waitForSelector(".assistant-filler-question");
+    assert.equal(await page.locator(".assistant-filler-question").count(), 2);
+    await page.locator('.assistant-filler-question[data-question-id="question_1"] .filler-choice').nth(1).click();
+    await page.waitForFunction(() => document.querySelectorAll(".assistant-filler-question").length === 1);
+    await page.locator('.assistant-filler-question [data-filler-scan]').click();
+    await page.waitForFunction(() => !document.querySelector(".assistant-filler-question"));
+
+    const products = (await storedState(page)).products;
+    assert.equal(products.find((product) => product.id === "product_millet").nutrition.calories, 300, "the second variant");
+    const scanned = products.find((product) => product.id === "product_millet_2");
+    assert.deepEqual([scanned.nutrition.calories, scanned.nutrition.source, scanned.barcode], [342, "Open Food Facts", "4607050690021"]);
+    assert.deepEqual((await storedState(page)).filler.questions, []);
+  } finally {
+    await context.close();
+  }
+});

@@ -1,6 +1,7 @@
 import { createRouterAiProvider, fetchTransport } from "./assistant/ai-provider.js";
 import { createAssistantService } from "./assistant/assistant-service.js";
 import { createCatalogService } from "./catalog/catalog.js";
+import { createFillerService } from "./filler/filler-service.js";
 
 // Every Service by the name the transport knows it under. The platform passes
 // the adapters: `fetchImpl` performs HTTP requests, `aiTransport` (optional)
@@ -17,5 +18,6 @@ export function createServices({
   return {
     assistant: createAssistantService({ dataPort, providerFor, catalog, ...(today ? { today } : {}) }),
     catalog,
+    filler: createFillerService({ providerFor, catalog }),
   };
 }

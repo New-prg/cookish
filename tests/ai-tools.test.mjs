@@ -528,3 +528,22 @@ test("food: candidates far apart in calories need the person, not a pick", async
   assert.equal(outputs[1].ambiguous, true);
   assert.deepEqual(thread.proposals, []);
 });
+
+test("food: a fat content the person did not name is a question even at close calories", async () => {
+  const curd = (code, name, kcal) => ({ code, product_name_ru: name, brands: "Простоквашино", quantity: "200 г", nutriments: { "energy-kcal_100g": kcal, proteins_100g: 17, fat_100g: 2, carbohydrates_100g: 3 } });
+  const data = openLocalData(memoryStorage(foodState()));
+  data.load();
+  const outputs = [];
+  const turns = [
+    tools(call("search_food", { query: "творог" })),
+    (request) => {
+      outputs.push(lastResult(request));
+      return say("Какой жирности творог?");
+    },
+  ];
+  const provider = createMockProvider((request, index) => (typeof turns[index] === "function" ? turns[index](request) : turns[index]));
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ products: [curd("4600605029343", "Творог 2%", 99), curd("4600605029350", "Творог мягкий 5%", 92)] }) });
+  const assistant = assistantHarness({ data, provider, today: () => TODAY, fetchImpl });
+  await assistant.run(createThread({ page: "ration", mode: "plan" }), "Заполни КБЖУ творога");
+  assert.equal(outputs[0].ambiguous, true, "2% and 5% are different products");
+});

@@ -23,7 +23,15 @@ import { applyThreadEvent, createThread } from "../core/assistant-thread.js";
 import { CACHE_STORAGE_KEY, OUTBOX_STORAGE_KEY, openCache } from "../core/cache.js";
 import { CACHE_WINDOW } from "../core/cache-window.js";
 import { LEDGER_STORAGE_KEY } from "../core/full-core.js";
-import { hasNutrition, isQueuedForFilling } from "../core/filler.js";
+import { createBatchWorker } from "../core/batch-worker.js";
+import {
+  FILLER_BATCH,
+  FILLER_BURST_MS,
+  FILLER_RETRY_MS,
+  fillerPending,
+  fillerQuestionFor,
+  hasNutrition,
+} from "../core/filler.js";
 import { NUTRITION_SOURCES, nutritionSourceLabel, openFoodFactsUrl } from "../core/nutrition-source.js";
 import { GUEST_STORAGE_KEY, openGuest } from "../core/guest.js";
 import { STRICTNESS_LEVELS, createNudgeWorker } from "../core/nudges.js";
@@ -102,6 +110,28 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
         if (applyLocal(localData.finishNudges(ids, text))) renderAssistantHandle();
       },
     },
+    allowed: () => aiConsent.accepted(),
+    isOnline: () => isOnline(window),
+  });
+  // The Заполнитель fills КБЖУ of products saved without them (#65): a batch
+  // every 30 s that waits, like Тычки, for a key, the warning and a network.
+  const fillerWorker = createBatchWorker({
+    burstMs: FILLER_BURST_MS,
+    retryMs: FILLER_RETRY_MS,
+    pending: () => fillerPending(localData.snapshot().filler, FILLER_BATCH),
+    // The Service reads only what it gets; the Outbox goes first anyway.
+    decide: async (entries) => {
+      await localData.flush();
+      const products = entries.flatMap((entry) => {
+        const product = localData.snapshot().products.find((item) => item.id === entry.productId && !item.deletedAt);
+        return product ? [{ id: product.id, name: product.name, unit: product.unit, nutrition: product.nutrition || null, hint: entry.hint }] : [];
+      });
+      if (!products.length) return { ok: true, productIds: entries.map((entry) => entry.productId) };
+      return services.request("filler", "fill", { products, key: aiKey.read() });
+    },
+    finish: (entries, result) => finishFillerBatch(result),
+    drop: (entries) => applyLocal(localData.applyFillerBatch({ productIds: entries.map((entry) => entry.productId) })),
+    hasKey: hasAiKey,
     allowed: () => aiConsent.accepted(),
     isOnline: () => isOnline(window),
   });
@@ -283,12 +313,17 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     if (!result.ok) {
       if (!result.cancelled) {
         if (barcodeScanTarget === "purchase") setPurchaseStatus("Не удалось распознать штрихкод.", true);
+        else if (barcodeScanTarget.startsWith("filler:")) showToast("Не удалось распознать штрихкод.");
         else setBarcodeStatus("Не удалось распознать штрихкод.", true);
       }
       return;
     }
     if (barcodeScanTarget === "purchase") {
       lookupPurchaseBarcode(result.barcode);
+      return;
+    }
+    if (barcodeScanTarget.startsWith("filler:")) {
+      answerFillerScan(barcodeScanTarget.slice("filler:".length), result.barcode);
       return;
     }
     const form = document.getElementById("product-form");
@@ -585,6 +620,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     renderPageSlider();
     renderAssistantHandle();
     configureHeader();
+    // Products saved by this change go to the Заполнитель in a batch.
+    fillerWorker.schedule();
 
     if (route === "ration") renderRation();
     else if (route === "sport") renderSport();
@@ -761,17 +798,20 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     const visible = ROOT_PAGES.includes(route) && !assistantDialog.open;
     assistantHandle.hidden = !visible;
     const available = hasAiKey();
-    // A notice from a Тычок: a badge on the handle and a teaser line.
-    const notice = available ? state.assistant?.notice : null;
+    // A notice from a Тычок, or questions and estimates of the Заполнитель:
+    // a badge on the handle and a teaser line.
+    const waiting = available ? (state.filler?.questions?.length || 0) + (state.filler?.proposals?.length || 0) : 0;
+    const teaser = available && state.assistant?.notice ? state.assistant.notice.text
+      : waiting ? `Заполнитель ждёт вашего ответа о КБЖУ: ${waiting}` : "";
     assistantHandle.classList.toggle("unavailable", !available);
-    assistantHandle.classList.toggle("has-notice", Boolean(notice));
-    document.getElementById("assistant-handle-badge").hidden = !notice;
+    assistantHandle.classList.toggle("has-notice", Boolean(teaser));
+    document.getElementById("assistant-handle-badge").hidden = !teaser;
     assistantHandle.setAttribute("aria-label", !available
       ? assistantUnavailableText()
-      : notice ? `Ассистент: ${notice.text}` : "Открыть ассистента");
+      : teaser ? `Ассистент: ${teaser}` : "Открыть ассистента");
     assistantHandle.title = available ? "Ассистент" : assistantUnavailableText();
-    assistantTeaser.hidden = !visible || !notice;
-    assistantTeaser.textContent = notice ? notice.text : "";
+    assistantTeaser.hidden = !visible || !teaser;
+    assistantTeaser.textContent = teaser;
     syncGestureExclusion();
   }
 
@@ -843,11 +883,46 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     document.getElementById("assistant-apply-all").addEventListener("click", () => {
       applyAssistantProposals(pendingProposals(), true);
     });
+    // Answers to the Заполнитель (#65).
+    assistantFeed.addEventListener("submit", (event) => {
+      const form = event.target.closest("[data-filler-text]");
+      if (!form) return;
+      event.preventDefault();
+      const text = form.elements.text.value.trim();
+      if (text) answerFillerQuestion(form.dataset.fillerText, { text });
+    });
     assistantFeed.addEventListener("click", (event) => {
       const suggestion = event.target.closest(".assistant-suggestion");
       if (suggestion) {
         assistantInput.value = suggestion.dataset.text;
         assistantInput.focus();
+        return;
+      }
+      const choice = event.target.closest("[data-filler-answer]");
+      if (choice) return answerFillerQuestion(choice.dataset.fillerAnswer, { candidate: Number(choice.dataset.candidate) }, "КБЖУ заполнены.");
+      const skip = event.target.closest("[data-filler-dismiss]");
+      if (skip) return answerFillerQuestion(skip.dataset.fillerDismiss, { dismiss: true }, "Вопрос закрыт.");
+      const scan = event.target.closest("[data-filler-scan]");
+      if (scan) {
+        if (!window.NativeCookish?.scanBarcode) return showToast("Сканирование доступно в Android-приложении.");
+        barcodeScanTarget = `filler:${scan.dataset.fillerScan}`;
+        window.NativeCookish.scanBarcode();
+        return;
+      }
+      const estimate = event.target.closest("[data-filler-proposal]");
+      if (estimate) {
+        const id = estimate.dataset.proposalId;
+        if (estimate.dataset.fillerProposal === "apply") {
+          const applied = localData.applyFillerProposal(id);
+          if (applyLocal(applied)) {
+            showToast("Оценка КБЖУ применена.", "Отменить", () => {
+              if (applyLocal(localData.revertChangeSet(applied.changeSetId))) render();
+            });
+          }
+        } else applyLocal(localData.dismissFillerProposal(id));
+        render();
+        renderAssistantHandle();
+        renderAssistantFeed();
         return;
       }
       if (event.target.closest("#assistant-bookmarks-back")) {
@@ -1147,8 +1222,97 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       ${(ASSISTANT_SUGGESTIONS[`${assistantThread.page}:${assistantThread.mode}`] || []).slice(0, 3).map((text) =>
         `<button class="assistant-suggestion" type="button" data-text="${escapeAttr(text)}">${escapeHtml(text)}</button>`).join("")}
     </div>`;
-    assistantFeed.innerHTML = `${entries}${suggestions}${assistantBusy ? `<p class="assistant-typing">Ассистент думает…</p>` : ""}`;
+    assistantFeed.innerHTML = `${fillerFeedCards()}${entries}${suggestions}${assistantBusy ? `<p class="assistant-typing">Ассистент думает…</p>` : ""}`;
     assistantFeed.scrollTop = assistantFeed.scrollHeight;
+  }
+
+  // The answer of the Заполнитель goes to the Core; filled КБЖУ come with
+  // «Отменить», questions and estimates wait in the assistant feed.
+  function finishFillerBatch(result) {
+    const before = new Set((state.filler?.questions || []).map((question) => question.id));
+    const applied = localData.applyFillerBatch(result);
+    if (!applyLocal(applied)) return {};
+    if (applied.filled && applied.changeSetId) {
+      const names = (result.filled || []).map((entry) => getProduct(entry.productId)?.name).filter(Boolean).map((name) => `«${name}»`).join(", ");
+      showToast(`КБЖУ заполнены: ${names}.`, "Отменить", () => {
+        if (applyLocal(localData.revertChangeSet(applied.changeSetId))) render();
+      });
+    } else if ((state.filler?.questions || []).some((question) => !before.has(question.id))) {
+      showToast("Заполнителю нужен ваш ответ: откройте ассистента.");
+    }
+    render();
+    renderAssistantHandle();
+    if (assistantDialog.open) renderAssistantFeed();
+    return {};
+  }
+
+  function nutritionText(nutrition) {
+    return `${number(nutrition.calories)} ккал · Б ${number(nutrition.protein)} · Ж ${number(nutrition.fat)} · У ${number(nutrition.carbs)}`;
+  }
+
+  // Questions and estimates of the Заполнитель, stored in the Core: they open
+  // the feed until the person answers.
+  function fillerFeedCards() {
+    const filler = state.filler || {};
+    const questions = (filler.questions || []).map((question) => {
+      const product = getProduct(question.productId);
+      if (!product) return "";
+      const choices = question.kind === "replace"
+        ? `<div class="assistant-proposal-actions">
+            <button class="text-button" data-filler-dismiss="${question.id}" type="button">Оставить мои</button>
+            <button class="button" data-filler-answer="${question.id}" data-candidate="0" type="button">Заменить</button>
+          </div>`
+        : `<div class="filler-choices">${(question.candidates || []).map((card, index) => `<button class="filler-choice" data-filler-answer="${question.id}" data-candidate="${index}" type="button">
+              <strong>${escapeHtml([card.brand, card.name].filter(Boolean).join(" · "))}</strong>
+              <small>${escapeHtml(nutritionText(card.nutrition))} · ${escapeHtml(card.label)}</small>
+            </button>`).join("")}</div>
+          <form class="filler-text" data-filler-text="${question.id}">
+            <input name="text" autocomplete="off" placeholder="Своими словами: жирность, марка" aria-label="Ответ своими словами">
+            <button class="button secondary" type="submit">Ответить</button>
+          </form>
+          <div class="assistant-proposal-actions">
+            <button class="text-button" data-filler-dismiss="${question.id}" type="button">Пропустить</button>
+            <button class="button secondary" data-filler-scan="${question.id}" type="button">Сканировать штрихкод</button>
+          </div>`;
+      return `<article class="assistant-proposal assistant-filler-question" data-question-id="${question.id}">
+        <header><strong>КБЖУ «${escapeHtml(product.name)}»</strong><span class="assistant-proposal-status">Вопрос</span></header>
+        <p>${escapeHtml(question.text)}</p>
+        ${choices}
+      </article>`;
+    }).join("");
+    const estimates = (filler.proposals || []).map((proposal) => `<article class="assistant-proposal status-pending assistant-filler-estimate" data-proposal-id="${proposal.id}">
+        <header><strong>${escapeHtml(proposal.summary)}</strong><span class="assistant-proposal-status">Оценка ИИ</span></header>
+        ${assistantProposalBody(proposal)}
+        <div class="assistant-proposal-actions">
+          <button class="text-button" data-filler-proposal="dismiss" data-proposal-id="${proposal.id}" type="button">Убрать</button>
+          <button class="button" data-filler-proposal="apply" data-proposal-id="${proposal.id}" type="button">Применить</button>
+        </div>
+      </article>`).join("");
+    return questions + estimates;
+  }
+
+  function answerFillerQuestion(questionId, answer, done) {
+    const result = localData.answerFillerQuestion(questionId, answer);
+    if (!applyLocal(result)) return;
+    render();
+    renderAssistantHandle();
+    renderAssistantFeed();
+    if (result.queued) fillerWorker.schedule(2000);
+    showToast(done || (result.queued ? "Заполнитель попробует ещё раз с вашим ответом." : "Готово."));
+  }
+
+  // A barcode scanned for a question: the card comes from Open Food Facts,
+  // the Core checks it.
+  async function answerFillerScan(questionId, barcode) {
+    try {
+      const { product: card } = await services.request("catalog", "productByBarcode", { barcode });
+      if (!card?.nutrition) return showToast("В Open Food Facts нет КБЖУ для этого штрихкода.");
+      answerFillerQuestion(questionId, {
+        card: { label: NUTRITION_SOURCES.off, sourceRef: barcode, barcode, brand: card.brand, unit: card.unit, nutrition: card.nutrition },
+      }, `КБЖУ заполнены из Open Food Facts: ${card.name || barcode}.`);
+    } catch (error) {
+      showToast(error.message || "Не удалось загрузить карточку.");
+    }
   }
 
   function assistantLogEntry(entry) {
@@ -1929,17 +2093,23 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     };
   }
 
-  // A product without full КБЖУ waits for the Заполнитель.
+  // A product without full КБЖУ: the Заполнитель fills them, waits for the
+  // person, or nothing happens until «Заполнить ИИ».
   function nutritionPendingLabel(product) {
-    if (!product || hasNutrition(product)) return "";
-    return isQueuedForFilling(state, product.id) ? "КБЖУ заполняются…" : "нет КБЖУ";
+    if (!product) return "";
+    if (fillerQuestionFor(state, product.id)) return "Заполнитель ждёт вашего ответа";
+    if (hasNutrition(product)) return "";
+    return fillerPending(state.filler).some((entry) => entry.productId === product.id) ? "КБЖУ заполняются…" : "нет КБЖУ";
   }
 
   // Under the КБЖУ of a card: who is still filling them, or where they came
   // from. Open Food Facts leads to the product page and names its licence.
   function nutritionSourceLine(product) {
     const pending = nutritionPendingLabel(product);
-    if (pending) return `<p class="muted nutrition-pending">${pending}</p>`;
+    if (pending) {
+      return `<p class="muted nutrition-pending">${pending}</p>${pending === "нет КБЖУ" && product?.id
+        ? `<button id="fill-with-ai" class="button secondary" type="button">Заполнить ИИ</button>` : ""}`;
+    }
     const label = nutritionSourceLabel(product);
     if (!label) return "";
     if (label !== NUTRITION_SOURCES.off) return `<p class="muted nutrition-source">Источник: ${escapeHtml(label)}</p>`;
@@ -2186,6 +2356,14 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       </form>
     `;
     document.getElementById("lookup-barcode").addEventListener("click", lookupProductBarcode);
+    // «Заполнить ИИ» works with the automatic filling off as well.
+    document.getElementById("fill-with-ai")?.addEventListener("click", (event) => {
+      if (!applyLocal(localData.requestFilling(product.id))) return;
+      event.currentTarget.remove();
+      document.querySelector(".nutrition-pending").textContent = "КБЖУ заполняются…";
+      fillerWorker.schedule(1000);
+      showToast(hasAiKey() ? `Заполнитель возьмётся за «${product.name}».` : "Заполнитель начнёт, когда в Профиле появится ключ ИИ.");
+    });
     document.querySelector(".nutrition-source-link")?.addEventListener("click", (event) => {
       event.preventDefault();
       openExternalUrl(event.currentTarget.dataset.externalUrl);
@@ -2337,7 +2515,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     const filled = Boolean(receipt && isPurchaseDetailsFilled(receipt, productId));
     const note = String(item.note || "");
     const lineContent = resolved
-      ? `<span class="product-chip${isProductConfirmed(product) ? "" : " is-unconfirmed"}" contenteditable="false" role="button" data-product-id="${escapeAttr(productId)}" aria-label="Открыть карточку ${escapeAttr(product?.name || productName)}">${escapeHtml(product?.name || item.query || "")}</span><span class="request-line-tail">${note ? ` ${escapeHtml(note)}` : ""}</span>`
+      ? `<span class="product-chip${isProductConfirmed(product) ? "" : " is-unconfirmed"}${fillerQuestionFor(state, product?.id) ? " has-question" : ""}" contenteditable="false" role="button" data-product-id="${escapeAttr(productId)}" aria-label="Открыть карточку ${escapeAttr(product?.name || productName)}">${escapeHtml(product?.name || item.query || "")}</span><span class="request-line-tail">${note ? ` ${escapeHtml(note)}` : ""}</span>`
       : `<span class="product-candidate">${escapeHtml(item.query || "")}</span><span class="request-line-tail">${note ? ` ${escapeHtml(note)}` : ""}</span>`;
     return `
       <div class="request-item${isBlank ? " is-blank" : ""}${removableEmpty ? " is-removable-empty" : ""}${fullyBought ? " is-bought" : ""}${filled ? " is-purchase-filled" : ""}${resolved ? " is-resolved" : ""}" data-key="${item.key}" data-product-id="${escapeAttr(productId)}">
@@ -2699,7 +2877,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     const resolved = Boolean(product && item?.confirmed && String(item.query || "").trim());
     if (editor) {
       editor.innerHTML = resolved
-        ? `<span class="product-chip${isProductConfirmed(product) ? "" : " is-unconfirmed"}" contenteditable="false" role="button" data-product-id="${escapeAttr(product.id)}" aria-label="Открыть карточку ${escapeAttr(product.name)}">${escapeHtml(product.name)}</span><span class="request-line-tail">${item.note ? ` ${escapeHtml(item.note)}` : ""}</span>`
+        ? `<span class="product-chip${isProductConfirmed(product) ? "" : " is-unconfirmed"}${fillerQuestionFor(state, product?.id) ? " has-question" : ""}" contenteditable="false" role="button" data-product-id="${escapeAttr(product.id)}" aria-label="Открыть карточку ${escapeAttr(product.name)}">${escapeHtml(product.name)}</span><span class="request-line-tail">${item.note ? ` ${escapeHtml(item.note)}` : ""}</span>`
         : `<span class="product-candidate">${escapeHtml(item?.query || "")}</span><span class="request-line-tail">${item?.note ? ` ${escapeHtml(item.note)}` : ""}</span>`;
     }
     if (toolbar && resolved) toolbar.hidden = true;
@@ -5043,6 +5221,31 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       </section>`;
   }
 
+  // «Заполнять КБЖУ автоматически» (#65), on by default.
+  function fillerSection() {
+    const enabled = state.filler?.enabled !== false;
+    return `
+      <section class="section profile-filler">
+        <span class="eyebrow">Ассистент</span>
+        <h2 class="profile-section-title">Заполнение КБЖУ</h2>
+        <p class="muted">ИИ находит КБЖУ новых продуктов во встроенном справочнике и в Open Food Facts, а если не находит — предлагает оценку.</p>
+        <div class="strictness-options" role="radiogroup" aria-label="Заполнение КБЖУ">
+          <label class="strictness-option"><input type="radio" name="filler" value="on" ${enabled ? "checked" : ""}><span>Заполнять КБЖУ автоматически · по умолчанию</span></label>
+          <label class="strictness-option"><input type="radio" name="filler" value="off" ${enabled ? "" : "checked"}><span>Только по кнопке «Заполнить ИИ» у продукта</span></label>
+        </div>
+      </section>`;
+  }
+
+  function bindFillerActions() {
+    document.querySelectorAll(".profile-filler input[name=filler]").forEach((input) => {
+      input.addEventListener("change", () => {
+        if (!applyLocal(localData.setFillerEnabled(input.value === "on"))) return;
+        fillerWorker.schedule();
+        showToast(input.value === "on" ? "КБЖУ будут заполняться автоматически." : "КБЖУ заполняются только по кнопке.");
+      });
+    });
+  }
+
   function bindStrictnessActions() {
     document.querySelectorAll(".profile-strictness input[name=strictness]").forEach((input) => {
       input.addEventListener("change", () => {
@@ -5077,7 +5280,10 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       const result = await services.request("assistant", "checkKey", { key: aiKey.read() })
         .catch((error) => ({ ok: false, reason: error.message }));
       setAiKeyStatus(result.ok ? "Ключ работает." : result.reason, result.ok ? "success" : "error");
-      if (result.ok) nudgeWorker.schedule();
+      if (result.ok) {
+        nudgeWorker.schedule();
+        fillerWorker.schedule();
+      }
     });
     document.getElementById("ai-key-delete")?.addEventListener("click", async () => {
       if (!await askConfirm("Удалить ключ ИИ с этого устройства? Ассистент станет недоступен.", "Удалить ключ")) return;
@@ -5091,6 +5297,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       ${rationProfileSection()}
       ${aiKeySection()}
       ${strictnessSection()}
+      ${fillerSection()}
       ${themeSection()}
       ${renderAppUpdateSection()}
       <section class="section profile-about-data">
@@ -5109,6 +5316,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   function bindProfileActions() {
     bindAiKeyActions();
     bindStrictnessActions();
+    bindFillerActions();
     bindThemeActions();
     document.getElementById("edit-ration-profile")?.addEventListener("click", () => {
       rationProfileReturn = "profile";
@@ -5342,10 +5550,13 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   render();
   revealListItems(feedItems());
   requestAppUpdateCheck(false);
-  // Тычки queued before a restart or while offline go out when possible.
+  // Тычки and products queued before a restart or while offline go out when
+  // possible.
   nudgeWorker.schedule();
+  fillerWorker.schedule();
   window.addEventListener?.("online", () => {
     nudgeWorker.schedule(1000);
+    fillerWorker.schedule(1000);
     localData.sync();
   });
   document.addEventListener("visibilitychange", () => {

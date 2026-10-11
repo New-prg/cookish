@@ -47,7 +47,19 @@ import {
 } from "./nudges.js";
 import { batchSummary, pageOf, tryProposal } from "./proposals.js";
 import { currentDay, currentTime } from "./replay.js";
-import { emptyFiller, normalizeFiller, syncFillerQueue } from "./filler.js";
+import {
+  FILLER_ATTEMPTS,
+  FILLER_MISSES,
+  changesPersonValues,
+  checkedCard,
+  choiceQuestion,
+  emptyFiller,
+  estimateProposal,
+  normalizeFiller,
+  syncFillerQueue,
+  withCard,
+} from "./filler.js";
+import { NUTRITION_SOURCES } from "./nutrition-source.js";
 
 export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationMeasure, rationOwner, readRationDayActual, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
@@ -145,7 +157,7 @@ export function openLocalData(storage) {
     };
     const result = mutator(next, context) || { ok: false };
     if (result.ok === false) return result;
-    if (scope.products) next.filler = syncFillerQueue(current.filler, next.products, context.now);
+    if (scope.products) next.filler = syncFillerQueue(next.filler, next.products, context.now);
     if (result.changed !== false) {
       const saved = persist(next);
       if (!saved.ok) return saved;
@@ -595,6 +607,157 @@ export function openLocalData(storage) {
         const before = next.assistant.bookmarks.length;
         next.assistant.bookmarks = next.assistant.bookmarks.filter((item) => item.id !== bookmarkId);
         if (next.assistant.bookmarks.length === before) return { ok: false, reason: "Закладка не найдена." };
+        return { ok: true };
+      });
+    },
+
+    // «Заполнять КБЖУ автоматически» in Profile (#65).
+    setFillerEnabled(enabled) {
+      return apply({}, (next) => {
+        const filler = normalizeFiller(next.filler);
+        if (filler.enabled === Boolean(enabled)) return { ok: true, changed: false };
+        next.filler = { ...filler, enabled: Boolean(enabled) };
+        return { ok: true };
+      });
+    },
+
+    // «Заполнить ИИ»: the product goes to the Заполнитель even with the switch
+    // off; `hint` carries the person's own words.
+    requestFilling(productId, { hint = "" } = {}) {
+      return apply({}, (next, { now }) => {
+        if (!(next.products || []).some((product) => product.id === productId && !product.deletedAt)) return { ok: false, reason: "Продукт не найден." };
+        const filler = normalizeFiller(next.filler);
+        next.filler = {
+          ...filler,
+          queue: [
+            ...filler.queue.filter((entry) => entry.productId !== productId),
+            { id: createId("fill"), productId, addedAt: now, manual: true, hint: String(hint || "").trim(), attempts: 0 },
+          ],
+          questions: filler.questions.filter((question) => question.productId !== productId),
+        };
+        return { ok: true };
+      });
+    },
+
+    // The answer of the Заполнитель for the products of a batch (#65). Cards of
+    // the reference and Open Food Facts are written as one Набор изменений, so
+    // «Отменить» undoes them; the Core checks every card again, and one that
+    // changes КБЖУ the person typed becomes a question instead.
+    applyFillerBatch({ productIds = [], filled = [], questions = [], proposals = [], misses = [] } = {}) {
+      const alive = (productId) => current.products.find((product) => product.id === productId && !product.deletedAt);
+      const accepted = filled.flatMap((entry) => {
+        const product = alive(entry.productId);
+        const card = checkedCard(entry.card);
+        return product && card && card.label !== NUTRITION_SOURCES.estimate && !changesPersonValues(product, card.nutrition) ? [{ product, card }] : [];
+      });
+      const settle = (next, context) => {
+        const filler = normalizeFiller(next.filler);
+        const settled = new Set();
+        const asked = [];
+        const estimates = [];
+        accepted.forEach(({ product, card }) => {
+          const index = next.products.findIndex((item) => item.id === product.id);
+          next.products[index] = withCard(next.products[index], card, context);
+          settled.add(product.id);
+        });
+        filled.forEach((entry) => {
+          const product = alive(entry.productId);
+          const card = checkedCard(entry.card);
+          if (!product || !card || settled.has(product.id) || !changesPersonValues(product, card.nutrition)) return;
+          asked.push(choiceQuestion(product, [{ ...card, name: product.name }], "replace"));
+          settled.add(product.id);
+        });
+        proposals.forEach((entry) => {
+          const product = alive(entry.productId);
+          const card = checkedCard(entry.card);
+          if (!product || !card || settled.has(product.id)) return;
+          estimates.push(estimateProposal(product, card, context.now));
+          settled.add(product.id);
+        });
+        questions.forEach((entry) => {
+          const product = alive(entry.productId);
+          const candidates = (entry.candidates || []).flatMap((candidate) => {
+            const card = checkedCard(candidate);
+            return card ? [{ ...card, name: String(candidate.name || product?.name || "") }] : [];
+          }).slice(0, 3);
+          if (!product || !candidates.length || settled.has(product.id)) return;
+          asked.push(choiceQuestion(product, candidates, entry.kind === "replace" ? "replace" : "choose"));
+          settled.add(product.id);
+        });
+        const tried = new Set(productIds);
+        const seen = new Set();
+        next.filler = {
+          ...filler,
+          // A product tried without an outcome gets one more try, then waits
+          // for «Заполнить ИИ».
+          queue: filler.queue.flatMap((entry) => {
+            if (settled.has(entry.productId)) return [];
+            if (!tried.has(entry.productId)) return [entry];
+            return entry.attempts + 1 >= FILLER_ATTEMPTS ? [] : [{ ...entry, attempts: entry.attempts + 1 }];
+          }),
+          questions: [...filler.questions.filter((question) => !settled.has(question.productId)), ...asked],
+          proposals: [...filler.proposals.filter((proposal) => !settled.has(proposal.ops[0].product.id)), ...estimates],
+          misses: [...filler.misses, ...misses.map((name) => ({ name: String(name), at: context.now }))]
+            .reverse()
+            .filter((miss) => !seen.has(normalizeProductName(miss.name)) && seen.add(normalizeProductName(miss.name)))
+            .reverse()
+            .slice(-FILLER_MISSES),
+        };
+        return { ok: true, filled: accepted.length, asked: asked.length, estimated: estimates.length };
+      };
+      // Without written cards the products stay as they are.
+      if (!accepted.length) return apply({}, settle);
+      const names = accepted.map(({ product }) => `«${product.name}»`).join(", ");
+      return changePlan({ actor: "ai", page: "ration", summary: `КБЖУ ${names}`, productIds: accepted.map(({ product }) => product.id) }, settle);
+    },
+
+    // The person answers a question of the Заполнитель: a candidate by index,
+    // a card (a scanned barcode), own words for another try, or a dismissal.
+    answerFillerQuestion(questionId, { candidate, card, text, dismiss = false } = {}) {
+      const question = (current.filler?.questions || []).find((item) => item.id === questionId);
+      if (!question) return { ok: false, reason: "Вопрос уже закрыт." };
+      const product = current.products.find((item) => item.id === question.productId && !item.deletedAt);
+      const close = (next) => {
+        const filler = normalizeFiller(next.filler);
+        next.filler = { ...filler, questions: filler.questions.filter((item) => item.id !== questionId) };
+        return next.filler;
+      };
+      if (dismiss || !product) return apply({}, (next) => (close(next), { ok: true }));
+      if (String(text || "").trim()) {
+        return apply({}, (next, { now }) => {
+          const filler = close(next);
+          filler.queue = [
+            ...filler.queue.filter((entry) => entry.productId !== product.id),
+            { id: createId("fill"), productId: product.id, addedAt: now, manual: true, hint: String(text).trim(), attempts: 0 },
+          ];
+          return { ok: true, queued: true };
+        });
+      }
+      const chosen = checkedCard(card ?? question.candidates?.[candidate]);
+      if (!chosen) return { ok: false, reason: "Эти КБЖУ не прошли проверку: выберите другой вариант." };
+      return changePlan({ actor: "human", page: "ration", summary: `КБЖУ «${product.name}» · ${chosen.label}`, productIds: [product.id] }, (next, context) => {
+        const index = next.products.findIndex((item) => item.id === product.id);
+        next.products[index] = withCard(next.products[index], chosen, context);
+        close(next);
+        return { ok: true, productId: product.id };
+      });
+    },
+
+    // An estimate of the Заполнитель applied from the assistant feed.
+    applyFillerProposal(proposalId, options = {}) {
+      const proposal = (current.filler?.proposals || []).find((item) => item.id === proposalId);
+      if (!proposal) return { ok: false, reason: "Предложение уже закрыто." };
+      const applied = this.applyProposals([proposal], { ...options, together: false });
+      if (!applied.ok) return { ok: false, reason: applied.results[0]?.reason || "Предложение не применилось." };
+      this.dismissFillerProposal(proposalId);
+      return { ok: true, changeSetId: applied.results[0].changeSetId };
+    },
+
+    dismissFillerProposal(proposalId) {
+      return apply({}, (next) => {
+        const filler = normalizeFiller(next.filler);
+        if (!filler.proposals.some((item) => item.id === proposalId)) return { ok: true, changed: false };
+        next.filler = { ...filler, proposals: filler.proposals.filter((item) => item.id !== proposalId) };
         return { ok: true };
       });
     },

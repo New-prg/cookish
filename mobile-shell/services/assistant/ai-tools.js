@@ -18,7 +18,8 @@ import {
 import { applyThreadEvent } from "../../core/assistant-thread.js";
 import { NUTRITION_SOURCES } from "../../core/nutrition-source.js";
 import { COMPACTION, compactThread, requestChars } from "./context-compaction.js";
-import { FOOD_TOOLS, changesPersonValues, createFoodSession, findReferenceTool, resolveCard, searchFoodTool } from "./food-tools.js";
+import { changesPersonValues } from "../../core/filler.js";
+import { FOOD_TOOLS, createFoodSession, findReferenceTool, resolveCard, searchFoodTool } from "./food-tools.js";
 import { diffPlan, readChangeSets } from "../../core/plan-journal.js";
 import { executeOps, gateProposal, tryProposal } from "../../core/proposals.js";
 import {

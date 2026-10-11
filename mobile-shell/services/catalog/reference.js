@@ -39,6 +39,17 @@ export function isPrepared(text) {
   return PREPARED.test(normalizeProductName(text));
 }
 
+function percents(text) {
+  return [...String(text).matchAll(/(\d+(?:[.,]\d+)?)\s*%/g)].map((match) => Number(match[1].replace(",", ".")));
+}
+
+// The query names no fat content, and the names of the candidates name
+// different ones: «творог» between «Творог 2%» and «Творог 5%».
+export function percentsDiffer(names, query) {
+  if (percents(query).length) return false;
+  return new Set(names.flatMap(percents)).size > 1;
+}
+
 // Calories of the candidates differ by more than 15% and 10 ккал.
 export function caloriesSpread(values) {
   const known = values.map(Number).filter(Number.isFinite);
@@ -48,18 +59,23 @@ export function caloriesSpread(values) {
   return high - low > AMBIGUOUS_FLOOR && (low === 0 || (high - low) / low > AMBIGUOUS_SPREAD);
 }
 
-// Up to `limit` entries, closest names first; `ambiguous` when the entries
-// that fit the query differ in calories by more than 15%.
+// Up to `limit` entries, closest names first: a name that starts with the
+// query, then the fewest extra words. `ambiguous` when the entries that fit
+// the query differ in calories by more than 15%, or in a fat content the
+// query does not name.
 export function findReference(query, { limit = 5, foods = REFERENCE_FOODS } = {}) {
   const asksPrepared = isPrepared(query);
-  const size = words(query).length;
+  const asked = words(query);
   const found = foods
     .filter((food) => matchesQuery(food.name, query))
-    .map((food) => ({ food, set: !asksPrepared && isPrepared(food.name), extra: words(food.name).length - size }))
-    .sort((a, b) => Number(a.set) - Number(b.set) || a.extra - b.extra || a.food.name.localeCompare(b.food.name, "ru"));
+    .map((food) => {
+      const own = words(food.name);
+      return { food, set: !asksPrepared && isPrepared(food.name), head: sameWord(asked[0], own[0]), extra: own.length - asked.length };
+    })
+    .sort((a, b) => Number(a.set) - Number(b.set) || Number(b.head) - Number(a.head) || a.extra - b.extra || a.food.name.localeCompare(b.food.name, "ru"));
   const fitting = found.filter((entry) => !entry.set).map((entry) => entry.food);
   return {
     candidates: found.slice(0, limit).map((entry) => entry.food),
-    ambiguous: caloriesSpread(fitting.map((food) => food.nutrition.calories)),
+    ambiguous: caloriesSpread(fitting.map((food) => food.nutrition.calories)) || percentsDiffer(fitting.map((food) => food.name), query),
   };
 }

@@ -715,6 +715,21 @@ textarea { resize: vertical; }
 
 .product-chip.is-unconfirmed:active { background: color-mix(in srgb, var(--warn) 26%, var(--surface)); }
 
+/* The Заполнитель waits for an answer about this product (#65). */
+.product-chip.has-question::after {
+  content: "?";
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  color: var(--surface);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .product-token-toolbar {
   position: absolute;
   bottom: calc(100% + 5px);
@@ -2414,6 +2429,20 @@ body.root-page main { padding-right: 10px; }
 .assistant-proposal-product dt { color: var(--muted); }
 .assistant-proposal-product dd { margin: 0; }
 .assistant-proposal-actions { display: flex; justify-content: end; align-items: center; gap: 8px; }
+.filler-choices { display: grid; gap: 6px; margin: 8px 0; }
+.filler-choice {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+}
+.filler-choice small { color: var(--muted); }
+.filler-text { display: flex; gap: 6px; margin: 4px 0 8px; }
+.filler-text input { flex: 1; min-width: 0; }
 .assistant-proposal-actions .button { min-width: 112px; }
 
 .assistant-apply-bar { flex: none; padding: 8px 14px 0; border-top: 1px solid var(--surface-2); }

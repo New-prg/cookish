@@ -14,6 +14,8 @@
 - `food-bench.mjs` — сценарии КБЖУ (#64) на настоящих модели и Open Food Facts: «гречка» → справочник,
   «Простоквашино молоко 2,5%» → OFF, «творог» без жирности → вопрос, несуществующий продукт → оценка:
   `[AI_MODEL=glm] node scripts/ai-lab/food-bench.mjs [F1,F2]`.
+- `filler-bench.mjs` — Заполнитель (#65) на настоящих модели и Open Food Facts: пачка продуктов без КБЖУ
+  через Сервис, ответ принимает Ядро: `node scripts/ai-lab/filler-bench.mjs ["Гречка" "Творог" …]`.
 - `cache-probe.mjs` — что routerai.ru пропускает к модели: `cache_control` и `cached_tokens`,
   `temperature`, `reasoning.effort`: `node scripts/ai-lab/cache-probe.mjs [модель]`.
 

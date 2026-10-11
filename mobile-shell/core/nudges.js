@@ -1,3 +1,4 @@
+import { createBatchWorker } from "./batch-worker.js";
 import { readRationDay, readRationHistoryDay } from "./ration-domain.js";
 import { createId } from "./replay.js";
 import { SPORT_INTENSITY_LABELS, SPORT_TYPE_LABELS, readSportDay, readSportLogDay } from "./sport-domain.js";
@@ -134,64 +135,18 @@ function mealOf(state, date, mealId) {
 // through the transport. Without a key or a network the queue waits; on a
 // transient failure it retries later. `store` reads and writes local data;
 // `isOnline` comes from the platform.
-export function createNudgeWorker({
-  decide,
-  hasKey = () => true,
-  store,
-  isOnline = () => true,
-  allowed = () => true,
-  // Wrapped: a browser rejects setTimeout called on another object.
-  timers = { setTimeout: (run, ms) => setTimeout(run, ms), clearTimeout: (id) => clearTimeout(id) },
-  burstMs = NUDGE_BURST_MS,
-  retryMs = NUDGE_RETRY_MS,
-  onNotice = () => {},
-}) {
-  let timer = null;
-  let running = false;
-
-  function schedule(delay = burstMs) {
-    if (timer || running || !store.pending().length) return;
-    timer = timers.setTimeout(() => {
-      timer = null;
-      run();
-    }, delay);
-  }
-
-  async function run() {
-    const nudges = store.pending();
-    if (!nudges.length || running) return { ok: true, sent: 0 };
-    // Without a key, the provider warning or a network the queue waits.
-    if (!hasKey() || !allowed() || !isOnline()) return { ok: false, waiting: true };
-    running = true;
-    let result;
-    try {
-      result = await decide(nudges);
-    } catch (error) {
-      // The transport failed: the Service is unreachable, the queue waits.
-      result = { ok: false, kind: typeof error?.kind === "string" ? error.kind : "network", reason: String(error?.message || "") };
-    } finally {
-      running = false;
-    }
-    if (!result.ok) {
-      if (["network", "timeout", "server", "rate"].includes(result.kind)) schedule(retryMs);
-      else if (result.kind === "bad_response") store.finish(nudges.map((item) => item.id), "");
-      return result;
-    }
-    store.finish(nudges.map((item) => item.id), result.notify ? result.text : "");
-    if (result.notify) onNotice(result.text);
-    schedule();
-    return { ok: true, sent: nudges.length, notify: result.notify };
-  }
-
-  return {
-    schedule,
-    run,
-    cancel() {
-      if (timer) timers.clearTimeout(timer);
-      timer = null;
+export function createNudgeWorker({ decide, store, onNotice = () => {}, burstMs = NUDGE_BURST_MS, retryMs = NUDGE_RETRY_MS, ...gates }) {
+  return createBatchWorker({
+    ...gates,
+    burstMs,
+    retryMs,
+    decide,
+    pending: store.pending,
+    finish(nudges, result) {
+      store.finish(nudges.map((item) => item.id), result.notify ? result.text : "");
+      if (result.notify) onNotice(result.text);
+      return { notify: result.notify };
     },
-    get scheduled() {
-      return Boolean(timer);
-    },
-  };
+    drop: (nudges) => store.finish(nudges.map((item) => item.id), ""),
+  });
 }

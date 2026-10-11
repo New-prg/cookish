@@ -1,7 +1,7 @@
 import { hasNutrition } from "../../core/filler.js";
 import { checkNutritionCard } from "../../core/nutrition-check.js";
-import { NUTRITION_SOURCES, nutritionSourceLabel } from "../../core/nutrition-source.js";
-import { caloriesSpread, findReference, matchesQuery } from "../catalog/reference.js";
+import { NUTRITION_SOURCES } from "../../core/nutrition-source.js";
+import { caloriesSpread, findReference, matchesQuery, percentsDiffer } from "../catalog/reference.js";
 import { REFERENCE_FOODS } from "../catalog/reference-foods.js";
 
 // The КБЖУ tools of the assistant and the Заполнитель (#64, #65): the model
@@ -9,7 +9,6 @@ import { REFERENCE_FOODS } from "../catalog/reference-foods.js";
 // model named and checks them, so the model cannot distort them.
 
 const FIELDS = ["calories", "protein", "fat", "carbs", "fiber"];
-const PERSON_FIELDS = ["calories", "protein", "fat", "carbs"];
 const SOURCE_LABELS = Object.freeze({
   reference: NUTRITION_SOURCES.reference,
   off: NUTRITION_SOURCES.off,
@@ -45,10 +44,15 @@ export const FOOD_TOOLS = [
   },
 ].map((tool) => ({ type: "function", function: tool }));
 
-// What one run of the model has seen: Open Food Facts cards by barcode and
-// the candidates of ambiguous searches. `catalog` is the catalog Service.
+// What one run of the model has seen: Open Food Facts cards by barcode and,
+// for each ref of an ambiguous search, the cards of that search, which a
+// question to the person offers. `catalog` is the catalog Service.
 export function createFoodSession(catalog) {
-  return { catalog, cards: new Map(), ambiguous: new Set() };
+  return { catalog, cards: new Map(), ambiguous: new Map() };
+}
+
+function rememberAmbiguous(session, group) {
+  group.forEach((card) => session.ambiguous.set(`${card.source}:${card.sourceRef}`, group));
 }
 
 function per100(nutrition) {
@@ -61,7 +65,9 @@ function per100(nutrition) {
 export function findReferenceTool(args, session) {
   const { candidates, ambiguous } = findReference(String(args.query || ""));
   if (!candidates.length) return { ok: true, candidates: [], note: "В справочнике нет. Если у продукта есть марка, ищи search_food." };
-  if (ambiguous) candidates.forEach((food) => session.ambiguous.add(`reference:${food.id}`));
+  if (ambiguous) {
+    rememberAmbiguous(session, candidates.map((food) => ({ source: "reference", label: SOURCE_LABELS.reference, sourceRef: food.id, name: food.name, unit: food.unit, nutrition: per100(food.nutrition) })));
+  }
   return {
     ok: true,
     ambiguous,
@@ -82,10 +88,12 @@ export async function searchFoodTool(args, session) {
   if (!cards.length) return { ok: true, candidates: [], note: "В Open Food Facts не нашлось. Уточни название или оцени КБЖУ сам (source=estimate)." };
   cards.forEach((card) => session.cards.set(card.barcode, card));
   // Cards that name every word of the query are the same product for the
-  // person; if their calories differ, the person decides.
+  // person; if their calories or fat contents differ, the person decides.
   const fitting = cards.filter((card) => hasNutrition(card) && matchesQuery(`${card.brand} ${card.name}`, query));
-  const ambiguous = caloriesSpread(fitting.map((card) => card.nutrition.calories));
-  if (ambiguous) fitting.forEach((card) => session.ambiguous.add(`off:${card.barcode}`));
+  const ambiguous = caloriesSpread(fitting.map((card) => card.nutrition.calories)) || percentsDiffer(fitting.map((card) => card.name), query);
+  if (ambiguous) {
+    rememberAmbiguous(session, fitting.map((card) => ({ source: "off", label: SOURCE_LABELS.off, sourceRef: card.barcode, barcode: card.barcode, name: card.name, brand: card.brand, unit: card.unit, nutrition: per100(card.nutrition) })));
+  }
   return {
     ok: true,
     ambiguous,
@@ -109,7 +117,7 @@ export async function resolveCard(args, session) {
     return { ok: false, error: "Укажи source: reference (id из find_reference), off (штрихкод из search_food) или estimate (своя оценка)." };
   }
   const ref = String(args.source_ref || "").trim();
-  if (session.ambiguous.has(`${source}:${ref}`)) return { ok: false, ambiguous: true, error: AMBIGUOUS };
+  if (session.ambiguous.has(`${source}:${ref}`)) return { ok: false, ambiguous: true, error: AMBIGUOUS, candidates: session.ambiguous.get(`${source}:${ref}`) };
   const label = SOURCE_LABELS[source];
   if (source === "reference") {
     const food = REFERENCE_FOODS.find((entry) => entry.id === ref);
@@ -130,14 +138,4 @@ export async function resolveCard(args, session) {
     return checkedCard({ nutrition: card.nutrition, label, sourceRef: ref, unit: card.unit, barcode: ref, brand: card.brand });
   }
   return checkedCard({ nutrition: Object.fromEntries(FIELDS.map((field) => [field, args[field]])), label, sourceRef: "", unit: "" });
-}
-
-// The new card changes КБЖУ the person typed: that takes the person's answer,
-// never a silent write. Empty fields are filled without a question.
-export function changesPersonValues(product, nutrition) {
-  if (!product?.nutrition || nutritionSourceLabel(product) !== NUTRITION_SOURCES.user) return false;
-  return PERSON_FIELDS.some((field) => {
-    const own = product.nutrition[field];
-    return own !== null && own !== undefined && own !== "" && Math.abs(Number(own) - Number(nutrition[field])) > 0.05;
-  });
 }
