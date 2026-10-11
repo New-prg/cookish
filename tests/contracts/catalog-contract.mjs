@@ -50,7 +50,7 @@ export function catalogContract(name, makeTransport) {
     const url = new URL(off.calls[0].url);
     assert.equal(url.origin + url.pathname, "https://world.openfoodfacts.org/cgi/search.pl");
     assert.equal(url.searchParams.get("search_terms"), "кефир");
-    assert.equal(url.searchParams.get("page_size"), "3");
+    assert.equal(url.searchParams.get("page_size"), "5");
     assert.equal(off.calls[0].headers.Accept, "application/json");
     // A product without a name is no suggestion.
     assert.equal(products.length, 1);
@@ -73,6 +73,18 @@ export function catalogContract(name, makeTransport) {
     );
     assert.equal(products[0].nutrition.calories, 40);
     assert.equal(products[0].nutrition.source, "Open Food Facts");
+  });
+
+  test(`${name}: catalog.search caches answers and refuses an eleventh search in a minute`, async () => {
+    const off = fakeOpenFoodFacts(() => ({ body: { products: [KEFIR] } }));
+    const transport = await makeTransport({ fetchImpl: off.fetchImpl });
+    for (let index = 0; index < 10; index += 1) await transport.request("catalog", "search", { query: `кефир ${index}` });
+    await transport.request("catalog", "search", { query: "Кефир 0" });
+    assert.equal(off.calls.length, 10, "a repeated query comes from the cache");
+    const error = await rejection(transport.request("catalog", "search", { query: "кефир 10" }));
+    assert.equal(error.kind, "rate");
+    assert.match(error.message, /10 поисков в минуту/);
+    assert.equal(off.calls.length, 10, "over the limit nothing reaches Open Food Facts");
   });
 
   test(`${name}: catalog.search with fewer than three letters does not reach the network`, async () => {
@@ -114,6 +126,15 @@ export function catalogContract(name, makeTransport) {
     assert.equal(error.kind, "bad_request");
     assert.equal(error.message, "Введите от 8 до 14 цифр штрихкода.");
     assert.equal(off.calls.length, 0);
+  });
+
+  test(`${name}: a short 503 of Open Food Facts is tried once more`, async () => {
+    let calls = 0;
+    const off = fakeOpenFoodFacts(() => (calls++ === 0 ? { status: 503, body: "" } : { body: { products: [KEFIR] } }));
+    const transport = await makeTransport({ fetchImpl: off.fetchImpl });
+    const { products } = await transport.request("catalog", "search", { query: "кефир" });
+    assert.equal(off.calls.length, 2);
+    assert.equal(products[0].name, "Кефир 1%");
   });
 
   test(`${name}: network and Open Food Facts failures come back as kinds with a text`, async () => {

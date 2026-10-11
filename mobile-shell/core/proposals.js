@@ -159,7 +159,7 @@ export function gateMeals(state, meals) {
   }));
   const unknown = new Set(nutrition.missing.filter((entry) => entry.reason === "no_nutrition").map((entry) => entry.itemId));
   (meals || []).forEach((meal) => (meal.items || []).forEach((item) => {
-    if (unknown.has(item.id)) problems.push(`у продукта «${item.name}» нет КБЖУ: сначала upsert_product`);
+    if (unknown.has(item.id)) problems.push(`у продукта «${item.name}» нет КБЖУ: сначала find_reference / search_food и upsert_product`);
   }));
   return { ok: problems.length === 0, totals, problems: [...new Set(problems)] };
 }

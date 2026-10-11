@@ -11,6 +11,9 @@
 - `app-bench.mjs` — те же сценарии через Сервис ассистента приложения
   (агентный цикл, gate, Предложения и их применение), с ценой и долей кэша:
   `[AI_MODEL=glm] [AI_EFFORT=medium] node scripts/ai-lab/app-bench.mjs [S1,S2]`. По умолчанию — Haiku.
+- `food-bench.mjs` — сценарии КБЖУ (#64) на настоящих модели и Open Food Facts: «гречка» → справочник,
+  «Простоквашино молоко 2,5%» → OFF, «творог» без жирности → вопрос, несуществующий продукт → оценка:
+  `[AI_MODEL=glm] node scripts/ai-lab/food-bench.mjs [F1,F2]`.
 - `cache-probe.mjs` — что routerai.ru пропускает к модели: `cache_control` и `cached_tokens`,
   `temperature`, `reasoning.effort`: `node scripts/ai-lab/cache-probe.mjs [модель]`.
 

@@ -12,7 +12,7 @@ import { decideNudges } from "./nudges.js";
 //                                                  → { ok, reply | reason, thread }
 //   decideNudges({ nudges, page, mode, key, today }) → { ok, notify, text } | { ok: false, kind, reason }
 //   checkKey({ key })                              → { ok, label, usage, limit } | { ok: false, kind, reason }
-export function createAssistantService({ dataPort, providerFor, today = todayDateKey }) {
+export function createAssistantService({ dataPort, providerFor, catalog, today = todayDateKey }) {
   const dayOf = (payload) => (/^\d{4}-\d{2}-\d{2}$/.test(payload?.today || "") ? payload.today : today());
 
   return {
@@ -20,6 +20,7 @@ export function createAssistantService({ dataPort, providerFor, today = todayDat
       const assistant = createAssistant({
         provider: providerFor(key),
         getState: () => dataPort.read(),
+        catalog,
         today: () => dayOf(payload),
       });
       const result = await assistant.run(thread, text, { page: page ?? thread.page, mode: mode ?? thread.mode, onEvent: emit });

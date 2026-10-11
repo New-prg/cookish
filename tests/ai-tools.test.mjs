@@ -261,7 +261,7 @@ test("assistant: a proposal made stale by a human edit gets a conflict on apply"
 test("assistant: a new product, then a day that uses it; the day alone cannot apply", async () => {
   const state = makeState();
   const { assistant, thread, data } = setup([
-    tools(call("upsert_product", { name: "Киноа", unit: "г", calories: 368, protein: 14, fat: 6, carbs: 64, fiber: 7 })),
+    tools(call("upsert_product", { name: "Киноа", source: "estimate", unit: "г", calories: 368, protein: 14, fat: 6, carbs: 64, fiber: 7 })),
     () => tools(call("set_special_day", { date: TOMORROW, meals: modelMeals(state, TOMORROW, (meals) => meals.map((meal) =>
       meal.name === "Обед" ? { ...meal, items: meal.items.map((item) => item.product === "Рис" ? { product: "Киноа", amount: 100 } : item) } : meal)) })),
     say("Добавил киноа."),
@@ -397,4 +397,134 @@ test("assistant: a thread past 90k compacts before the next turn, which still se
   assert.ok(thread.log.some((entry) => entry.type === "compacted"), "the feed shows the mark");
   assert.ok(thread.log.some((entry) => entry.type === "user" && entry.text === "Завтра без говядины"), "the feed keeps everything");
   assert.equal(assistant.apply([proposal]).ok, true, "the pending Предложение still applies");
+});
+
+// КБЖУ tools (#64). The product «Пшено» exists without КБЖУ.
+function foodState() {
+  const state = makeState();
+  state.products.push({ id: "product_millet", name: "Пшено", unit: "г", nutrition: null });
+  return state;
+}
+
+const lastResult = (request) => toolResults(request).at(-1);
+
+test("food: a reference card carries its own numbers, not the model's, and goes to the catalog at once", async () => {
+  const outputs = [];
+  const { assistant, thread, data } = setup([
+    tools(call("find_reference", { query: "пшено" })),
+    (request) => {
+      outputs.push(lastResult(request));
+      return tools(call("upsert_product", { name: "Пшено", source: "reference", source_ref: "millet", calories: 999, protein: 1, fat: 1, carbs: 1 }));
+    },
+    (request) => {
+      outputs.push(lastResult(request));
+      return say("Заполнил.");
+    },
+  ], { state: foodState() });
+  await assistant.run(thread, "Заполни КБЖУ пшена");
+  const [search, upsert] = outputs;
+  assert.equal(search.ambiguous, false);
+  assert.equal(search.candidates[0].id, "millet");
+  assert.match(upsert.note, /сразу/);
+  const [proposal] = thread.proposals;
+  assert.equal(proposal.autoApply, true);
+  const { nutrition } = proposal.ops[0].product;
+  assert.deepEqual(
+    { calories: nutrition.calories, protein: nutrition.protein, source: nutrition.source, sourceRef: nutrition.sourceRef },
+    { calories: 378, protein: 11, source: "Справочник", sourceRef: "millet" },
+  );
+  assert.equal(assistant.apply([proposal]).ok, true);
+  assert.equal(data.snapshot().products.find((product) => product.id === "product_millet").nutrition.calories, 378);
+});
+
+test("food: an Open Food Facts card comes by its barcode with its own numbers", async () => {
+  const milk = {
+    code: "4607050690021",
+    product_name_ru: "Молоко питьевое 2,5%",
+    brands: "Простоквашино",
+    quantity: "930 мл",
+    nutriments: { "energy-kcal_100g": 54, proteins_100g: 3, fat_100g: 2.5, carbohydrates_100g: 4.7 },
+  };
+  const data = openLocalData(memoryStorage(foodState()));
+  data.load();
+  const outputs = [];
+  const turns = [
+    tools(call("search_food", { query: "Простоквашино молоко 2,5%" })),
+    (request) => {
+      outputs.push(lastResult(request));
+      return tools(call("upsert_product", { name: "Молоко Простоквашино 2,5%", source: "off", source_ref: milk.code, calories: 10 }));
+    },
+    say("Нашёл в Open Food Facts."),
+  ];
+  const provider = createMockProvider((request, index) => (typeof turns[index] === "function" ? turns[index](request) : turns[index]));
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ products: [milk] }) });
+  const assistant = assistantHarness({ data, provider, today: () => TODAY, fetchImpl });
+  const thread = createThread({ page: "ration", mode: "plan" });
+  await assistant.run(thread, "Добавь молоко Простоквашино 2,5%");
+  assert.deepEqual(
+    outputs[0].candidates.map((candidate) => [candidate.barcode, candidate.brand, candidate.per100.calories, candidate.complete]),
+    [[milk.code, "Простоквашино", 54, true]],
+  );
+  const [proposal] = thread.proposals;
+  const { product } = proposal.ops[0];
+  assert.equal(proposal.autoApply, true);
+  assert.equal(product.nutrition.calories, 54, "the 10 ккал of the model are ignored");
+  assert.equal(product.nutrition.source, "Open Food Facts");
+  assert.equal(product.barcode, milk.code);
+  assert.equal(product.unit, "л");
+});
+
+test("food: an estimate is a Предложение, a card that does not add up is refused", async () => {
+  const outputs = [];
+  const { assistant, thread } = setup([
+    tools(call("upsert_product", { name: "Крамбамбуля", source: "estimate", calories: 120, protein: 20, fat: 10, carbs: 30 })),
+    (request) => {
+      outputs.push(lastResult(request));
+      return tools(call("upsert_product", { name: "Крамбамбуля", source: "estimate", calories: 250, protein: 5, fat: 10, carbs: 33 }));
+    },
+    say("Оценил."),
+  ], { state: foodState() });
+  await assistant.run(thread, "Добавь крамбамбулю");
+  assert.equal(outputs[0].ok, false);
+  assert.match(outputs[0].error, /Карточка не прошла проверку: по белкам, жирам и углеводам выходит 290 ккал, а указано 120/);
+  assert.equal(thread.proposals.length, 1);
+  const [proposal] = thread.proposals;
+  assert.equal(proposal.autoApply, undefined, "an estimate waits for the person");
+  assert.equal(proposal.status, "pending");
+  assert.equal(proposal.ops[0].product.nutrition.source, "Оценка ИИ");
+});
+
+test("food: КБЖУ the person typed change only after a question", async () => {
+  const state = foodState();
+  state.products.find((product) => product.id === "product_millet").nutrition = { calories: 300, protein: 12, fat: 3, carbs: 60, source: "Вы" };
+  const { assistant, thread, data } = setup([
+    tools(call("upsert_product", { name: "Пшено", source: "reference", source_ref: "millet" })),
+    say("Предлагаю справочные значения."),
+  ], { state });
+  await assistant.run(thread, "Проверь КБЖУ пшена");
+  const [proposal] = thread.proposals;
+  assert.equal(proposal.autoApply, undefined);
+  assert.match(proposal.summary, /заменить ваши значения/);
+  assert.equal(data.snapshot().products.find((product) => product.id === "product_millet").nutrition.calories, 300);
+});
+
+test("food: candidates far apart in calories need the person, not a pick", async () => {
+  const outputs = [];
+  const { assistant, thread } = setup([
+    tools(call("find_reference", { query: "молоко" })),
+    (request) => {
+      outputs.push(lastResult(request));
+      return tools(call("upsert_product", { name: "Молоко", source: "reference", source_ref: "milk-2" }));
+    },
+    (request) => {
+      outputs.push(lastResult(request));
+      return say("Какое молоко: 1%, 2% или 3,2%?");
+    },
+  ], { state: foodState() });
+  await assistant.run(thread, "Заполни КБЖУ молока");
+  assert.equal(outputs[0].ambiguous, true);
+  assert.match(outputs[0].note, /спроси человека/);
+  assert.equal(outputs[1].ok, false);
+  assert.equal(outputs[1].ambiguous, true);
+  assert.deepEqual(thread.proposals, []);
 });

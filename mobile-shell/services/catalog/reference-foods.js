@@ -301,7 +301,6 @@ export const REFERENCE_FOODS = Object.freeze([
   {"id":"blue-cheese","name":"Сыр с голубой плесенью","category":"Сыры","unit":"г","nutrition":{"calories":353,"protein":21.4,"fat":28.7,"carbs":2.3,"fiber":0},"fdcId":172175},
   {"id":"ricotta","name":"Рикотта","category":"Сыры","unit":"г","nutrition":{"calories":150,"protein":7.5,"fat":10.2,"carbs":7.3,"fiber":0},"fdcId":170851},
   {"id":"cream-cheese","name":"Сливочный сыр","category":"Сыры","unit":"г","nutrition":{"calories":350,"protein":6.2,"fat":34.4,"carbs":5.5,"fiber":0},"fdcId":173418},
-  {"id":"cottage-cheese-4","name":"Зернёный творог 4%","category":"Сыры","unit":"г","nutrition":{"calories":98,"protein":11.1,"fat":4.3,"carbs":3.4,"fiber":0},"fdcId":172179},
   {"id":"butter","name":"Масло сливочное","category":"Масла и жиры","unit":"г","nutrition":{"calories":717,"protein":0.9,"fat":81.1,"carbs":0.1,"fiber":0},"fdcId":173430},
   {"id":"ghee","name":"Масло топлёное","category":"Масла и жиры","unit":"г","nutrition":{"calories":876,"protein":0.3,"fat":99.5,"carbs":0,"fiber":0},"fdcId":173412},
   {"id":"olive-oil","name":"Масло оливковое","category":"Масла и жиры","unit":"л","nutrition":{"calories":884,"protein":0,"fat":100,"carbs":0,"fiber":0},"fdcId":171413},

@@ -4,7 +4,8 @@
 // Units: "г" for solids, "л" for liquids (КБЖУ per 100 мл, as per 100 г).
 // The build checks that every fdc_id exists; --list prints the descriptions
 // for review. Left out, see README.md: bran (USDA energy factors), lemon,
-// lime and vinegar (energy from acids), lard (902 ккал).
+// lime and vinegar (energy from acids), lard (902 ккал), American cottage
+// cheese (the model took it for Russian творог).
 export const FOODS = [
   // Крупы и макароны
   ["buckwheat", "Гречка ядрица", "Крупы и макароны", "г", 170685],
@@ -332,7 +333,6 @@ export const FOODS = [
   ["blue-cheese", "Сыр с голубой плесенью", "Сыры", "г", 172175],
   ["ricotta", "Рикотта", "Сыры", "г", 170851],
   ["cream-cheese", "Сливочный сыр", "Сыры", "г", 173418],
-  ["cottage-cheese-4", "Зернёный творог 4%", "Сыры", "г", 172179],
 
   // Масла и жиры
   ["butter", "Масло сливочное", "Масла и жиры", "г", 173430],

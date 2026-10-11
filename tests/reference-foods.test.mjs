@@ -5,6 +5,7 @@ import { checkNutritionCard } from "../mobile-shell/core/nutrition-check.js";
 import { NUTRITION_SOURCES, nutritionSourceLabel, openFoodFactsUrl } from "../mobile-shell/core/nutrition-source.js";
 import { memoryStorage, normalizeProductName, openLocalData } from "../mobile-shell/core/local-data.js";
 import { REFERENCE_FOODS, REFERENCE_SOURCE } from "../mobile-shell/services/catalog/reference-foods.js";
+import { findReference } from "../mobile-shell/services/catalog/reference.js";
 
 test("reference: every card passes the check, ids and names are unique", () => {
   assert.ok(REFERENCE_FOODS.length >= 300, `about 300 common products, got ${REFERENCE_FOODS.length}`);
@@ -18,6 +19,19 @@ test("reference: every card passes the check, ids and names are unique", () => {
     assert.ok(food.category, `${food.id} has a category`);
     assert.ok(["г", "л"].includes(food.unit), `${food.id}: КБЖУ need a weight or a volume, not pieces`);
   });
+});
+
+test("reference search: words match up to their endings, other forms wait until asked", () => {
+  const names = (query) => findReference(query).candidates.map((food) => food.name);
+  assert.ok(names("огурцы").includes("Огурец"), "огурец / огурцы");
+  assert.ok(names("гречку").includes("Гречка ядрица"));
+  assert.equal(names("рис").includes("Рисовое молоко"), false);
+  assert.equal(names("сыр").some((name) => /сыр(ые|ая)/i.test(name)), false);
+  assert.equal(findReference("гречка").ambiguous, false, "boiled buckwheat waits until asked");
+  assert.equal(findReference("огурцы").ambiguous, false, "pickles wait until asked, and 3 ккал mean nothing");
+  assert.equal(findReference("молоко").ambiguous, true, "1%, 2% and 3,2% are far apart");
+  assert.deepEqual(names("молоко 3,2%"), ["Молоко 3,2%"]);
+  assert.deepEqual(names("картошка"), [], "the model asks with the usual name");
 });
 
 test("card check: a consistent card passes, a gap or a mismatch does not", () => {

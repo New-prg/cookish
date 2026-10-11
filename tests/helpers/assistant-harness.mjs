@@ -4,12 +4,18 @@ import { createLocalTransport } from "../../mobile-shell/transport/local.js";
 
 // The assistant as the app uses it: the Service behind the local transport
 // reads `data` through the data port, and the Core applies Предложения with
-// its own command. `provider` answers on the Service side.
-export function assistantHarness({ data, provider, today }) {
+// its own command. `provider` answers on the Service side; `fetchImpl`
+// stands for Open Food Facts.
+export function assistantHarness({
+  data,
+  provider,
+  today,
+  fetchImpl = async () => {
+    throw new Error("No network in tests.");
+  },
+}) {
   const transport = createLocalTransport(createServices({
-    fetchImpl: async () => {
-      throw new Error("No network in tests.");
-    },
+    fetchImpl,
     dataPort: { read: async () => data.snapshot() },
     providerFor: () => provider,
     today,

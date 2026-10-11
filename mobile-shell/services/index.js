@@ -13,8 +13,9 @@ export function createServices({
   providerFor = (key) => createRouterAiProvider({ getKey: () => key, transport: aiTransport }),
   today,
 }) {
+  const catalog = createCatalogService({ fetchImpl });
   return {
-    assistant: createAssistantService({ dataPort, providerFor, ...(today ? { today } : {}) }),
-    catalog: createCatalogService({ fetchImpl }),
+    assistant: createAssistantService({ dataPort, providerFor, catalog, ...(today ? { today } : {}) }),
+    catalog,
   };
 }

@@ -1061,6 +1061,12 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       }, {
         onEvent: (event) => {
           applyThreadEvent(thread, event);
+          // КБЖУ from the reference or Open Food Facts go to the catalog at
+          // once; the card keeps «Отменить».
+          if (event.type === "proposal" && event.proposal.autoApply) {
+            const proposal = thread.proposals.find((value) => value.id === event.proposal.id);
+            applyAssistantProposals([proposal], false, `КБЖУ «${proposal.ops[0].product.name}» заполнены.`);
+          }
           if (assistantThread === thread) renderAssistantFeed();
         },
       });
@@ -1080,7 +1086,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     }
   }
 
-  function applyAssistantProposals(proposals, together) {
+  function applyAssistantProposals(proposals, together, done = "") {
     if (!proposals.length) return false;
     const result = localData.applyProposals(proposals, { together });
     markProposals(proposals, result.results);
@@ -1090,7 +1096,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     const failed = result.results.filter((entry) => !entry.ok);
     if (!result.ok) showToast(failed[0]?.reason || "Предложение не применилось.");
     else if (failed.length) showToast(`Применено ${result.results.length - failed.length}, с конфликтом ${failed.length}.`);
-    else showToast(proposals.length > 1 ? "Предложения применены." : "Предложение применено.");
+    else showToast(done || (proposals.length > 1 ? "Предложения применены." : "Предложение применено."));
     return result.ok;
   }
 

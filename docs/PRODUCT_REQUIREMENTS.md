@@ -460,6 +460,7 @@ backend AI proxy (#31).
 | AST-26 | Provider: routerai.ru, OpenAI-compatible chat completions; model `anthropic/claude-haiku-5.5` by default (`z-ai/glm-5.3-flash` as the fallback), set in module config, not in UI; the system prompt and tool schemas are marked for the prompt cache; timeout 120 s; up to 2 retries on 5xx and network errors |
 | AST-27 | Before the first use a one-time warning says that plan and statistics data are sent to the external provider routerai.ru |
 | AST-28 | Context compaction (#61): when the last request reached 90k prompt tokens, read results older than the last two messages of the person become «[устарело — перечитай get_…]»; if the estimate stays above 60k, the model writes a note and then sees the note, the person's words verbatim (up to ~10k tokens, from the feed), the pending Предложения with ids and the last turn. The feed shows «Сжал начало разговора» and is never shortened; a bookmark keeps the compacted conversation |
+| AST-29 | КБЖУ tools (#64): `find_reference` (built-in reference), `search_food` (Open Food Facts, ≤ 10 searches a minute, cached, one retry on a short 5xx), `upsert_product` with `source` reference / off / estimate. For reference and off the code takes the numbers of the card by `source_ref`; every card passes `core/nutrition-check.js`; they go to the catalog at once with «Отменить». An estimate, or a change of КБЖУ the person typed, is a Предложение. Candidates more than 15% apart in calories cannot be picked: the model asks the person |
 
 ### 6.7 Profile & system
 

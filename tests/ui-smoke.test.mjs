@@ -1941,3 +1941,29 @@ test("smoke: a long thread compacts with a mark in the feed and continues from a
     await context.close();
   }
 });
+
+test("smoke: КБЖУ from the reference go to the catalog at once, and the card can undo them", async () => {
+  const { context, page } = await openPage();
+  try {
+    let turn = 0;
+    await routeAi(context, () => (turn++ === 0
+      ? aiMessage({ role: "assistant", content: "", tool_calls: [aiToolCall("upsert_product", { name: "Пшено", source: "reference", source_ref: "millet" }, "c1")] })
+      : aiMessage({ role: "assistant", content: "Заполнил КБЖУ пшена из справочника." })));
+    const state = assistantPlanState();
+    state.products.push({ id: "product_millet", name: "Пшено", unit: "г", nutrition: null });
+    await withAssistantKey(page, state);
+    await askAssistant(page, "Заполни КБЖУ пшена");
+    await page.waitForSelector(".assistant-proposal.status-applied");
+    assert.match(await page.locator(".assistant-proposal").innerText(), /КБЖУ «Пшено» · Справочник[\s\S]*Применено/);
+    assert.equal(await page.locator("#assistant-apply-bar").isVisible(), false, "nothing waits for «Применить все»");
+    let millet = (await storedState(page)).products.find((product) => product.id === "product_millet");
+    assert.deepEqual([millet.nutrition.calories, millet.nutrition.source, millet.nutrition.sourceRef], [378, "Справочник", "millet"]);
+
+    await page.click(".assistant-proposal [data-proposal-action=undo]");
+    await page.waitForSelector(".assistant-proposal.status-reverted");
+    millet = (await storedState(page)).products.find((product) => product.id === "product_millet");
+    assert.equal(millet.nutrition, null);
+  } finally {
+    await context.close();
+  }
+});

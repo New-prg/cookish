@@ -7,20 +7,27 @@ import { ServiceError } from "../service-error.js";
 // Node's on a server.
 
 export const OPEN_FOOD_FACTS_ORIGIN = "https://world.openfoodfacts.org";
-export const OPEN_FOOD_FACTS_SEARCH_LIMIT = 3;
+export const OPEN_FOOD_FACTS_SEARCH_LIMIT = 5;
 
 const FIELDS = [
   "code", "product_name", "product_name_ru", "generic_name_ru", "brands", "quantity",
   "categories", "categories_tags", "nutriments", "ingredients_text_ru", "ingredients_text",
 ].join(",");
 
-export function createOpenFoodFacts({ fetchImpl }) {
-  async function getJson(url) {
+// Open Food Facts often answers a short 503: one more try after a pause.
+export const OPEN_FOOD_FACTS_RETRY_MS = 600;
+
+export function createOpenFoodFacts({ fetchImpl, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+  async function getJson(url, retry = true) {
     let response;
     try {
       response = await fetchImpl(url, { headers: { Accept: "application/json" } });
     } catch {
       throw new ServiceError("network", "Нет связи с Open Food Facts. Проверьте интернет.");
+    }
+    if (response.status >= 500 && retry) {
+      await sleep(OPEN_FOOD_FACTS_RETRY_MS);
+      return getJson(url, false);
     }
     if (!response.ok) throw new ServiceError("unavailable", `Open Food Facts не ответил (${response.status}). Попробуйте позже.`);
     try {

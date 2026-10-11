@@ -18,6 +18,7 @@ import {
 import { applyThreadEvent } from "../../core/assistant-thread.js";
 import { NUTRITION_SOURCES } from "../../core/nutrition-source.js";
 import { COMPACTION, compactThread, requestChars } from "./context-compaction.js";
+import { FOOD_TOOLS, changesPersonValues, createFoodSession, findReferenceTool, resolveCard, searchFoodTool } from "./food-tools.js";
 import { diffPlan, readChangeSets } from "../../core/plan-journal.js";
 import { executeOps, gateProposal, tryProposal } from "../../core/proposals.js";
 import {
@@ -75,7 +76,6 @@ export const RATION_TOOLS = [
   { name: "get_change_sets", description: "Журнал последних изменений плана (человека и ассистента) с id для отката.", parameters: { type: "object", properties: { limit: { type: "number" } } } },
   { name: "set_special_day", description: "Предложить Особый день: заменить план одной даты (сегодня или будущее). Передай ВСЕ приёмы пищи дня целиком.", parameters: { type: "object", properties: { date: { type: "string" }, meals: mealsSchema }, required: ["date", "meals"] } },
   { name: "release_version", description: "Предложить новый недельный план, действующий с даты effective_from (сегодня или будущее). Нужны все 7 дней недели, ключи пн..вс.", parameters: { type: "object", properties: { effective_from: { type: "string" }, week: { type: "object", properties: Object.fromEntries(WEEK_KEYS.map((key) => [key, mealsSchema])), required: WEEK_KEYS } }, required: ["effective_from", "week"] } },
-  { name: "upsert_product", description: "Предложить новый продукт каталога или исправить КБЖУ существующего (на 100 г или 100 мл).", parameters: { type: "object", properties: { name: { type: "string" }, unit: { type: "string", enum: ["г", "мл", "шт."] }, calories: { type: "number" }, protein: { type: "number" }, fat: { type: "number" }, carbs: { type: "number" }, fiber: { type: "number" } }, required: ["name", "calories", "protein", "fat", "carbs"] } },
   { name: "revert_change_set", description: "Предложить откат набора изменений из журнала (своего или ручного).", parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
 ].map((tool) => ({ type: "function", function: tool }));
 
@@ -101,11 +101,12 @@ export const SPORT_TOOLS = [
   { name: "release_sport_version", description: "Предложить новое недельное расписание тренировок с даты effective_from (сегодня или будущее). Нужны все 7 дней, ключи пн..вс; день отдыха — пустой список.", parameters: { type: "object", properties: { effective_from: { type: "string" }, week: { type: "object", properties: Object.fromEntries(WEEK_KEYS.map((key) => [key, sessionsSchema])), required: WEEK_KEYS } }, required: ["effective_from", "week"] } },
 ].map((tool) => ({ type: "function", function: tool }));
 
-export const ASSISTANT_TOOLS = [...RATION_TOOLS, ...SPORT_TOOLS];
+export const ASSISTANT_TOOLS = [...RATION_TOOLS, ...FOOD_TOOLS, ...SPORT_TOOLS];
 
 // `getState()` reads the full Core through the data port and may be async; a
 // turn changes only the thread it gets. Events go to `onEvent` as they happen.
-export function createAssistant({ provider, getState, today = todayDateKey, maxTurns = ASSISTANT_MAX_TURNS } = {}) {
+// `catalog` is the catalog Service for search_food.
+export function createAssistant({ provider, getState, catalog, today = todayDateKey, maxTurns = ASSISTANT_MAX_TURNS } = {}) {
   return {
     async run(thread, text, { page = thread.page, mode = thread.mode, onEvent = () => {} } = {}) {
       const day = today();
@@ -119,6 +120,7 @@ export function createAssistant({ provider, getState, today = todayDateKey, maxT
       emit({ type: "user", text: String(text || "") });
       const state = await getState();
       const working = { state: replayPending(state, thread, day) };
+      const session = createFoodSession(catalog);
       const system = systemPrompt(state, { page, mode, today: day });
       // Once per turn: a long conversation shrinks before the next request.
       let compacted = false;
@@ -155,7 +157,7 @@ export function createAssistant({ provider, getState, today = todayDateKey, maxT
           }
           const name = call.function?.name || "";
           const output = args && typeof args === "object"
-            ? runTool(name, args, { working, thread, today: day, emit })
+            ? await runTool(name, args, { working, thread, today: day, emit, session })
             : { ok: false, error: "Аргументы инструмента — не JSON." };
           thread.messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(output) });
         }
@@ -167,7 +169,7 @@ export function createAssistant({ provider, getState, today = todayDateKey, maxT
   };
 }
 
-function runTool(name, args, { working, thread, today, emit }) {
+function runTool(name, args, { working, thread, today, emit, session }) {
   const state = working.state;
   switch (name) {
     case "get_plan": {
@@ -213,8 +215,14 @@ function runTool(name, args, { working, thread, today, emit }) {
       return proposeSpecialDay(args, { working, thread, today, emit });
     case "release_version":
       return proposeVersion(args, { working, thread, today, emit });
+    case "find_reference":
+      emit({ type: "progress", text: `Ищу «${String(args.query || "")}» в справочнике…` });
+      return findReferenceTool(args, session);
+    case "search_food":
+      emit({ type: "progress", text: `Ищу «${String(args.query || "")}» в Open Food Facts…` });
+      return searchFoodTool(args, session);
     case "upsert_product":
-      return proposeProduct(args, { working, thread, today, emit });
+      return proposeProduct(args, { working, thread, today, emit, session });
     case "revert_change_set":
       return proposeRevert(args, { working, thread, today, emit });
     default:
@@ -337,20 +345,19 @@ export function toDomainSessions(sessions, currentSessions = []) {
   return { sessions: result, errors: [...new Set(errors)] };
 }
 
-function proposeProduct(args, { working, thread, today, emit }) {
+// The card comes from the source the model named (#64). КБЖУ of the
+// reference and Open Food Facts go to the catalog at once, the person can
+// undo them; an estimate, or a change of what the person typed, is a
+// Предложение the person decides on.
+async function proposeProduct(args, { working, thread, today, emit, session }) {
   const name = String(args.name || "").trim();
   if (!name) return { ok: false, error: "Нужно название продукта." };
-  const nutrition = {};
-  for (const field of ["calories", "protein", "fat", "carbs", "fiber"]) {
-    const value = args[field] == null || args[field] === "" ? (field === "fiber" ? 0 : NaN) : Number(args[field]);
-    if (!Number.isFinite(value) || value < 0) return { ok: false, error: `Поле ${field} должно быть неотрицательным числом.` };
-    nutrition[field] = value;
-  }
-  if (nutrition.calories > 900 || nutrition.protein > 100 || nutrition.fat > 100 || nutrition.carbs > 100) {
-    return { ok: false, error: "КБЖУ на 100 г вне разумных пределов: проверь значения." };
-  }
+  const card = await resolveCard(args, session);
+  if (!card.ok) return card;
   const existing = productByName(working.state, name);
-  const unit = ["г", "мл", "шт."].includes(args.unit) ? args.unit : (existing?.unit || "г");
+  const asks = changesPersonValues(existing, card.nutrition);
+  const autoApply = card.label !== NUTRITION_SOURCES.estimate && !asks;
+  const unit = String(args.unit || card.unit || "г");
   const product = {
     ...(existing ? structuredClone(existing) : {
       id: createId("product"),
@@ -360,23 +367,39 @@ function proposeProduct(args, { working, thread, today, emit }) {
       genericKey: normalizeProductName(name).replace(/[^a-zа-яё0-9]+/gi, "_"),
       barcode: "",
       ingredients: "",
-      catalogSource: "Ассистент",
     }),
+    ...(card.barcode ? { barcode: card.barcode, kind: "sku" } : {}),
+    ...(card.brand && !existing?.brand ? { brand: card.brand } : {}),
     name: existing?.name || name,
     unit: existing?.unit || (unit === "мл" ? "л" : unit),
-    nutrition: { ...nutrition, vitamins: existing?.nutrition?.vitamins || "", minerals: existing?.nutrition?.minerals || "", basis: "100 г/мл", source: NUTRITION_SOURCES.estimate },
-    nutritionSource: "Ассистент",
+    catalogSource: card.label,
+    nutrition: {
+      ...card.nutrition,
+      vitamins: existing?.nutrition?.vitamins || "",
+      minerals: existing?.nutrition?.minerals || "",
+      basis: "100 г/мл",
+      source: card.label,
+      ...(card.sourceRef ? { sourceRef: card.sourceRef } : {}),
+    },
     confirmed: existing ? Boolean(existing.confirmed) : false,
   };
-  return finishProposal({
+  const summary = asks ? `КБЖУ «${product.name}»: заменить ваши значения?`
+    : autoApply ? `КБЖУ «${product.name}» · ${card.label}`
+    : `Оценка КБЖУ «${product.name}»`;
+  const result = finishProposal({
     kind: "product",
-    summary: existing ? `КБЖУ продукта «${product.name}»` : `Новый продукт «${product.name}»`,
+    summary,
     page: "ration",
     dates: [],
     gateDates: [],
     ops: [{ op: "product", product }],
     productIds: [product.id],
+    autoApply,
   }, { working, thread, today, emit });
+  if (!result.ok) return result;
+  if (autoApply) return { ...result, note: `КБЖУ из источника «${card.label}» заносятся в каталог сразу; человек может отменить.` };
+  if (asks) return { ...result, note: "Эти КБЖУ человек вводил сам: карточка спрашивает, заменить ли их. Не говори, что они уже изменены." };
+  return result;
 }
 
 function proposeRevert(args, { working, thread, today, emit }) {
@@ -422,6 +445,8 @@ function finishProposal(spec, { working, thread, today, emit }) {
     after: diff.after,
     preview: buildPreview(working.state, next, spec),
     status: "pending",
+    // The Core applies it as soon as it arrives (#64).
+    ...(spec.autoApply ? { autoApply: true } : {}),
     createdAt: context.now,
   };
   working.state = next;
@@ -459,7 +484,7 @@ export function toDomainMeals(state, meals, currentMeals = []) {
       time: /^\d{2}:\d{2}$/.test(meal?.time || "") ? meal.time : "12:00",
       items: (Array.isArray(meal?.items) ? meal.items : []).map((item) => {
         const product = productByName(state, item?.product);
-        if (!product) errors.push(`Продукта «${item?.product}» нет в каталоге: возьми название из get_catalog или предложи upsert_product.`);
+        if (!product) errors.push(`Продукта «${item?.product}» нет в каталоге: возьми название из get_catalog или заведи его через find_reference / search_food и upsert_product.`);
         const measure = rationMeasure(product);
         const amount = Number(item?.amount ?? item?.grams);
         return {
@@ -595,10 +620,12 @@ export function systemPrompt(state, { page = "ration", mode = "", today = todayD
   return `Ты ассистент приложения Cookish: планируешь питание и тренировки одного человека. Сегодня ${today} (${weekday(today)}). Завтра ${addDays(today, 1)}.
 Человек открыл чат со страницы «${where}».
 Правила:
-- План меняешь только предложениями: set_special_day, release_version, upsert_product, revert_change_set. Предложение ничего не пишет, пока человек его не применит. Не говори, что план уже изменён.
+- План меняешь только предложениями: set_special_day, release_version, revert_change_set. Предложение ничего не пишет, пока человек его не применит. Не говори, что план уже изменён.
 - Прошедшие дни менять нельзя. Сегодня и будущее меняются только через предложения.
 - Историю питания (отметки приёмов пищи и Расхождения) ты не меняешь и не можешь менять: человек отмечает её сам в режиме Учёт.
-- Сначала читай нужную часть плана и каталог. Используй только продукты из каталога, точными названиями. Если продукта нет или у него нет КБЖУ, сначала предложи upsert_product.
+- Сначала читай нужную часть плана и каталог. Используй только продукты из каталога, точными названиями.
+- Если продукта нет в каталоге или у него нет КБЖУ: общий продукт без марки ищи find_reference, товар с маркой — search_food. Потом upsert_product с source и source_ref подходящего кандидата: цифры возьмёт код, КБЖУ из справочника и Open Food Facts попадут в каталог сразу, человек сможет отменить. Бери кандидата, только если это тот же продукт. Если поиск ответил ambiguous — не выбирай, спроси человека (вид, жирность, марка) или предложи отсканировать штрихкод. source=estimate со своими цифрами — только если ничего не нашлось, это будет предложение.
+- КБЖУ, которые ввёл сам человек, не меняй молча: upsert_product в этом случае покажет вопрос.
 - Одна дата → set_special_day со всеми приёмами пищи дня. Регулярное изменение «с даты» → release_version со всеми 7 днями недели.
 - Держи КБЖУ дня в пределах ±15% от целей профиля, не ниже 1200 ккал, белок не меньше 75% цели, без исключённых продуктов. Код проверит план и вернёт ошибки — исправь и повтори.
 - Тренировки меняешь предложениями set_sport_special_day и release_sport_version. Учёт тренировок (отметки, внеплановую активность) пишет только человек.
