@@ -59,6 +59,7 @@ const mealsSchema = {
           properties: {
             product: { type: "string", description: "Точное название продукта из каталога" },
             amount: { type: "number", description: "Порция в единице продукта из каталога: г, мл или шт." },
+            unit: { type: "string", enum: ["г", "мл", "шт."], description: "Единица нового продукта при импорте" },
           },
           required: ["product", "amount"],
         },
@@ -66,6 +67,19 @@ const mealsSchema = {
     },
     required: ["name", "time", "items"],
   },
+};
+
+// A plan the person brought (#35): the source, a doctor's prescription to
+// move exactly, and what could not be read for sure.
+const importSchema = {
+  type: "object",
+  description: "Только когда переносишь готовый план человека из вложения или текста.",
+  properties: {
+    source: { type: "string", enum: ["текст", "фото", "документ"] },
+    prescription: { type: "boolean", description: "Это назначение врача: перенеси точно, ничего не улучшай и не дополняй" },
+    unsure: { type: "array", items: { type: "string" }, description: "Места, которые не удалось прочитать уверенно" },
+  },
+  required: ["source"],
 };
 
 const datesSchema = { type: "object", properties: { from: { type: "string", description: "ГГГГ-ММ-ДД" }, to: { type: "string", description: "ГГГГ-ММ-ДД" } }, required: ["from", "to"] };
@@ -76,8 +90,8 @@ export const RATION_TOOLS = [
   { name: "get_catalog", description: "Каталог продуктов с единицей и КБЖУ на 100 г/мл. В плане можно использовать только эти продукты.", parameters: { type: "object", properties: {} } },
   { name: "get_history", description: "Прочитать Историю питания прошедших дней (до 28 дней): отметки приёмов пищи и Расхождения. Только чтение.", parameters: datesSchema },
   { name: "get_change_sets", description: "Журнал последних изменений плана (человека и ассистента) с id для отката.", parameters: { type: "object", properties: { limit: { type: "number" } } } },
-  { name: "set_special_day", description: "Предложить Особый день: заменить план одной даты (сегодня или будущее). Передай ВСЕ приёмы пищи дня целиком.", parameters: { type: "object", properties: { date: { type: "string" }, meals: mealsSchema }, required: ["date", "meals"] } },
-  { name: "release_version", description: "Предложить новый недельный план, действующий с даты effective_from (сегодня или будущее). Нужны все 7 дней недели, ключи пн..вс.", parameters: { type: "object", properties: { effective_from: { type: "string" }, week: { type: "object", properties: Object.fromEntries(WEEK_KEYS.map((key) => [key, mealsSchema])), required: WEEK_KEYS } }, required: ["effective_from", "week"] } },
+  { name: "set_special_day", description: "Предложить Особый день: заменить план одной даты (сегодня или будущее). Передай ВСЕ приёмы пищи дня целиком.", parameters: { type: "object", properties: { date: { type: "string" }, meals: mealsSchema, import: importSchema }, required: ["date", "meals"] } },
+  { name: "release_version", description: "Предложить новый недельный план, действующий с даты effective_from (сегодня или будущее). Нужны все 7 дней недели, ключи пн..вс.", parameters: { type: "object", properties: { effective_from: { type: "string" }, week: { type: "object", properties: Object.fromEntries(WEEK_KEYS.map((key) => [key, mealsSchema])), required: WEEK_KEYS }, import: importSchema }, required: ["effective_from", "week"] } },
   { name: "revert_change_set", description: "Предложить откат набора изменений из журнала (своего или ручного).", parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
 ].map((tool) => ({ type: "function", function: tool }));
 
@@ -99,8 +113,8 @@ const sessionsSchema = {
 export const SPORT_TOOLS = [
   { name: "get_sport_plan", description: "Прочитать План тренировок на диапазон дат (включительно, до 14 дней) с плановым расходом ккал.", parameters: datesSchema },
   { name: "get_sport_log", description: "Прочитать Учёт тренировок прошедших дней (до 28 дней): отметки, фактические длительность и интенсивность, внеплановая активность. Только чтение.", parameters: datesSchema },
-  { name: "set_sport_special_day", description: "Предложить Особый день тренировок: заменить все тренировки одной даты (сегодня или будущее). Пустой список — день отдыха.", parameters: { type: "object", properties: { date: { type: "string" }, sessions: sessionsSchema }, required: ["date", "sessions"] } },
-  { name: "release_sport_version", description: "Предложить новое недельное расписание тренировок с даты effective_from (сегодня или будущее). Нужны все 7 дней, ключи пн..вс; день отдыха — пустой список.", parameters: { type: "object", properties: { effective_from: { type: "string" }, week: { type: "object", properties: Object.fromEntries(WEEK_KEYS.map((key) => [key, sessionsSchema])), required: WEEK_KEYS } }, required: ["effective_from", "week"] } },
+  { name: "set_sport_special_day", description: "Предложить Особый день тренировок: заменить все тренировки одной даты (сегодня или будущее). Пустой список — день отдыха.", parameters: { type: "object", properties: { date: { type: "string" }, sessions: sessionsSchema, import: importSchema }, required: ["date", "sessions"] } },
+  { name: "release_sport_version", description: "Предложить новое недельное расписание тренировок с даты effective_from (сегодня или будущее). Нужны все 7 дней, ключи пн..вс; день отдыха — пустой список.", parameters: { type: "object", properties: { effective_from: { type: "string" }, week: { type: "object", properties: Object.fromEntries(WEEK_KEYS.map((key) => [key, sessionsSchema])), required: WEEK_KEYS }, import: importSchema }, required: ["effective_from", "week"] } },
 ].map((tool) => ({ type: "function", function: tool }));
 
 export const ASSISTANT_TOOLS = [...RATION_TOOLS, ...FOOD_TOOLS, ...SPORT_TOOLS];
@@ -110,7 +124,9 @@ export const ASSISTANT_TOOLS = [...RATION_TOOLS, ...FOOD_TOOLS, ...SPORT_TOOLS];
 // `catalog` is the catalog Service for search_food.
 export function createAssistant({ provider, getState, catalog, today = todayDateKey, maxTurns = ASSISTANT_MAX_TURNS } = {}) {
   return {
-    async run(thread, text, { page = thread.page, mode = thread.mode, onEvent = () => {} } = {}) {
+    // `attachment` (#35): { kind, name, parts } — a photo, a document or a
+    // text the person brings, as content parts of the message.
+    async run(thread, text, { page = thread.page, mode = thread.mode, onEvent = () => {}, attachment = null } = {}) {
       const day = today();
       const emit = (event) => {
         applyThreadEvent(thread, event);
@@ -118,8 +134,9 @@ export function createAssistant({ provider, getState, catalog, today = todayDate
       };
       thread.page = page;
       thread.mode = mode;
-      thread.messages.push({ role: "user", content: String(text || "") });
-      emit({ type: "user", text: String(text || "") });
+      const words = String(text || "").trim() || (attachment ? "Перенеси план из вложения." : "");
+      thread.messages.push({ role: "user", content: attachment ? [{ type: "text", text: words }, ...attachment.parts] : words });
+      emit({ type: "user", text: words, ...(attachment ? { attachment: { kind: attachment.kind, name: attachment.name } } : {}) });
       const state = await getState();
       // Signs of an eating disorder or a minor in Profile stop every change
       // towards weight loss (#36): the code refuses it, the prompt says why.
@@ -243,16 +260,20 @@ function proposeSpecialDay(args, { working, thread, today, emit }) {
   const date = String(args.date || "");
   if (!isDate(date)) return { ok: false, error: "Дата должна быть в формате ГГГГ-ММ-ДД." };
   if (date < today) return { ok: false, error: "Прошедшие дни менять нельзя: их История питания отмечается человеком." };
+  const imported = importOf(args, thread, today);
+  if (!imported.ok) return imported;
+  if (imported.value) addImportedProducts([args.meals], { working, thread, today, emit });
   const { meals, errors } = toDomainMeals(working.state, args.meals, readRationDay(working.state, date)?.meals);
   if (errors.length) return { ok: false, errors };
   const ops = [{ op: "ration", command: { type: "setSpecialDay", date, meals } }];
   return finishProposal({
     kind: "special_day",
-    summary: `Особый день · ${shortDate(date)}`,
+    summary: importedSummary(imported.value, `Особый день · ${shortDate(date)}`),
     page: "ration",
     dates: [date],
     gateDates: [date],
     ops,
+    ...(imported.value ? { import: imported.value } : {}),
   }, { working, thread, today, emit });
 }
 
@@ -260,6 +281,9 @@ function proposeVersion(args, { working, thread, today, emit }) {
   const from = String(args.effective_from || "");
   if (!isDate(from)) return { ok: false, error: "effective_from должна быть в формате ГГГГ-ММ-ДД." };
   if (from < today) return { ok: false, error: "Новый план может начинаться только сегодня или позже." };
+  const imported = importOf(args, thread, today);
+  if (!imported.ok) return imported;
+  if (imported.value) addImportedProducts(WEEK_KEYS.map((key) => args.week?.[key]), { working, thread, today, emit });
   const start = (parseRationDate(from).getDay() + 6) % 7;
   const errors = [];
   const days = [];
@@ -275,13 +299,14 @@ function proposeVersion(args, { working, thread, today, emit }) {
   const ops = [{ op: "ration", command: { type: "releaseVersion", anchor: from, effectiveFrom: from, weekdayBinding: true, days } }];
   return finishProposal({
     kind: "version",
-    summary: `Новый план с ${shortDate(from)}`,
+    summary: importedSummary(imported.value, `Новый план с ${shortDate(from)}`),
     page: "ration",
     dates: [from],
     gateDates: [],
     gateMeals: days.map((day, index) => ({ label: `${WEEK_KEYS[(start + index) % 7]} (${addDays(from, index)})`, meals: day.meals })),
     previewDates: Array.from({ length: 7 }, (_, index) => addDays(from, index)),
     ops,
+    ...(imported.value ? { import: imported.value } : {}),
   }, { working, thread, today, emit });
 }
 
@@ -289,11 +314,14 @@ function proposeSportDay(args, { working, thread, today, emit }) {
   const date = String(args.date || "");
   if (!isDate(date)) return { ok: false, error: "Дата должна быть в формате ГГГГ-ММ-ДД." };
   if (date < today) return { ok: false, error: "Прошедшие дни менять нельзя: Учёт тренировок отмечает человек." };
+  const imported = importOf(args, thread, today);
+  if (!imported.ok) return imported;
   const { sessions, errors } = toDomainSessions(args.sessions, readSportDay(working.state, date)?.sessions);
   if (errors.length) return { ok: false, errors };
   return finishProposal({
+    ...(imported.value ? { import: imported.value } : {}),
     kind: "sport_day",
-    summary: `Тренировки · ${shortDate(date)}`,
+    summary: importedSummary(imported.value, `Тренировки · ${shortDate(date)}`),
     page: "sport",
     dates: [date],
     gateDates: [],
@@ -317,9 +345,12 @@ function proposeSportVersion(args, { working, thread, today, emit }) {
     days.push({ id: `cycle_day_${date}`, sessions: converted.sessions });
   }
   if (errors.length) return { ok: false, errors: [...new Set(errors)] };
+  const imported = importOf(args, thread, today);
+  if (!imported.ok) return imported;
   return finishProposal({
+    ...(imported.value ? { import: imported.value } : {}),
     kind: "sport_version",
-    summary: `Расписание тренировок с ${shortDate(from)}`,
+    summary: importedSummary(imported.value, `Расписание тренировок с ${shortDate(from)}`),
     page: "sport",
     dates: [from],
     gateDates: [],
@@ -435,14 +466,16 @@ function finishProposal(spec, { working, thread, today, emit }) {
   const context = { now: new Date().toISOString(), actor: "ai", today };
   const executed = executeOps(next, spec.ops, context);
   if (!executed.ok) return { ok: false, error: executed.reason };
-  if (working.protective?.length && raisesDeficit(working.state, next, proposalDays(spec))) {
+  if (working.protective?.length && !spec.import?.prescription && raisesDeficit(working.state, next, proposalDays(spec))) {
     return {
       ok: false,
       error: `Снижать калории или добавлять нагрузку сейчас нельзя: ${working.protective.join(", ")}.`,
       hint: "Не помогай худеть. Мягко посоветуй обратиться к врачу или к специалисту по расстройствам пищевого поведения.",
     };
   }
-  const gate = gateProposal(next, spec, { today });
+  // An import may bring products whose КБЖУ the Заполнитель has yet to fill:
+  // the full gate runs again when the Core applies the plan.
+  const gate = gateProposal(next, spec, { today, deferNutrition: Boolean(spec.import) });
   if (!gate.ok) return { ok: false, gate: gate.problems, totals: gate.totals, hint: "Исправь план так, чтобы проверка прошла, и предложи снова." };
   const diff = diffPlan(working.state, next, { productIds: spec.productIds || [] });
   if (!diff) return { ok: false, error: "Предложение ничего не меняет в плане." };
@@ -464,6 +497,7 @@ function finishProposal(spec, { working, thread, today, emit }) {
     // The Core applies it as soon as it arrives (#64).
     ...(spec.autoApply ? { autoApply: true } : {}),
     ...(gate.warnings?.length ? { warnings: gate.warnings } : {}),
+    ...(spec.import ? { import: spec.import } : {}),
     createdAt: context.now,
   };
   working.state = next;
@@ -475,6 +509,69 @@ function finishProposal(spec, { working, thread, today, emit }) {
     ...(gate.totals ? { totals: gate.totals } : {}),
     ...(gate.warnings?.length ? { warnings: gate.warnings, hint: "Скажи человеку о предупреждениях." } : {}),
   };
+}
+
+const IMPORT_SOURCES = ["текст", "фото", "документ"];
+// The person's own words that a plan is a doctor's prescription.
+const DOCTOR = /врач|доктор|назначени|диетолог|лечащ|стол ?№|диет[аы] ?№/i;
+
+function importDate(today) {
+  const [year, month, day] = today.split("-");
+  return `${day}.${month}.${year}`;
+}
+
+// The import of a tool call: { ok, value: null | { source, prescription,
+// unsure, label } }. A prescription takes the person saying so.
+function importOf(args, thread, today) {
+  if (!args.import || typeof args.import !== "object") return { ok: true, value: null };
+  const source = IMPORT_SOURCES.includes(args.import.source) ? args.import.source : "текст";
+  const prescription = Boolean(args.import.prescription);
+  if (prescription && !thread.log.some((entry) => entry.type === "user" && DOCTOR.test(entry.text))) {
+    return { ok: false, error: "Режим назначения врача включается, только если человек сам сказал, что это назначение врача. Перенеси план как обычный." };
+  }
+  const unsure = (Array.isArray(args.import.unsure) ? args.import.unsure : []).map((value) => String(value).trim()).filter(Boolean).slice(0, 10);
+  return { ok: true, value: { source, prescription, unsure, label: `Импорт: ${source}, ${importDate(today)}` } };
+}
+
+function importedSummary(imported, summary) {
+  return imported ? `${imported.label} · ${summary}` : summary;
+}
+
+// Products of an imported plan the catalog does not know go there at once
+// without КБЖУ, and the Заполнитель fills them; the plan stays a Предложение.
+function addImportedProducts(mealLists, context) {
+  const seen = new Set();
+  mealLists.flat().forEach((meal) => (Array.isArray(meal?.items) ? meal.items : []).forEach((item) => {
+    const name = String(item?.product || "").trim();
+    const key = normalizeProductName(name);
+    if (!name || seen.has(key) || productByName(context.working.state, name)) return;
+    seen.add(key);
+    const unit = item.unit === "мл" ? "л" : item.unit === "шт." ? "шт." : "г";
+    const product = {
+      id: createId("product"),
+      name,
+      unit,
+      category: "",
+      brand: "",
+      kind: "generic",
+      genericKey: key.replace(/[^a-zа-яё0-9]+/gi, "_"),
+      barcode: "",
+      ingredients: "",
+      catalogSource: "",
+      nutrition: null,
+      confirmed: false,
+    };
+    finishProposal({
+      kind: "product",
+      summary: `Новый продукт «${name}» без КБЖУ`,
+      page: "ration",
+      dates: [],
+      gateDates: [],
+      ops: [{ op: "product", product }],
+      productIds: [product.id],
+      autoApply: true,
+    }, context);
+  }));
 }
 
 function replayPending(state, thread, today) {
@@ -644,6 +741,8 @@ export function systemPrompt(state, { page = "ration", mode = "", today = todayD
 - Сначала читай нужную часть плана и каталог. Используй только продукты из каталога, точными названиями.
 - Если продукта нет в каталоге или у него нет КБЖУ: общий продукт без марки ищи find_reference, товар с маркой — search_food. Потом upsert_product с source и source_ref подходящего кандидата: цифры возьмёт код, КБЖУ из справочника и Open Food Facts попадут в каталог сразу, человек сможет отменить. Бери кандидата, только если это тот же продукт. Если поиск ответил ambiguous — не выбирай, спроси человека (вид, жирность, марка) или предложи отсканировать штрихкод. source=estimate со своими цифрами — только если ничего не нашлось, это будет предложение.
 - КБЖУ, которые ввёл сам человек, не меняй молча: upsert_product в этом случае покажет вопрос.
+- Если человек приносит готовый план (вложение или текст плана), перенеси его предложениями set_special_day / release_version, тренировки — set_sport_special_day / release_sport_version, с полем import. Продукты называй как в плане и передай unit: незнакомые код сам заведёт без КБЖУ, их заполнит Заполнитель. При импорте не ищи КБЖУ, не выдумывай их и не дроби продукты на составляющие. Несовпадение с целями профиля код покажет предупреждением — это не повод не переносить план. В import.unsure и в ответ человеку вынеси нечитаемое, обрезанное и противоречивое: порцию, записанную двумя несходящимися способами (граммы и стаканы, ложки, штуки), явные опечатки, неясные продукты.
+- Назначение врача (prescription: true — только если человек сам так сказал) переноси точно: ничего не улучшай, не дополняй и не меняй порции без отдельной просьбы.
 - Одна дата → set_special_day со всеми приёмами пищи дня. Регулярное изменение «с даты» → release_version со всеми 7 днями недели.
 - Держи КБЖУ дня в пределах ±15% от целей профиля, не ниже 1200 ккал, белок не меньше 75% цели, без исключённых продуктов. Код проверит план и вернёт ошибки — исправь и повтори.
 - Тренировки меняешь предложениями set_sport_special_day и release_sport_version. Учёт тренировок (отметки, внеплановую активность) пишет только человек.
@@ -682,7 +781,7 @@ function buildPreview(before, after, spec) {
       name: product.name,
       unit: product.unit,
       before: previous?.nutrition ? per100(previous.nutrition) : null,
-      after: per100(product.nutrition),
+      after: product.nutrition ? per100(product.nutrition) : null,
     };
   }
   const dates = spec.previewDates || spec.dates;

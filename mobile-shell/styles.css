@@ -2430,6 +2430,11 @@ body.root-page main { padding-right: 10px; }
 .assistant-proposal-product dd { margin: 0; }
 .assistant-proposal-actions { display: flex; justify-content: end; align-items: center; gap: 8px; }
 .assistant-proposal-warning { margin: 6px 0 0; color: var(--warn-text); font-size: 13px; }
+.assistant-proposal-unsure { margin: 6px 0 0; color: var(--warn-text); font-size: 13px; font-weight: 600; }
+.assistant-attach { flex: none; width: 40px; border: 0; background: transparent; font-size: 20px; }
+.assistant-attachment { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 12px 6px; padding: 6px 10px; border-radius: 10px; background: var(--accent-soft); color: var(--accent-text); font-size: 14px; }
+.assistant-attachment-remove { border: 0; background: transparent; color: inherit; font-size: 18px; }
+.assistant-attachment-mark { display: block; margin-top: 4px; opacity: 0.8; font-size: 12px; }
 .filler-choices { display: grid; gap: 6px; margin: 8px 0; }
 .filler-choice {
   display: grid;

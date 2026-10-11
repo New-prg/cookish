@@ -49,6 +49,7 @@ import {
 import { planOwnerKey } from "../core/plan-cycle.js";
 import { openLocalServices } from "../transport/local.js";
 import { AI_CONSENT_TEXT, aiConsentStore, aiKeyStore } from "./ai-key.js";
+import { ATTACHMENT_ACCEPT, readAttachment } from "./attachments.js";
 import { browserStorage, developerOffline, isOnline, nativeAiTransport, platformFetch } from "./platform.js";
 import { THEME_OPTIONS, themeStore } from "./theme.js";
 
@@ -874,6 +875,27 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       event.preventDefault();
       sendAssistantMessage(assistantInput.value);
     });
+    // A plan the person brings: a photo, a PDF, a Word or a text file (#35).
+    const fileInput = document.getElementById("assistant-file");
+    fileInput.accept = ATTACHMENT_ACCEPT;
+    document.getElementById("assistant-attach").addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", async () => {
+      const [file] = fileInput.files || [];
+      fileInput.value = "";
+      if (!file) return;
+      try {
+        pendingAttachment = await readAttachment(file);
+      } catch (error) {
+        pendingAttachment = null;
+        showToast(error.message);
+      }
+      renderAssistantAttachment();
+    });
+    document.getElementById("assistant-attachment").addEventListener("click", (event) => {
+      if (!event.target.closest(".assistant-attachment-remove")) return;
+      pendingAttachment = null;
+      renderAssistantAttachment();
+    });
     assistantInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
@@ -1114,14 +1136,28 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     renderAssistantHandle();
   }
 
+  // The attachment waiting under the input until the message goes.
+  let pendingAttachment = null;
+
+  function renderAssistantAttachment() {
+    const host = document.getElementById("assistant-attachment");
+    host.hidden = !pendingAttachment;
+    host.innerHTML = pendingAttachment
+      ? `<span>📎 ${escapeHtml(pendingAttachment.kind)} · ${escapeHtml(pendingAttachment.name)}</span><button class="assistant-attachment-remove" type="button" aria-label="Убрать вложение">×</button>`
+      : "";
+  }
+
   async function sendAssistantMessage(value) {
     const text = String(value || "").trim();
-    if (!text || assistantBusy || !assistantThread) return;
+    const attachment = pendingAttachment;
+    if ((!text && !attachment) || assistantBusy || !assistantThread) return;
     if (!hasAiKey()) return renderAssistantFeed();
     if (!await ensureAiConsent()) return;
     const thread = assistantThread;
     assistantBusy = true;
     assistantInput.value = "";
+    pendingAttachment = null;
+    renderAssistantAttachment();
     renderAssistantFeed();
     try {
       // The Service drafts on the full Core: the Outbox goes first.
@@ -1129,6 +1165,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       const result = await services.stream("assistant", "run", {
         thread,
         text,
+        ...(attachment ? { attachment } : {}),
         page: thread.page,
         mode: thread.mode,
         key: aiKey.read(),
@@ -1140,7 +1177,10 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
           // once; the card keeps «Отменить».
           if (event.type === "proposal" && event.proposal.autoApply) {
             const proposal = thread.proposals.find((value) => value.id === event.proposal.id);
-            applyAssistantProposals([proposal], false, `КБЖУ «${proposal.ops[0].product.name}» заполнены.`);
+            const { product } = proposal.ops[0];
+            applyAssistantProposals([proposal], false, product.nutrition
+              ? `КБЖУ «${product.name}» заполнены.`
+              : `Продукт «${product.name}» добавлен, КБЖУ заполнит Заполнитель.`);
           }
           if (assistantThread === thread) renderAssistantFeed();
         },
@@ -1316,7 +1356,10 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   }
 
   function assistantLogEntry(entry) {
-    if (entry.type === "user") return `<div class="assistant-message from-user">${escapeHtml(entry.text)}</div>`;
+    if (entry.type === "user") {
+      const attached = entry.attachment ? `<small class="assistant-attachment-mark">📎 ${escapeHtml(entry.attachment.kind)} · ${escapeHtml(entry.attachment.name)}</small>` : "";
+      return `<div class="assistant-message from-user">${escapeHtml(entry.text)}${attached}</div>`;
+    }
     if (entry.type === "assistant") return `<div class="assistant-message from-assistant">${escapeHtml(entry.text)}</div>`;
     if (entry.type === "progress") return `<p class="assistant-progress">· ${escapeHtml(entry.text)}</p>`;
     if (entry.type === "compacted") return `<p class="assistant-progress assistant-compacted">${escapeHtml(entry.text)}</p>`;
@@ -1345,6 +1388,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       </header>
       ${assistantProposalBody(proposal)}
       ${(proposal.warnings || []).map((warning) => `<p class="assistant-proposal-warning">Внимание: ${escapeHtml(warning)}.</p>`).join("")}
+      ${proposal.import?.unsure?.length ? `<p class="assistant-proposal-unsure">Проверьте перед применением: ${escapeHtml(proposal.import.unsure.join("; "))}.</p>` : ""}
       ${status === "conflict" && proposal.conflict ? `<p class="assistant-proposal-conflict">${escapeHtml(proposal.conflict)}</p>` : ""}
       ${actions ? `<div class="assistant-proposal-actions">${actions}</div>` : ""}
     </article>`;

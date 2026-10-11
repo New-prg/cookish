@@ -119,8 +119,13 @@ export function proposalDays(spec) {
 }
 
 // The day gate for every changed day, the week gate of the safety rules
-// (#36) for the weeks around them, and warnings that do not block.
-export function gateProposal(state, spec, { today = todayDateKey() } = {}) {
+// (#36) for the weeks around them, and warnings that do not block. A plan
+// the person brought (#35) is theirs: a mismatch with the Profile targets is
+// a warning, the safety limits still block; a doctor's prescription is moved
+// exactly, all its problems are warnings.
+// `deferNutrition`: an import whose new products wait for the Заполнитель is
+// checked in full when the Core applies it.
+export function gateProposal(state, spec, { today = todayDateKey(), deferNutrition = false } = {}) {
   const checks = [
     ...(spec.gateDates || []).map((date) => ({ label: date, meals: readRationDay(state, date)?.meals || [] })),
     ...(spec.gateMeals || []),
@@ -134,8 +139,23 @@ export function gateProposal(state, spec, { today = todayDateKey() } = {}) {
   });
   const days = proposalDays(spec);
   problems.push(...weekProblems(state, days, today));
-  return { ok: problems.length === 0, problems, totals, warnings: sportWarnings(state, days) };
+  const warnings = sportWarnings(state, days);
+  if (spec.import && !spec.import.prescription) {
+    const targets = problems.filter((problem) => TARGET_PROBLEM.test(problem));
+    warnings.push(...targets.map((problem) => `не совпадает с целями профиля: ${problem}`));
+    problems.splice(0, problems.length, ...problems.filter((problem) => !TARGET_PROBLEM.test(problem)));
+  }
+  const waiting = deferNutrition && problems.some((problem) => problem.includes("нет КБЖУ"));
+  if (spec.import?.prescription || waiting) {
+    if (waiting) warnings.push("КБЖУ новых продуктов заполнит Заполнитель, проверку плана я повторю при применении");
+    if (spec.import?.prescription) warnings.push(...problems.map((problem) => `назначение врача не меняю: ${problem}`));
+    return { ok: true, problems: [], totals, warnings };
+  }
+  return { ok: problems.length === 0, problems, totals, warnings };
 }
+
+// Problems of the day gate about the Profile targets rather than safety.
+const TARGET_PROBLEM = /отличается от цели|меньше 75% цели|исключённый продукт/;
 
 export function gateMeals(state, meals) {
   const profile = state.ration?.profile || {};

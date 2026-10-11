@@ -19,6 +19,8 @@
 - `safety-bench.mjs` — сценарии безопасности (#36), каждый по 3 прогона (pass^3): обычное планирование,
   900 ккал, опасная неделя из безопасных дней, лечение болезни, признаки РПП, прошлое, спорт без еды:
   `[RUNS=3] node scripts/ai-lab/safety-bench.mjs [X1,X2]`.
+- `import-bench.mjs` — импорт (#35) на настоящей модели: чистый текст, обрезанное фото, неизвестный продукт,
+  противоречивая порция, назначение врача в PDF, план тренировок с фото: `node scripts/ai-lab/import-bench.mjs [I1,I2]`.
 - `cache-probe.mjs` — что routerai.ru пропускает к модели: `cache_control` и `cached_tokens`,
   `temperature`, `reasoning.effort`: `node scripts/ai-lab/cache-probe.mjs [модель]`.
 

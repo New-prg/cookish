@@ -2089,3 +2089,35 @@ test("smoke: a question of the Заполнитель waits in the feed with «?
     await context.close();
   }
 });
+
+test("smoke: a plan file or a photo goes to the assistant as an attachment", async () => {
+  const { context, page } = await openPage();
+  try {
+    const calls = await routeAi(context, () => aiMessage({ role: "assistant", content: "Вижу план." }));
+    await withAssistantKey(page);
+    await page.click("#assistant-handle");
+    await page.waitForSelector("#assistant-dialog[open]");
+    await page.setInputFiles("#assistant-file", { name: "plan.txt", mimeType: "text/plain", buffer: Buffer.from("Завтрак: овсянка 60 г\nОбед: гречка 80 г") });
+    await page.waitForSelector("#assistant-attachment:not([hidden])");
+    assert.match(await page.locator("#assistant-attachment").innerText(), /текст · plan\.txt/);
+    await page.click("#assistant-send");
+    await page.waitForSelector(".assistant-message.from-assistant");
+    const person = calls[0].body.messages[1];
+    assert.equal(person.content[0].text, "Перенеси план из вложения.");
+    assert.match(person.content[1].text, /^Вложение «plan\.txt»:\nЗавтрак: овсянка 60 г/);
+    assert.match(await page.locator(".assistant-message.from-user").innerText(), /📎 текст · plan\.txt/);
+    assert.equal(await page.locator("#assistant-attachment").isHidden(), true, "the attachment leaves with the message");
+
+    // A tiny PNG comes to the model as a JPEG data URL.
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64");
+    await page.setInputFiles("#assistant-file", { name: "plan.png", mimeType: "image/png", buffer: png });
+    await page.waitForSelector("#assistant-attachment:not([hidden])");
+    await page.fill("#assistant-input", "Перенеси с фото");
+    await page.click("#assistant-send");
+    await page.waitForFunction(() => document.querySelectorAll(".assistant-message.from-assistant").length === 2);
+    const photo = calls.at(-1).body.messages.findLast((message) => message.role === "user").content[1];
+    assert.match(photo.image_url.url, /^data:image\/jpeg;base64,/);
+  } finally {
+    await context.close();
+  }
+});

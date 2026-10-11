@@ -64,11 +64,17 @@ const NOTE_PROMPT = `Ты сжимаешь начало разговора че�
 
 const PROPOSAL_STATUS = { pending: "ждёт решения", applied: "применено", dismissed: "убрано", conflict: "устарело", reverted: "отменено" };
 
+// The text of a message whose content may be parts: an attachment is a mark.
+function textOf(content) {
+  if (!Array.isArray(content)) return String(content || "");
+  return content.map((part) => (part.type === "text" ? part.text : part.type === "image_url" ? "[фото]" : part.type === "file" ? `[документ ${part.file?.filename || ""}]` : "")).join(" ");
+}
+
 function transcript(messages, proposals) {
   const names = new Map();
   const lines = [];
   messages.forEach((message) => {
-    if (message.role === "user") lines.push(`Человек: ${message.content}`);
+    if (message.role === "user") lines.push(`Человек: ${textOf(message.content)}`);
     if (message.role === "assistant") {
       (message.tool_calls || []).forEach((call) => {
         names.set(call.id, call.function?.name || "");
