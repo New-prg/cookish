@@ -73,15 +73,17 @@ approved scheme (ADR-0002, epic #21) and come after epics #66 and #59.
 
 | Layer | Reality |
 |---|---|
-| UI shell | Single-page vanilla JS `mobile-shell/app.js` + `styles.css` |
-| Ration rules | `mobile-shell/ration-domain.js`, a deep in-process module; UI, sync and AI tools call one command/projection interface (#23) |
-| Sport rules | `mobile-shell/sport-domain.js` (#53): План тренировок, Учёт тренировок and the MET energy estimate; the cycle and version logic it shares with the ration lives in `plan-cycle.js` |
-| Assistant | `mobile-shell/ai-tools.js` (#50): agent loop, read tools, Предложения executed on a copy and gated, apply with re-check and the change journal (`plan-journal.js`, #48); provider port `ai-provider.js` with the routerai.ru adapter and a mock for tests (#49) |
+| Layers | `mobile-shell/ui/` (screens and platform adapters), `mobile-shell/core/` (data, domain rules, commands), `mobile-shell/services/` (assistant, catalog), `mobile-shell/transport/` (the local transport to the Services); see ADR-0002 |
+| UI shell | Single-page vanilla JS `mobile-shell/ui/app.js` + `styles.css` |
+| Ration rules | `mobile-shell/core/ration-domain.js`, a deep in-process module; UI, sync and AI tools call one command/projection interface (#23) |
+| Sport rules | `mobile-shell/core/sport-domain.js` (#53): План тренировок, Учёт тренировок and the MET energy estimate; the cycle and version logic it shares with the ration lives in `plan-cycle.js` |
+| Assistant | `mobile-shell/services/assistant/ai-tools.js` (#50): agent loop, read tools, Предложения executed on a copy and gated, apply with re-check and the change journal (`plan-journal.js`, #48); provider port `ai-provider.js` with the routerai.ru adapter and a mock for tests (#49) |
+| Catalog | `mobile-shell/services/catalog/`: Open Food Facts search and barcode cards; the UI asks it through the transport (#68) |
 | Navigation | Three root pages Рацион → Спорт → Покупки switched by a horizontal swipe; a slider shows the page and the mode; Profile from a header button; stack routes for request note, purchase editor, product card and forms |
 | Data | Local data on the device. See README |
 | Auth | None yet. A guest account and the server copy are planned (ADR-0002, #29, #30) |
 | Updates | Profile checks the latest public GitHub Release and can install `Cookish.apk` |
-| Tests | Node tests for local domain helpers; Playwright UI smoke tests |
+| Tests | Node tests for local domain helpers, the layer boundaries and the Service contracts over the transport; Playwright UI smoke tests |
 
 ### 2.1 Must-not-regress behaviors
 

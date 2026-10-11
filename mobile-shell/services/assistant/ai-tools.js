@@ -15,8 +15,8 @@ import {
   readRationDayNutrition,
   readRationHistoryDay,
   todayDateKey,
-} from "./ration-domain.js";
-import { diffPlan, readChangeSets, readPart, restoreChangeSet, sameContent } from "./plan-journal.js";
+} from "../../core/ration-domain.js";
+import { diffPlan, readChangeSets, readPart, restoreChangeSet, sameContent } from "../../core/plan-journal.js";
 import {
   SPORT_INTENSITIES,
   SPORT_INTENSITY_LABELS,
@@ -28,7 +28,7 @@ import {
   readSportDay,
   readSportDayEnergy,
   readSportLogDay,
-} from "./sport-domain.js";
+} from "../../core/sport-domain.js";
 
 export const ASSISTANT_MAX_TURNS = 8;
 export const KBJU_GATE = Object.freeze({ minCalories: 1200, tolerance: 0.15, minProteinShare: 0.75 });

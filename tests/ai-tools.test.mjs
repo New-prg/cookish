@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createMockProvider } from "../mobile-shell/ai-provider.js";
+import { createMockProvider } from "../mobile-shell/services/assistant/ai-provider.js";
 import {
   ASSISTANT_MAX_TURNS,
   ASSISTANT_TOOLS,
@@ -10,9 +10,9 @@ import {
   createThread,
   gateMeals,
   viewDay,
-} from "../mobile-shell/ai-tools.js";
-import { memoryStorage, openLocalData } from "../mobile-shell/local-data.js";
-import { readRationDay } from "../mobile-shell/ration-domain.js";
+} from "../mobile-shell/services/assistant/ai-tools.js";
+import { memoryStorage, openLocalData } from "../mobile-shell/core/local-data.js";
+import { readRationDay } from "../mobile-shell/core/ration-domain.js";
 import { TODAY, makeState } from "../scripts/ai-lab/fixture.mjs";
 
 const TOMORROW = "2026-10-02";

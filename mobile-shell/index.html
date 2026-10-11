@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#121412" media="(prefers-color-scheme: dark)" />
     <title>Cookish</title>
     <script>
-      // The theme chosen in Профиль (theme.js) applies before the first paint.
+      // The theme chosen in Профиль (ui/theme.js) applies before the first paint.
       try {
         const theme = localStorage.getItem("cookish.theme");
         if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
@@ -81,6 +81,6 @@
       <span id="toast-message"></span>
       <button id="toast-action" type="button" hidden></button>
     </div>
-    <script type="module" src="./app.js"></script>
+    <script type="module" src="./ui/app.js"></script>
   </body>
 </html>

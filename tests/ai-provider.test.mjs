@@ -10,9 +10,9 @@ import {
   createMockProvider,
   createRouterAiProvider,
   fetchTransport,
-  nativeTransport,
-} from "../mobile-shell/ai-provider.js";
-import { STORAGE_KEY, browserStorage, openLocalData } from "../mobile-shell/local-data.js";
+} from "../mobile-shell/services/assistant/ai-provider.js";
+import { STORAGE_KEY, openLocalData } from "../mobile-shell/core/local-data.js";
+import { browserStorage, nativeTransport } from "../mobile-shell/ui/platform.js";
 
 const KEY = "sk-test-secret-123";
 

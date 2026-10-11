@@ -509,6 +509,51 @@ test("smoke: barcode lookup fills the product form from Open Food Facts", async 
   }
 });
 
+test("smoke: a barcode scanned in the purchase dialog shows the bought product, and a network error says why", async () => {
+  const { context, page } = await openPage(undefined, { hasTouch: true });
+  try {
+    let offline = false;
+    await page.route("https://world.openfoodfacts.org/**", (route) => (offline ? route.abort("internetdisconnected") : route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ status: 1, product: { code: "4600000000001", product_name_ru: "Молоко Простоквашино 2,5%", quantity: "930 мл" } }),
+    })));
+    await openRoute(page, "requests");
+    await page.click("#requests-empty-add");
+    const line = page.locator("#request-items .request-line-editor").first();
+    await line.click();
+    await line.fill("Молоко");
+    await line.press("Enter");
+    await page.waitForTimeout(120);
+    await page.click("#header-action");
+    await page.waitForTimeout(120);
+    await page.locator(".request-link").first().click();
+    await page.waitForSelector("#request-items .request-line-editor");
+    const row = page.locator("#request-items .request-item:not(.is-blank)").first();
+    const box = await row.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 - 160, box.y + box.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForSelector("#answer-action-dialog[open]", { timeout: 3000 });
+
+    await page.evaluate(() => {
+      window.NativeCookish = { scanBarcode: () => window.__onNativeBarcodeScan(JSON.stringify({ ok: true, barcode: "4600000000001" })) };
+    });
+    await page.click("#scan-purchase-barcode");
+    await page.waitForSelector("#answer-dialog-title .purchase-dialog-new-name");
+    assert.equal(await page.locator("#answer-dialog-title .purchase-dialog-new-name").innerText(), "Молоко Простоквашино 2,5%");
+    assert.equal(await page.locator("#purchase-status").innerText(), "Штрихкод: 4600000000001");
+
+    offline = true;
+    await page.click("#scan-purchase-barcode");
+    await page.waitForFunction(() => document.getElementById("purchase-status").classList.contains("error"));
+    assert.match(await page.locator("#purchase-status").innerText(), /Нет связи с Open Food Facts/);
+    assert.equal(await page.locator("#answer-dialog-title .purchase-dialog-new-name").count(), 0);
+  } finally {
+    await context.close();
+  }
+});
+
 test("smoke: a full device storage shows a reason and keeps the screen unchanged", async () => {
   const { context, page } = await openPage();
   try {

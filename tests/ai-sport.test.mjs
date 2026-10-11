@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createMockProvider } from "../mobile-shell/ai-provider.js";
-import { assistantStats, createAssistant, createThread, viewDay } from "../mobile-shell/ai-tools.js";
-import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/local-data.js";
-import { readRationDay } from "../mobile-shell/ration-domain.js";
-import { readSportDay } from "../mobile-shell/sport-domain.js";
+import { createMockProvider } from "../mobile-shell/services/assistant/ai-provider.js";
+import { assistantStats, createAssistant, createThread, viewDay } from "../mobile-shell/services/assistant/ai-tools.js";
+import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/core/local-data.js";
+import { readRationDay } from "../mobile-shell/core/ration-domain.js";
+import { readSportDay } from "../mobile-shell/core/sport-domain.js";
 import { TODAY, makeState } from "../scripts/ai-lab/fixture.mjs";
 
 const TOMORROW = "2026-10-02";

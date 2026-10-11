@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createMockProvider } from "../mobile-shell/ai-provider.js";
-import { NUDGE_QUEUE_LIMIT, STRICTNESS_LEVELS, createNudgeWorker, decideNudges, parseDecision } from "../mobile-shell/nudges.js";
-import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/local-data.js";
+import { createMockProvider } from "../mobile-shell/services/assistant/ai-provider.js";
+import { NUDGE_QUEUE_LIMIT, STRICTNESS_LEVELS } from "../mobile-shell/core/nudges.js";
+import { createNudgeWorker, decideNudges, parseDecision } from "../mobile-shell/services/assistant/nudges.js";
+import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/core/local-data.js";
 
 const today = todayDateKey();
 
@@ -176,7 +177,7 @@ test("nudges: a network failure keeps the queue and retries later", async () => 
   const { data } = openData();
   data.markRationMeal(today, "meal_2", "skipped");
   const timers = manualTimers();
-  const { AiError } = await import("../mobile-shell/ai-provider.js");
+  const { AiError } = await import("../mobile-shell/services/assistant/ai-provider.js");
   const provider = createMockProvider(() => new AiError("network"));
   const result = await worker(data, provider, { timers }).run();
   assert.equal(result.ok, false);

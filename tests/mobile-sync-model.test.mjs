@@ -11,7 +11,6 @@ import {
   materializePurchasedProduct,
   memoryStorage,
   migrateRationState,
-  openFoodFactsSuggestion,
   openLocalData,
   plannedRationRequestItems,
   prepareState,
@@ -20,11 +19,12 @@ import {
   rationDayFor,
   restoreRequestVersion,
   STORAGE_KEY,
-} from "../mobile-shell/local-data.js";
+} from "../mobile-shell/core/local-data.js";
+import { openFoodFactsSuggestion } from "../mobile-shell/services/catalog/open-food-facts.js";
 
 test("app opens locally without Google Sheets or a sign-in flow", () => {
-  const appSource = fs.readFileSync(new URL("../mobile-shell/app.js", import.meta.url), "utf8");
-  const localDataSource = fs.readFileSync(new URL("../mobile-shell/local-data.js", import.meta.url), "utf8");
+  const appSource = fs.readFileSync(new URL("../mobile-shell/ui/app.js", import.meta.url), "utf8");
+  const localDataSource = fs.readFileSync(new URL("../mobile-shell/core/local-data.js", import.meta.url), "utf8");
   const activitySource = fs.readFileSync(
     new URL("../android/app/src/main/java/ru/listok/purchases/MainActivity.java", import.meta.url),
     "utf8"

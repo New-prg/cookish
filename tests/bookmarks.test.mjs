@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createMockProvider } from "../mobile-shell/ai-provider.js";
-import { createAssistant, createThread, recheckProposals, viewDay } from "../mobile-shell/ai-tools.js";
-import { BOOKMARK_LIMIT } from "../mobile-shell/nudges.js";
-import { memoryStorage, openLocalData } from "../mobile-shell/local-data.js";
+import { createMockProvider } from "../mobile-shell/services/assistant/ai-provider.js";
+import { createAssistant, createThread, recheckProposals, viewDay } from "../mobile-shell/services/assistant/ai-tools.js";
+import { BOOKMARK_LIMIT } from "../mobile-shell/core/nudges.js";
+import { memoryStorage, openLocalData } from "../mobile-shell/core/local-data.js";
 import { TODAY, makeState } from "../scripts/ai-lab/fixture.mjs";
 
 const TOMORROW = "2026-10-02";

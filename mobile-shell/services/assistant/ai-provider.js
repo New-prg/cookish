@@ -94,8 +94,8 @@ export const AI_CONSENT_TEXT = `Ассистент отправляет данн
 
 // A transport performs one HTTP request: ({ method, url, headers, body,
 // timeoutMs, signal }) → { status, text }. It throws { kind: "network" } when
-// the request did not reach the provider.
-export function fetchTransport(fetchImpl = globalThis.fetch) {
+// the request did not reach the provider. `fetchImpl` is the platform fetch.
+export function fetchTransport(fetchImpl) {
   return async ({ method, url, headers, body, signal }) => {
     let response;
     try {
@@ -106,39 +106,6 @@ export function fetchTransport(fetchImpl = globalThis.fetch) {
     }
     return { status: response.status, text: await response.text().catch(() => "") };
   };
-}
-
-// The Android bridge performs the request natively: the WebView origin is not
-// subject to the provider's CORS rules there. `host` receives the callback.
-export function nativeTransport(bridge, host = globalThis) {
-  const pending = new Map();
-  let sequence = 0;
-  host.__onNativeAiResponse = (id, payload) => {
-    const entry = pending.get(id);
-    if (!entry) return;
-    pending.delete(id);
-    let result = null;
-    try {
-      result = JSON.parse(payload);
-    } catch {
-      entry.reject(new AiError("bad_response"));
-      return;
-    }
-    if (result?.error) entry.reject(new AiError(result.error === "timeout" ? "timeout" : "network"));
-    else entry.resolve({ status: Number(result?.status) || 0, text: String(result?.body || "") });
-  };
-  return ({ method, url, headers, body, timeoutMs, signal }) => new Promise((resolve, reject) => {
-    const id = `ai_${Date.now()}_${sequence += 1}`;
-    pending.set(id, { resolve, reject });
-    signal?.addEventListener?.("abort", () => {
-      if (pending.delete(id)) reject(new AiError("timeout"));
-    });
-    bridge.aiRequest(id, JSON.stringify({ method, url, headers, body: body || "", timeoutMs }));
-  });
-}
-
-export function defaultTransport(host = globalThis) {
-  return host.NativeCookish?.aiRequest ? nativeTransport(host.NativeCookish, host) : fetchTransport(host.fetch?.bind(host));
 }
 
 export function createRouterAiProvider({

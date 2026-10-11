@@ -6,8 +6,8 @@ import {
   migrateRationState,
   readRationDayNutrition,
   validateRationProfile,
-} from "../mobile-shell/ration-domain.js";
-import { memoryStorage, openLocalData } from "../mobile-shell/local-data.js";
+} from "../mobile-shell/core/ration-domain.js";
+import { memoryStorage, openLocalData } from "../mobile-shell/core/local-data.js";
 
 function historyState() {
   return migrateRationState({

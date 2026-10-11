@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyRationCommand, readRationDay, RATION_SCHEMA_VERSION } from "../mobile-shell/ration-domain.js";
-import { JOURNAL_LIMIT, diffPlan, revertChangeSet } from "../mobile-shell/plan-journal.js";
-import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/local-data.js";
+import { applyRationCommand, readRationDay, RATION_SCHEMA_VERSION } from "../mobile-shell/core/ration-domain.js";
+import { JOURNAL_LIMIT, diffPlan, revertChangeSet } from "../mobile-shell/core/plan-journal.js";
+import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/core/local-data.js";
 
 function addDays(dateKey, days) {
   const date = new Date(`${dateKey}T12:00:00`);

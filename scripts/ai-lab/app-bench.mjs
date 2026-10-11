@@ -1,13 +1,13 @@
-// Runs the scenarios through the app module mobile-shell/ai-tools.js with the
+// Runs the scenarios through the app module mobile-shell/services/assistant/ai-tools.js with the
 // real provider: the same agent loop, gate and proposals as the app. All
 // proposals of a run are applied at once, then the scenario checks the state.
 // Usage: node scripts/ai-lab/app-bench.mjs [S1,S2]
 import { KEY } from "./rai.mjs";
 import { SCENARIOS } from "./scenarios.mjs";
 import { TODAY, makeState } from "./fixture.mjs";
-import { createRouterAiProvider, fetchTransport } from "../../mobile-shell/ai-provider.js";
-import { createAssistant, createThread } from "../../mobile-shell/ai-tools.js";
-import { memoryStorage, openLocalData } from "../../mobile-shell/local-data.js";
+import { createRouterAiProvider, fetchTransport } from "../../mobile-shell/services/assistant/ai-provider.js";
+import { createAssistant, createThread } from "../../mobile-shell/services/assistant/ai-tools.js";
+import { memoryStorage, openLocalData } from "../../mobile-shell/core/local-data.js";
 
 const only = process.argv[2]?.split(",");
 let passed = 0;

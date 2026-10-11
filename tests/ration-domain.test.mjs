@@ -13,13 +13,13 @@ import {
   readRationHistoryDay,
   readRationRange,
   validateRationProfile,
-} from "../mobile-shell/ration-domain.js";
+} from "../mobile-shell/core/ration-domain.js";
 import {
   memoryStorage,
   openLocalData,
   prepareState,
   rationDayFor,
-} from "../mobile-shell/local-data.js";
+} from "../mobile-shell/core/local-data.js";
 
 function v11Blob() {
   return {

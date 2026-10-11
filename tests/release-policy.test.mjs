@@ -22,7 +22,7 @@ const workflowSource = fs.readFileSync(
   new URL("../.github/workflows/release-android.yml", import.meta.url),
   "utf8"
 );
-const appSource = fs.readFileSync(new URL("../mobile-shell/app.js", import.meta.url), "utf8");
+const appSource = fs.readFileSync(new URL("../mobile-shell/ui/app.js", import.meta.url), "utf8");
 const gradleSource = fs.readFileSync(new URL("../android/app/build.gradle", import.meta.url), "utf8");
 
 function facts(overrides = {}) {
@@ -153,7 +153,7 @@ test("untracked reports and output artifacts are ignored", () => {
     "output/Cookish-debug.apk",
   ]);
   assert.throws(
-    () => planAndroidRelease(facts({ untrackedFiles: ["mobile-shell/local-data.js"] })),
+    () => planAndroidRelease(facts({ untrackedFiles: ["mobile-shell/core/local-data.js"] })),
     /Untracked source files/
   );
 });

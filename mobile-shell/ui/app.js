@@ -1,14 +1,9 @@
 import {
   activeResponses,
-  browserStorage,
   formatRationDate,
   isProductConfirmed,
   isRequestFulfilled,
   normalizeProductName,
-  openFoodFactsCategory,
-  openFoodFactsNutrition,
-  openFoodFactsSuggestion,
-  openFoodFactsUnit,
   openLocalData,
   parseRationDate,
   productPurchasedTotal,
@@ -23,16 +18,16 @@ import {
   timestamp,
   todayDateKey,
   validateRationProfile,
-} from "./local-data.js";
+} from "../core/local-data.js";
 import {
   AI_CONSENT_TEXT,
   aiConsentStore,
   aiKeyStore,
   createRouterAiProvider,
-  defaultTransport,
-} from "./ai-provider.js";
-import { assistantContext, createAssistant, createThread } from "./ai-tools.js";
-import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
+} from "../services/assistant/ai-provider.js";
+import { assistantContext, createAssistant, createThread } from "../services/assistant/ai-tools.js";
+import { createNudgeWorker } from "../services/assistant/nudges.js";
+import { STRICTNESS_LEVELS } from "../core/nudges.js";
 import {
   SPORT_INTENSITIES,
   SPORT_INTENSITY_LABELS,
@@ -42,8 +37,10 @@ import {
   readSportDay,
   readSportDayEnergy,
   readSportLogDay,
-} from "./sport-domain.js";
-import { planOwnerKey } from "./plan-cycle.js";
+} from "../core/sport-domain.js";
+import { planOwnerKey } from "../core/plan-cycle.js";
+import { openLocalServices } from "../transport/local.js";
+import { browserStorage, defaultTransport, isOnline, platformFetch } from "./platform.js";
 import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
@@ -86,6 +83,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   const localData = openLocalData(browserStorage(window.localStorage));
   let state = localData.load();
+  // Services answer through the transport, as a server will (ADR-0002).
+  const services = openLocalServices({ fetchImpl: platformFetch(window) });
   // The AI key stays on the device apart from the local data (test mode, #44).
   const aiKey = aiKeyStore(window.localStorage);
   const aiConsent = aiConsentStore(window.localStorage);
@@ -108,6 +107,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     },
     buildContext: () => assistantContext(localData.snapshot(), { page: lastRootPage, mode: pageModes[lastRootPage] || "" }),
     allowed: () => aiConsent.accepted(),
+    isOnline: () => isOnline(window),
   });
   // The open chat. A thread lives only in memory and is gone after closing.
   let assistantThread = null;
@@ -1900,26 +1900,14 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     };
   }
 
-  async function searchOpenFoodFactsByName(query, rowKey) {
+  async function searchCatalogByName(query, rowKey) {
     const normalized = normalizeProductName(query);
     if (normalized.length < 3) return;
     const sequence = ++productNameSearchSequence;
     try {
       let suggestions = productNameSearchCache.get(normalized);
       if (!suggestions) {
-        const fields = [
-          "code", "product_name", "product_name_ru", "generic_name_ru", "brands", "quantity",
-          "categories", "categories_tags", "nutriments", "ingredients_text_ru", "ingredients_text",
-        ].join(",");
-        const params = new URLSearchParams({
-          search_terms: query.trim(), search_simple: "1", action: "process", json: "1", page_size: "3", fields,
-        });
-        const response = await fetch(`https://world.openfoodfacts.org/cgi/search.pl?${params}`, {
-          headers: { Accept: "application/json" },
-        });
-        if (!response.ok) throw new Error(`Open Food Facts: ${response.status}`);
-        const body = await response.json();
-        suggestions = (body.products || []).map(openFoodFactsSuggestion).filter(Boolean);
+        suggestions = (await services.request("catalog", "search", { query })).products;
         productNameSearchCache.set(normalized, suggestions);
       }
       if (sequence !== productNameSearchSequence) return;
@@ -2097,22 +2085,13 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     button.textContent = "Поиск…";
     setBarcodeStatus("Ищем товар в Open Food Facts…");
     try {
-      const fields = [
-        "code", "product_name", "product_name_ru", "generic_name_ru", "brands", "quantity",
-        "categories", "categories_tags", "nutriments", "ingredients_text_ru", "ingredients_text",
-      ].join(",");
-      const response = await fetch(
-        `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}.json?fields=${fields}`,
-        { headers: { Accept: "application/json" } }
-      );
-      if (!response.ok) throw new Error(`Open Food Facts: ${response.status}`);
-      const body = await response.json();
-      if (body.status !== 1 || !body.product) {
+      const { product } = await services.request("catalog", "productByBarcode", { barcode });
+      if (!product) {
         return setBarcodeStatus("Товар с таким штрихкодом пока отсутствует в Open Food Facts.", true);
       }
-      const nutritionUpdated = applyOpenFoodFactsProduct(form, body.product);
+      const nutritionUpdated = applyCatalogProduct(form, product);
       if (nutritionUpdated) form.dataset.nutritionSource = "Open Food Facts";
-      setBarcodeStatus(`Найдено: ${body.product.product_name_ru || body.product.product_name || barcode}. Проверьте данные перед сохранением.`);
+      setBarcodeStatus(`Найдено: ${product.name || barcode}. Проверьте данные перед сохранением.`);
     } catch (error) {
       setBarcodeStatus(error.message || "Не удалось получить карточку товара.", true);
     } finally {
@@ -2122,15 +2101,14 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     }
   }
 
-  function applyOpenFoodFactsProduct(form, product) {
+  // Fills the product form from a catalog card (services/catalog).
+  function applyCatalogProduct(form, product) {
     formDirty = true;
-    const name = product.product_name_ru || product.product_name || product.generic_name_ru || "";
-    const category = openFoodFactsCategory(product);
-    if (name) form.elements.name.value = name.trim();
-    if (category) form.elements.category.value = category;
-    form.elements.barcode.value = String(product.code || form.elements.barcode.value);
-    form.elements.unit.value = openFoodFactsUnit(product);
-    const nutrition = openFoodFactsNutrition(product);
+    if (product.name) form.elements.name.value = product.name;
+    if (product.category) form.elements.category.value = product.category;
+    form.elements.barcode.value = product.barcode || form.elements.barcode.value;
+    form.elements.unit.value = product.unit;
+    const { nutrition } = product;
     if (nutrition) {
       ["calories", "protein", "fat", "carbs", "fiber"].forEach((field) => {
         if (nutrition[field] != null) form.elements[field].value = nutrition[field];
@@ -2138,8 +2116,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       if (nutrition.vitamins) form.elements.vitamins.value = nutrition.vitamins;
       if (nutrition.minerals) form.elements.minerals.value = nutrition.minerals;
     }
-    const ingredients = product.ingredients_text_ru || product.ingredients_text || "";
-    if (ingredients) form.elements.ingredients.value = ingredients.trim();
+    const { ingredients } = product;
+    if (ingredients) form.elements.ingredients.value = ingredients;
     if (ingredients || nutrition?.vitamins || nutrition?.minerals) document.getElementById("product-more")?.setAttribute("open", "");
     return Boolean(nutrition);
   }
@@ -2555,7 +2533,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     positionProductTokenToolbar(row, editor);
     clearTimeout(productNameSearchTimer);
     if (query.length >= 3) {
-      productNameSearchTimer = setTimeout(() => searchOpenFoodFactsByName(query, row.dataset.key), 450);
+      productNameSearchTimer = setTimeout(() => searchCatalogByName(query, row.dataset.key), 450);
     }
   }
 
@@ -3617,17 +3595,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   async function lookupPurchaseBarcode(barcode) {
     setPurchaseStatus(`Штрихкод: ${barcode}`);
     try {
-      const fields = [
-        "code", "product_name", "product_name_ru", "generic_name_ru", "brands", "quantity",
-        "categories", "categories_tags", "nutriments", "ingredients_text_ru", "ingredients_text",
-      ].join(",");
-      const response = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}.json?fields=${fields}`, {
-        headers: { Accept: "application/json" },
-      });
-      if (!response.ok) throw new Error(`Open Food Facts: ${response.status}`);
-      const body = await response.json();
-      if (body.status !== 1 || !body.product) throw new Error("Товар с таким штрихкодом не найден.");
-      const scannedProduct = openFoodFactsSuggestion(body.product);
+      const { product: scannedProduct } = await services.request("catalog", "productByBarcode", { barcode });
+      if (!scannedProduct?.name) throw new Error("Товар с таким штрихкодом не найден.");
       const dialog = document.getElementById("answer-action-dialog");
       const requestedProductId = dialog?.dataset.productId || "";
       const request = getRequest(routeId);

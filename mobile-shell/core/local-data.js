@@ -82,38 +82,9 @@ export function memoryStorage(initial = null) {
   };
 }
 
-export function browserStorage(localStorage, key = STORAGE_KEY) {
-  // Backups are written once per label and never overwritten, so the data an
-  // older build left behind survives a faulty migration or an unreadable blob.
-  function keepOnce(label, raw) {
-    const backupKey = `${key}.backup.${label}`;
-    try {
-      if (localStorage.getItem(backupKey) == null) localStorage.setItem(backupKey, raw);
-    } catch {
-      // A backup must never block opening the app.
-    }
-  }
-
-  return {
-    read() {
-      let raw = null;
-      try {
-        raw = localStorage.getItem(key);
-        return raw ? JSON.parse(raw) : null;
-      } catch {
-        if (raw) keepOnce("unreadable", raw);
-        return null;
-      }
-    },
-    write(state) {
-      localStorage.setItem(key, JSON.stringify(state));
-    },
-    backup(state, label) {
-      keepOnce(label, JSON.stringify(state));
-    },
-  };
-}
-
+// `storage` is the platform's adapter: { read(), write(state),
+// backup(state, label) }. memoryStorage is one; the app passes browserStorage
+// from ui/platform.js.
 export function openLocalData(storage) {
   // `current` is always normalized and deep-frozen, so it is shared with callers
   // without copying. Commands mutate a private draft and replace `current` only
@@ -813,28 +784,6 @@ export function normalizeProductRecord(product) {
   };
 }
 
-export function openFoodFactsSuggestion(product) {
-  const name = String(product.product_name_ru || product.product_name || product.generic_name_ru || "").trim();
-  if (!name) return null;
-  const brand = Array.isArray(product.brands) ? product.brands.join(", ") : String(product.brands || "").trim();
-  const category = openFoodFactsCategory(product);
-  const genericName = String(product.generic_name_ru || product.generic_name || "").trim();
-  return {
-    id: `off_${product.code || normalizeProductName(name)}`,
-    name,
-    brand,
-    category,
-    genericKey: genericKeyFromParts(category, genericName || name),
-    kind: product.code ? "sku" : "generic",
-    unit: openFoodFactsUnit(product),
-    barcode: String(product.code || ""),
-    ingredients: String(product.ingredients_text_ru || product.ingredients_text || "").trim(),
-    nutrition: openFoodFactsNutrition(product),
-    catalogSource: "Open Food Facts",
-    confirmed: false,
-  };
-}
-
 export function activeResponses(request) {
   return (request.responses || []).filter((response) => !response.deletedAt);
 }
@@ -1088,81 +1037,6 @@ function inferProductKind(product) {
   if (product?.kind === "generic" || product?.kind === "sku") return product.kind;
   if (product?.barcode || product?.brand) return "sku";
   return "generic";
-}
-
-function formatAmount(value) {
-  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(value);
-}
-
-function finiteNutrient(value) {
-  const result = Number(value);
-  return value === "" || value == null || !Number.isFinite(result) ? null : result;
-}
-
-export function openFoodFactsUnit(product) {
-  const water = (product.categories_tags || []).some((tag) => /water/i.test(tag));
-  const quantity = String(product.quantity || "").toLowerCase();
-  // `\b` treats Cyrillic letters as non-word characters, so match unit tokens explicitly.
-  const hasUnit = (units) => new RegExp(`(^|[^a-zа-яё])(${units})($|[^a-zа-яё])`).test(quantity);
-  if (water || hasUnit("ml|мл|l|л")) return "л";
-  if (hasUnit("kg|кг")) return "кг";
-  if (hasUnit("g|г")) return "г";
-  return "шт.";
-}
-
-export function openFoodFactsCategory(product) {
-  const tags = (product.categories_tags || []).join(" ").toLowerCase();
-  const categories = String(product.categories || "").toLowerCase();
-  const value = `${tags} ${categories}`;
-  if (/water|beverage|drink/.test(value)) return "Напитки";
-  if (/milk|dairy|cheese|yogurt|кефир|молоч/.test(value)) return "Молочные продукты";
-  if (/fruit/.test(value)) return "Фрукты";
-  if (/vegetable/.test(value)) return "Овощи";
-  if (/meat|poultry/.test(value)) return "Мясо и птица";
-  if (/fish|seafood/.test(value)) return "Рыба и морепродукты";
-  if (/bread|bakery/.test(value)) return "Хлеб и выпечка";
-  return product.categories ? String(product.categories).split(",")[0].trim() : "";
-}
-
-function openFoodFactsNutrientText(nutriments, definitions) {
-  return Object.entries(definitions).flatMap(([key, [label, multiplier, unit]]) => {
-    const value = finiteNutrient(nutriments[key]);
-    return value == null ? [] : [`${label}: ${formatAmount(value * multiplier)} ${unit}`];
-  }).join("; ");
-}
-
-export function openFoodFactsNutrition(product) {
-  const nutriments = product.nutriments || {};
-  const water = (product.categories_tags || []).some((tag) => /water/i.test(tag));
-  const calories = finiteNutrient(nutriments["energy-kcal_100g"])
-    ?? (finiteNutrient(nutriments.energy_100g) == null ? null : finiteNutrient(nutriments.energy_100g) / 4.184);
-  const values = {
-    calories: calories ?? (water ? 0 : null),
-    protein: finiteNutrient(nutriments.proteins_100g) ?? (water ? 0 : null),
-    fat: finiteNutrient(nutriments.fat_100g) ?? (water ? 0 : null),
-    carbs: finiteNutrient(nutriments.carbohydrates_100g) ?? (water ? 0 : null),
-    fiber: finiteNutrient(nutriments.fiber_100g) ?? (water ? 0 : null),
-  };
-  const vitamins = openFoodFactsNutrientText(nutriments, {
-    "vitamin-a_100g": ["A", 1_000_000, "мкг"], "vitamin-d_100g": ["D", 1_000_000, "мкг"],
-    "vitamin-e_100g": ["E", 1_000, "мг"], "vitamin-c_100g": ["C", 1_000, "мг"],
-    "vitamin-b1_100g": ["B1", 1_000, "мг"], "vitamin-b2_100g": ["B2", 1_000, "мг"],
-    "vitamin-b6_100g": ["B6", 1_000, "мг"], "vitamin-b9_100g": ["B9", 1_000_000, "мкг"],
-    "vitamin-b12_100g": ["B12", 1_000_000, "мкг"],
-  });
-  const minerals = openFoodFactsNutrientText(nutriments, {
-    calcium_100g: ["Кальций", 1_000, "мг"], iron_100g: ["Железо", 1_000, "мг"],
-    magnesium_100g: ["Магний", 1_000, "мг"], potassium_100g: ["Калий", 1_000, "мг"],
-    zinc_100g: ["Цинк", 1_000, "мг"], sodium_100g: ["Натрий", 1_000, "мг"],
-  });
-  if (!Object.values(values).some((value) => value != null) && !vitamins && !minerals) return null;
-  return {
-    ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value == null ? null : Number(value.toFixed(2))])),
-    vitamins,
-    minerals,
-    basis: "100 г/мл",
-    source: "Open Food Facts",
-  };
 }
 
 function requestSnapshot(request) {
