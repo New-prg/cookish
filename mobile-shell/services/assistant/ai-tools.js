@@ -17,6 +17,7 @@ import {
 } from "../../core/ration-domain.js";
 import { applyThreadEvent } from "../../core/assistant-thread.js";
 import { NUTRITION_SOURCES } from "../../core/nutrition-source.js";
+import { COMPACTION, compactThread, requestChars } from "./context-compaction.js";
 import { diffPlan, readChangeSets } from "../../core/plan-journal.js";
 import { executeOps, gateProposal, tryProposal } from "../../core/proposals.js";
 import {
@@ -119,14 +120,24 @@ export function createAssistant({ provider, getState, today = todayDateKey, maxT
       const state = await getState();
       const working = { state: replayPending(state, thread, day) };
       const system = systemPrompt(state, { page, mode, today: day });
+      // Once per turn: a long conversation shrinks before the next request.
+      let compacted = false;
       for (let turn = 0; turn < maxTurns; turn += 1) {
+        if (!compacted && thread.promptTokens >= COMPACTION.threshold) {
+          compacted = true;
+          await compactThread(thread, { provider, system, tools: ASSISTANT_TOOLS, emit });
+        }
+        const sentChars = requestChars({ system, tools: ASSISTANT_TOOLS, messages: thread.messages });
         const answer = await provider.complete({ messages: [{ role: "system", content: system }, ...thread.messages], tools: ASSISTANT_TOOLS });
         if (!answer.ok) {
           emit({ type: "error", text: answer.reason });
           return { ok: false, reason: answer.reason };
         }
         // The size of the last request: context compaction is decided on it.
-        if (Number(answer.usage?.prompt_tokens) > 0) thread.promptTokens = Number(answer.usage.prompt_tokens);
+        if (Number(answer.usage?.prompt_tokens) > 0) {
+          thread.promptTokens = Number(answer.usage.prompt_tokens);
+          thread.promptChars = sentChars;
+        }
         const message = answer.message || {};
         const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
         thread.messages.push({ role: "assistant", content: message.content || "", ...(toolCalls.length ? { tool_calls: toolCalls } : {}) });

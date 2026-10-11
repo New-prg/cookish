@@ -1901,3 +1901,43 @@ test("smoke: the product card names the source of КБЖУ; Open Food Facts link
     await context.close();
   }
 });
+
+test("smoke: a long thread compacts with a mark in the feed and continues from a bookmark", async () => {
+  const { context, page } = await openPage();
+  try {
+    // Every answer reports 95k tokens; the note is the only request without tools.
+    const calls = await routeAi(context, (request) => {
+      const body = request.postDataJSON();
+      const content = body.tools ? "Ответ." : "Человек спрашивает про план на ближайшие дни.";
+      return { status: 200, body: { choices: [{ message: { role: "assistant", content } }], usage: { prompt_tokens: 95_000 } } };
+    });
+    const answers = (count) => page.waitForFunction((value) => document.querySelectorAll(".assistant-message.from-assistant").length === value, count);
+    await withAssistantKey(page);
+    await askAssistant(page, "Что у меня завтра?");
+    await answers(1);
+    await page.fill("#assistant-input", "А послезавтра?");
+    await page.click("#assistant-send");
+    await answers(2);
+    assert.equal(await page.locator(".assistant-compacted").innerText(), "Сжал начало разговора");
+    assert.equal(await page.locator(".assistant-message.from-user").count(), 2, "the feed keeps everything");
+    assert.equal(calls.filter((call) => !call.body.tools).length, 1, "one note");
+    assert.match(calls.at(-1).body.messages[1].content, /^\[Начало разговора сжато\.\]/);
+
+    await page.click("#assistant-bookmark-save");
+    await page.waitForSelector("#assistant-bookmark-save.saved");
+    await page.reload({ waitUntil: "load" });
+    await page.click("#assistant-handle");
+    await page.click("#assistant-bookmarks");
+    await page.click(".assistant-bookmark-open");
+    assert.equal(await page.locator(".assistant-compacted").count(), 1);
+    await page.fill("#assistant-input", "Спасибо");
+    await page.click("#assistant-send");
+    await answers(3);
+    const last = calls.at(-1).body.messages;
+    assert.match(last[1].content, /^\[Начало разговора сжато\.\]/, "the bookmark goes on from the compacted conversation");
+    assert.match(last[1].content, /1\. Что у меня завтра\?\n2\. А послезавтра\?/, "the person's words come from the feed, not from the old note");
+    assert.equal(last.at(-1).content, "Спасибо");
+  } finally {
+    await context.close();
+  }
+});

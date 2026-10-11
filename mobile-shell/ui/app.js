@@ -958,9 +958,10 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       mode: thread.mode,
       createdAt: thread.createdAt,
       log: thread.log.filter((entry) => entry.type !== "proposal" || kept.has(entry.proposalId)),
-      messages: bookmarkMessages(thread.messages),
-      // An upper bound when the messages above were trimmed.
+      // The conversation as the model sees it, compacted when it grew long.
+      messages: thread.messages,
       promptTokens: thread.promptTokens || 0,
+      promptChars: thread.promptChars || 0,
       proposals,
     };
     if (!applyLocal(localData.saveBookmark(bookmark))) return false;
@@ -972,12 +973,6 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   // The model conversation is bounded; it must start with a user message so
   // that tool results never lose their call.
-  function bookmarkMessages(messages) {
-    const recent = (messages || []).slice(-60);
-    const start = recent.findIndex((message) => message.role === "user");
-    return start < 0 ? [] : recent.slice(start);
-  }
-
   async function openAssistantBookmark(bookmarkId) {
     // The Cache keeps the header; the thread comes from the full Core.
     const bookmark = await localData.bookmark(bookmarkId);
@@ -994,6 +989,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       proposals: structuredClone(bookmark.proposals || []),
       log: structuredClone(bookmark.log || []),
       promptTokens: Number(bookmark.promptTokens) || 0,
+      promptChars: Number(bookmark.promptChars) || 0,
     };
     // The plan may have changed since: stale Предложения get a conflict.
     recheckProposals(localData.snapshot(), assistantThread.proposals);
@@ -1068,9 +1064,10 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
           if (assistantThread === thread) renderAssistantFeed();
         },
       });
-      // The feed and the Предложения came as events; the model messages come
-      // with the answer.
-      thread.messages = result.thread.messages;
+      // The feed and the Предложения came as events; the model messages and
+      // the size of the last request come with the answer.
+      const { messages, promptTokens, promptChars } = result.thread;
+      Object.assign(thread, { messages, promptTokens, promptChars });
     } catch (error) {
       applyThreadEvent(thread, { type: "error", text: error.message || "Ассистент не ответил." });
     } finally {
@@ -1152,6 +1149,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     if (entry.type === "user") return `<div class="assistant-message from-user">${escapeHtml(entry.text)}</div>`;
     if (entry.type === "assistant") return `<div class="assistant-message from-assistant">${escapeHtml(entry.text)}</div>`;
     if (entry.type === "progress") return `<p class="assistant-progress">· ${escapeHtml(entry.text)}</p>`;
+    if (entry.type === "compacted") return `<p class="assistant-progress assistant-compacted">${escapeHtml(entry.text)}</p>`;
     if (entry.type === "error") return `<p class="assistant-error error" role="alert">${escapeHtml(entry.text)}</p>`;
     if (entry.type === "proposal") {
       const proposal = assistantThread.proposals.find((value) => value.id === entry.proposalId);

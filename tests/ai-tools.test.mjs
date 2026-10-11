@@ -360,3 +360,41 @@ test("assistant: the thread keeps the prompt size of the last model answer", asy
   await assistant.run(thread, "Что в профиле?");
   assert.equal(thread.promptTokens, 7150, "the second, last request of the turn");
 });
+
+test("assistant: a thread past 90k compacts before the next turn, which still sees the pending Предложение", async () => {
+  const state = makeState();
+  const data = openLocalData(memoryStorage(state));
+  data.load();
+  const turns = [
+    tools(call("get_plan", { from: TOMORROW, to: TOMORROW })),
+    tools(call("set_special_day", { date: TOMORROW, meals: modelMeals(state, TOMORROW, withoutBeef) })),
+    say("Предлагаю курицу вместо говядины."),
+    say("Завтрашний день ждёт вашего решения."),
+  ];
+  let turn = 0;
+  const provider = createMockProvider(
+    // The note is the only request without tools.
+    (request) => (request.tools ? turns[turn++] : say("Человек хочет завтра без говядины, Предложение ждёт решения.")),
+    // The last answer of the first turn crosses 90k.
+    { usage: (request, index) => ({ prompt_tokens: index === 2 ? 95_000 : 3_000 }) },
+  );
+  const assistant = assistantHarness({ data, provider, today: () => TODAY });
+  const thread = createThread({ page: "ration", mode: "plan" });
+  await assistant.run(thread, "Завтра без говядины");
+  assert.equal(thread.promptTokens, 95_000);
+  const [proposal] = thread.proposals;
+
+  const events = [];
+  const result = await assistant.run(thread, "Что там с завтра?", { onEvent: (event) => events.push(event) });
+  assert.equal(result.ok, true);
+  assert.equal(provider.requests.filter((request) => !request.tools).length, 1, "one note");
+  const next = provider.requests.at(-1);
+  assert.equal(next.messages[1].role, "user", "after the system prompt the person speaks first");
+  assert.match(next.messages[1].content, /Записка:\nЧеловек хочет завтра без говядины/);
+  assert.match(next.messages[1].content, new RegExp(`"id":"${proposal.id}"`));
+  assert.equal(next.messages.at(-1).content, "Что там с завтра?");
+  assert.ok(events.some((event) => event.type === "compacted"));
+  assert.ok(thread.log.some((entry) => entry.type === "compacted"), "the feed shows the mark");
+  assert.ok(thread.log.some((entry) => entry.type === "user" && entry.text === "Завтра без говядины"), "the feed keeps everything");
+  assert.equal(assistant.apply([proposal]).ok, true, "the pending Предложение still applies");
+});

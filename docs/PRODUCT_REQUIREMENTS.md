@@ -459,6 +459,7 @@ backend AI proxy (#31).
 | AST-25 | The key stays only on the device, apart from local data. It never enters export, sync, logs or error texts, and it is never in the repository or the APK |
 | AST-26 | Provider: routerai.ru, OpenAI-compatible chat completions; model `anthropic/claude-haiku-5.5` by default (`z-ai/glm-5.3-flash` as the fallback), set in module config, not in UI; the system prompt and tool schemas are marked for the prompt cache; timeout 120 s; up to 2 retries on 5xx and network errors |
 | AST-27 | Before the first use a one-time warning says that plan and statistics data are sent to the external provider routerai.ru |
+| AST-28 | Context compaction (#61): when the last request reached 90k prompt tokens, read results older than the last two messages of the person become «[устарело — перечитай get_…]»; if the estimate stays above 60k, the model writes a note and then sees the note, the person's words verbatim (up to ~10k tokens, from the feed), the pending Предложения with ids and the last turn. The feed shows «Сжал начало разговора» and is never shortened; a bookmark keeps the compacted conversation |
 
 ### 6.7 Profile & system
 
