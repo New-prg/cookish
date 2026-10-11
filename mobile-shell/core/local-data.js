@@ -47,6 +47,7 @@ import {
 } from "./nudges.js";
 import { batchSummary, pageOf, tryProposal } from "./proposals.js";
 import { currentDay, currentTime } from "./replay.js";
+import { emptyFiller, normalizeFiller, syncFillerQueue } from "./filler.js";
 
 export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationMeasure, rationOwner, readRationDayActual, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
@@ -62,6 +63,7 @@ export function emptyState() {
     sport: emptySport(),
     journal: [],
     assistant: defaultAssistantState(),
+    filler: emptyFiller(),
     user: null,
     onboardingCompleted: true,
   };
@@ -143,6 +145,7 @@ export function openLocalData(storage) {
     };
     const result = mutator(next, context) || { ok: false };
     if (result.ok === false) return result;
+    if (scope.products) next.filler = syncFillerQueue(current.filler, next.products, context.now);
     if (result.changed !== false) {
       const saved = persist(next);
       if (!saved.ok) return saved;
@@ -791,6 +794,7 @@ export function prepareState(source) {
   result.sport = normalizeSport(result.sport);
   result.journal = normalizeJournal(result.journal);
   result.assistant = normalizeAssistantState(result.assistant);
+  result.filler = normalizeFiller(result.filler);
   return migrateRationState(result);
 }
 

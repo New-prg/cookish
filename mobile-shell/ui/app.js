@@ -23,6 +23,7 @@ import { applyThreadEvent, createThread } from "../core/assistant-thread.js";
 import { CACHE_STORAGE_KEY, OUTBOX_STORAGE_KEY, openCache } from "../core/cache.js";
 import { CACHE_WINDOW } from "../core/cache-window.js";
 import { LEDGER_STORAGE_KEY } from "../core/full-core.js";
+import { USER_NUTRITION_SOURCE, hasNutrition, isQueuedForFilling } from "../core/filler.js";
 import { GUEST_STORAGE_KEY, openGuest } from "../core/guest.js";
 import { STRICTNESS_LEVELS, createNudgeWorker } from "../core/nudges.js";
 import { markProposals, recheckProposals } from "../core/proposals.js";
@@ -42,38 +43,6 @@ import { AI_CONSENT_TEXT, aiConsentStore, aiKeyStore } from "./ai-key.js";
 import { browserStorage, developerOffline, isOnline, nativeAiTransport, platformFetch } from "./platform.js";
 import { THEME_OPTIONS, themeStore } from "./theme.js";
 
-  // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
-  // на 100 г (для напитков — на 100 мл) и могут отличаться у конкретных марок.
-  const FOOD_CATALOG = [
-    food("Молоко 2,5%", "Молочные продукты", "л", 52, 2.8, 2.5, 4.7, 0, "B2: 0,15 мг; B12: 0,4 мкг; D: 0,05 мкг", "Кальций: 120 мг; калий: 146 мг"),
-    food("Кефир 2,5%", "Молочные продукты", "л", 53, 3, 2.5, 4, 0, "B2: 0,17 мг; B12: 0,4 мкг", "Кальций: 120 мг; калий: 146 мг"),
-    food("Творог 5%", "Молочные продукты", "г", 145, 21, 5, 3, 0, "B2: 0,3 мг; B12: 1 мкг", "Кальций: 164 мг; фосфор: 220 мг"),
-    food("Сыр твёрдый", "Молочные продукты", "г", 350, 25, 27, 2, 0, "A: 250 мкг; B12: 1,5 мкг", "Кальций: 700 мг; фосфор: 500 мг"),
-    food("Яйца куриные", "Молочные продукты и яйца", "шт.", 157, 12.7, 11.5, 0.7, 0, "A: 260 мкг; D: 2,2 мкг; B12: 0,9 мкг", "Железо: 2,5 мг; селен: 31,7 мкг"),
-    food("Куриная грудка", "Мясо и птица", "кг", 113, 23.6, 1.9, 0.4, 0, "B3: 10,9 мг; B6: 0,5 мг", "Фосфор: 173 мг; селен: 17 мкг"),
-    food("Говядина", "Мясо и птица", "кг", 187, 18.9, 12.4, 0, 0, "B12: 2,6 мкг; B6: 0,4 мг", "Железо: 2,6 мг; цинк: 6 мг"),
-    food("Лосось", "Рыба и морепродукты", "кг", 208, 20, 13, 0, 0, "D: 10,9 мкг; B12: 3,2 мкг", "Омега-3: 2,3 г; селен: 36,5 мкг"),
-    food("Хлеб ржаной", "Хлеб и выпечка", "шт.", 210, 6.6, 1.2, 40.8, 8.3, "B1: 0,18 мг; B3: 1,2 мг", "Магний: 40 мг; железо: 2,6 мг"),
-    food("Рис белый сухой", "Крупы и макароны", "г", 344, 6.7, 0.7, 78.9, 1.4, "B1: 0,08 мг; B6: 0,2 мг", "Магний: 35 мг; фосфор: 98 мг"),
-    food("Гречка сухая", "Крупы и макароны", "г", 308, 12.6, 3.3, 57.1, 11.3, "B1: 0,3 мг; B6: 0,4 мг", "Магний: 200 мг; железо: 6,7 мг"),
-    food("Макароны сухие", "Крупы и макароны", "г", 344, 10.4, 1.1, 71.5, 3.6, "B1: 0,17 мг; B3: 1,2 мг", "Фосфор: 87 мг; железо: 1,6 мг"),
-    food("Картофель", "Овощи", "кг", 77, 2, 0.4, 16.3, 1.4, "C: 20 мг; B6: 0,3 мг", "Калий: 568 мг; магний: 23 мг"),
-    food("Морковь", "Овощи", "кг", 35, 1.3, 0.1, 6.9, 2.4, "A: 835 мкг; K: 13,2 мкг", "Калий: 320 мг; кальций: 33 мг"),
-    food("Помидоры", "Овощи", "кг", 18, 0.9, 0.2, 2.7, 1.2, "C: 13,7 мг; A: 42 мкг", "Калий: 237 мг; ликопин: 2,6 мг"),
-    food("Огурцы", "Овощи", "кг", 15, 0.7, 0.1, 2.5, 1, "K: 16,4 мкг; C: 2,8 мг", "Калий: 147 мг; магний: 13 мг"),
-    food("Яблоки", "Фрукты", "кг", 52, 0.3, 0.2, 11.4, 2.4, "C: 4,6 мг", "Калий: 107 мг; бор: 0,25 мг"),
-    food("Бананы", "Фрукты", "кг", 89, 1.1, 0.3, 20.2, 2.6, "B6: 0,37 мг; C: 8,7 мг", "Калий: 358 мг; магний: 27 мг"),
-    food("Апельсины", "Фрукты", "кг", 47, 0.9, 0.1, 9.4, 2.4, "C: 53,2 мг; B9: 30 мкг", "Калий: 181 мг; кальций: 40 мг"),
-    food("Миндаль", "Орехи", "г", 579, 21.2, 49.9, 9.1, 12.5, "E: 25,6 мг; B2: 1,1 мг", "Магний: 270 мг; кальций: 269 мг"),
-    food("Масло подсолнечное", "Масла и соусы", "л", 899, 0, 99.9, 0, 0, "E: 41 мг; K: 5,4 мкг", "Омега-6: 65,7 г"),
-    food("Вода питьевая", "Напитки", "л", 0, 0, 0, 0, 0, "", "Минеральный состав зависит от источника"),
-  ];
-
-  function food(name, category, unit, calories, protein, fat, carbs, fiber, vitamins, minerals) {
-    return { id: `catalog_${name.toLowerCase().replace(/[^а-яёa-z0-9]+/g, "_")}`, name, category, unit,
-      catalogSource: "Встроенный справочник",
-      nutrition: { calories, protein, fat, carbs, fiber, vitamins, minerals, basis: "100 г/мл", source: "Встроенный справочник" } };
-  }
   // Root pages in swipe order. The app always starts on the ration.
   const ROOT_PAGES = ["ration", "sport", "requests"];
   const PAGE_TITLES = { ration: "Рацион", sport: "Спорт", requests: "Покупки" };
@@ -202,10 +171,6 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   let appUpdateNoticeShown = false;
   let toastTimer = null;
   let productLookupWorking = false;
-  let remoteProductSuggestions = [];
-  let productNameSearchTimer = null;
-  let productNameSearchSequence = 0;
-  const productNameSearchCache = new Map();
   let barcodeScanTarget = "product";
   let answerDraftItems = new Map();
   let purchaseFillProduct = null;
@@ -1903,13 +1868,10 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     });
   }
 
+  // Suggestions come only from the person's own products with КБЖУ (#62):
+  // a new name is saved as typed, and the Заполнитель fills its КБЖУ.
   function productSuggestions() {
-    const unique = new Map();
-    [...state.products.filter((product) => !product.deletedAt), ...remoteProductSuggestions, ...FOOD_CATALOG].forEach((product) => {
-      const key = normalizeProductName(product.name);
-      if (!unique.has(key)) unique.set(key, product);
-    });
-    return [...unique.values()];
+    return state.products.filter((product) => !product.deletedAt && hasNutrition(product));
   }
 
   function suggestionByName(name) {
@@ -1942,35 +1904,30 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     return `<label class="field"><span>${label}</span><input name="${name}" type="number" min="0" step="0.01" value="${value ?? ""}"></label>`;
   }
 
-  function nutritionFromForm(data, source) {
+  // Empty fields stay empty for the Заполнитель; values the person typed or
+  // changed carry the source «Вы». `lookedUp` names the catalog that filled
+  // the form.
+  function nutritionFromForm(data, previous, lookedUp = "") {
     const fields = ["calories", "protein", "fat", "carbs", "fiber"];
-    const hasValue = fields.some((field) => String(data.get(field) || "").trim()) || data.get("vitamins")?.trim() || data.get("minerals")?.trim();
-    if (!hasValue) return null;
+    const parse = (value) => (value === null || value === undefined || String(value).trim() === "" ? null : Number(value));
+    const values = Object.fromEntries(fields.map((field) => [field, parse(data.get(field))]));
+    const vitamins = data.get("vitamins").trim();
+    const minerals = data.get("minerals").trim();
+    if (fields.every((field) => values[field] === null) && !vitamins && !minerals) return null;
+    const changed = fields.some((field) => values[field] !== parse(previous?.[field]));
     return {
-      ...Object.fromEntries(fields.map((field) => [field, Number(data.get(field)) || 0])),
-      vitamins: data.get("vitamins").trim(),
-      minerals: data.get("minerals").trim(),
+      ...values,
+      vitamins,
+      minerals,
       basis: "100 г/мл",
-      source,
+      source: lookedUp || (changed || !previous?.source ? USER_NUTRITION_SOURCE : previous.source),
     };
   }
 
-  async function searchCatalogByName(query, rowKey) {
-    const normalized = normalizeProductName(query);
-    if (normalized.length < 3) return;
-    const sequence = ++productNameSearchSequence;
-    try {
-      let suggestions = productNameSearchCache.get(normalized);
-      if (!suggestions) {
-        suggestions = (await services.request("catalog", "search", { query })).products;
-        productNameSearchCache.set(normalized, suggestions);
-      }
-      if (sequence !== productNameSearchSequence) return;
-      remoteProductSuggestions = suggestions;
-      updateProductDatalists();
-    } catch (error) {
-      if (sequence !== productNameSearchSequence) return;
-    }
+  // A product without full КБЖУ waits for the Заполнитель.
+  function nutritionPendingLabel(product) {
+    if (!product || hasNutrition(product)) return "";
+    return isQueuedForFilling(state, product.id) ? "КБЖУ заполняются…" : "нет КБЖУ";
   }
 
   function matchingProductSuggestions(query = "") {
@@ -1982,7 +1939,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     )]);
     const candidates = normalized
       ? productSuggestions().filter((product) => normalizeProductName(product.name).includes(normalized))
-      : state.products.filter((product) => !product.deletedAt).sort((a, b) =>
+      : productSuggestions().sort((a, b) =>
           Number(purchasedIds.has(b.id)) - Number(purchasedIds.has(a.id))
           || timestamp(b.updatedAt) - timestamp(a.updatedAt)
         );
@@ -1990,30 +1947,19 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   }
 
   // One row of a product suggestion list: the name (the typed part in bold)
-  // with КБЖУ and the source under it, ккал per usual portion on the right.
+  // with БЖУ under it, ккал per usual portion on the right.
   function productSuggestionRow(product, query = "") {
     const nutrition = product.nutrition;
     const measure = rationMeasure(product);
     const pieces = measure.unit === "шт.";
     const portion = pieces ? 100 : measure.defaultPortion;
     const basis = pieces ? "г" : measure.unit;
-    const own = state.products.some((item) => item.id === product.id);
-    const source = own ? "" : product.catalogSource === "Open Food Facts"
-      ? (product.brand ? `${product.brand} · OFF` : "Open Food Facts")
-      : "справочник";
-    const details = nutrition
-      ? `Б ${number(nutrition.protein)} · Ж ${number(nutrition.fat)} · У ${number(nutrition.carbs)}`
-      : (product.category || "КБЖУ не заданы");
-    const kcal = Number(nutrition?.calories);
-    const energy = nutrition && Number.isFinite(kcal)
-      ? `<span class="product-suggestion-kcal"><span><b>${number(Math.round(kcal * portion / 100))}</b> ккал</span><small>на ${number(portion)} ${basis}</small></span>`
-      : "";
     return `<button class="product-suggestion" type="button" role="option" data-name="${escapeAttr(product.name)}">
         <span class="product-suggestion-text">
           <span class="product-suggestion-name">${highlightMatch(product.name, query)}</span>
-          <small>${escapeHtml(details)}${source ? ` · <span class="product-suggestion-source">${escapeHtml(source)}</span>` : ""}</small>
+          <small>Б ${number(nutrition.protein)} · Ж ${number(nutrition.fat)} · У ${number(nutrition.carbs)}</small>
         </span>
-        ${energy}
+        <span class="product-suggestion-kcal"><span><b>${number(Math.round(Number(nutrition.calories) * portion / 100))}</b> ккал</span><small>на ${number(portion)} ${basis}</small></span>
       </button>`;
   }
 
@@ -2121,14 +2067,6 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     menu.style.maxHeight = `${menuHeight}px`;
   }
 
-  function updateProductDatalists() {
-    document.querySelectorAll(".request-item").forEach((row) => {
-      const editor = row.querySelector(".request-line-editor");
-      if (editor) updateProductSuggestionMenu(row, editor);
-    });
-    if (productSuggestInput) productSuggestInput.dispatchEvent(new Event("input"));
-  }
-
   async function lookupProductBarcode() {
     if (productLookupWorking) return;
     const form = document.getElementById("product-form");
@@ -2207,6 +2145,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
         </label>
         <section class="nutrition-editor">
           <h2 class="section-title">Пищевая ценность на 100 г/мл</h2>
+          ${nutritionPendingLabel(product) ? `<p class="muted nutrition-pending">${nutritionPendingLabel(product)}</p>` : ""}
           <div class="nutrition-grid">
             ${nutritionField("Ккал", "calories", product?.nutrition?.calories)}
             ${nutritionField("Белки, г", "protein", product?.nutrition?.protein)}
@@ -2241,7 +2180,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
         brand: product?.brand || "",
         kind: product?.kind || "generic",
         genericKey: product?.genericKey || "",
-        nutrition: nutritionFromForm(data, event.currentTarget.dataset.nutritionSource || product?.nutrition?.source || "Введено пользователем"),
+        nutrition: nutritionFromForm(data, product?.nutrition, event.currentTarget.dataset.nutritionSource || ""),
         ingredients: data.get("ingredients").trim(),
         catalogSource: event.currentTarget.dataset.nutritionSource || product?.catalogSource || "",
       });
@@ -2539,7 +2478,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     return `
       <article class="request-info-product">
         <h3>${escapeHtml(product?.name || "Продукт")}</h3>
-        <p class="request-info-nutrition">Б ${nutrient(nutrition?.protein)} · Ж ${nutrient(nutrition?.fat)} · У ${nutrient(nutrition?.carbs)}</p>
+        <p class="request-info-nutrition">${nutritionPendingLabel(product) || `Б ${nutrient(nutrition?.protein)} · Ж ${nutrient(nutrition?.fat)} · У ${nutrient(nutrition?.carbs)}`}</p>
         <div class="request-info-stats">
           <span><small>Последняя цена</small><strong>${latestPrice > 0 ? money(latestPrice) : "—"}</strong></span>
           <span><small>Куплено за всё время</small><strong>${number(purchased)}${unit ? ` ${escapeHtml(unit)}` : ""}</strong></span>
@@ -2557,7 +2496,6 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   }
 
   function handleRequestLineInput(editor) {
-    productNameSearchSequence += 1;
     const row = editor.closest(".request-item");
     const item = draftItems.find((value) => value.key === row?.dataset.key);
     if (!row || !item) return;
@@ -2597,10 +2535,6 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     if (query && route === "request-edit") bindRequestRowGestures(getRequest(routeId), { reuseToken: true });
     updateProductSuggestionMenu(row, editor);
     positionProductTokenToolbar(row, editor);
-    clearTimeout(productNameSearchTimer);
-    if (query.length >= 3) {
-      productNameSearchTimer = setTimeout(() => searchCatalogByName(query, row.dataset.key), 450);
-    }
   }
 
   function updateProductSuggestionMenu(row, editor) {
@@ -3959,7 +3893,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       const amountChanged = log && item.amount !== item.plannedAmount;
       const name = item.replacedName || item.name;
       const kcal = log ? item.calories : item.plannedCalories;
-      const sub = `${number(Math.round(kcal))} ккал${amountChanged ? ` · по плану ${number(item.plannedAmount)} ${item.unit}` : ""}${item.replacedName ? ` · вместо «${escapeHtml(item.name)}»` : ""}`;
+      const pending = nutritionPendingLabel(getProduct(item.productId));
+      const sub = `${pending || `${number(Math.round(kcal))} ккал`}${amountChanged ? ` · по плану ${number(item.plannedAmount)} ${item.unit}` : ""}${item.replacedName ? ` · вместо «${escapeHtml(item.name)}»` : ""}`;
       return `<div class="meal-product${on ? "" : " off"}" data-item-id="${item.itemId}">
         ${log ? `<button class="meal-product-check" data-item-id="${item.itemId}" type="button" role="checkbox" aria-checked="${on}" aria-label="${escapeAttr(`${name}: ${on ? "не съедено" : "съедено"}`)}"${item.productId ? "" : " disabled"}><span>${ICON_CHECK}</span></button>` : ""}
         <span class="meal-product-name"><span>${escapeHtml(name)}</span><small${amountChanged ? ` class="warn"` : ""}>${sub}</small></span>

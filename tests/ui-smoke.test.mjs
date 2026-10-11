@@ -785,7 +785,7 @@ test("smoke: meal card records and removes discrepancies; History corrects a pas
   }
 });
 
-test("smoke: without an account the app only talks to the product catalog", async () => {
+test("smoke: without an account planning and typing a product stay on the device", async () => {
   const { context, page } = await openPage();
   try {
     const external = [];
@@ -817,7 +817,7 @@ test("smoke: without an account the app only talks to the product catalog", asyn
     await line.click();
     await line.fill("Кефир");
     await page.waitForTimeout(900);
-    assert.ok(external.every((host) => host === "world.openfoodfacts.org"), `unexpected hosts: ${external.join(", ")}`);
+    assert.deepEqual(external, [], "a typed name asks no catalog: КБЖУ come from the Заполнитель");
   } finally {
     await context.close();
   }
@@ -1801,6 +1801,63 @@ test("smoke: a mark made offline on a meal removed meanwhile rolls back and says
     const stored = await storedState(page);
     assert.equal(stored.ration.history[`local|${dateKey(0)}`]?.meals?.meal_2, undefined, "the full Core has no mark");
     assert.equal(await page.locator(`.ration-today-meal[data-meal-id="meal_2"]`).count(), 0, "the Cache rolled the meal back");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a typed name suggests only the person's own products with КБЖУ", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [
+        { id: "product_milk", name: "Молоко 2,5%", unit: "л", nutrition: { calories: 52, protein: 2.8, fat: 2.5, carbs: 4.7 } },
+        { id: "product_oat_milk", name: "Молоко овсяное", unit: "л", nutrition: null },
+      ],
+      requests: [],
+    });
+    await openRoute(page, "requests");
+    await page.click("#requests-empty-add");
+    const line = page.locator("#request-items .request-line-editor").first();
+    await line.click();
+    await line.pressSequentially("Мол");
+    const options = page.locator("#request-items .product-suggestion");
+    await options.first().waitFor();
+    assert.deepEqual(await options.evaluateAll((nodes) => nodes.map((node) => node.dataset.name)), ["Молоко 2,5%"]);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a product saved without КБЖУ waits for the Заполнитель; КБЖУ the person types carry «Вы»", async () => {
+  const { context, page } = await openPage(undefined, { hasTouch: true });
+  try {
+    await openRoute(page, "requests");
+    await page.click("#requests-empty-add");
+    const line = page.locator("#request-items .request-line-editor").first();
+    await line.click();
+    await line.fill("Хлебцы");
+    await line.press("Enter");
+    await page.click("#header-action");
+    let stored = await storedState(page);
+    const product = stored.products.find((item) => item.name === "Хлебцы");
+    assert.equal(product.nutrition, null);
+    assert.deepEqual(stored.filler.queue.map((entry) => entry.productId), [product.id]);
+
+    await page.locator(".request-link").first().click();
+    await page.tap(`#request-items .product-chip[data-product-id="${product.id}"]`);
+    await page.waitForSelector("#product-form");
+    assert.equal(await page.locator(".nutrition-pending").innerText(), "КБЖУ заполняются…");
+    for (const [field, value] of [["calories", "380"], ["protein", "10"], ["fat", "3"], ["carbs", "78"]]) {
+      await page.fill(`#product-form [name=${field}]`, value);
+    }
+    await page.click("#header-action");
+    await page.waitForSelector("#request-items");
+    stored = await storedState(page);
+    const { calories, protein, fat, carbs, fiber, source } = stored.products.find((item) => item.id === product.id).nutrition;
+    assert.deepEqual({ calories, protein, fat, carbs, fiber, source }, { calories: 380, protein: 10, fat: 3, carbs: 78, fiber: null, source: "Вы" });
+    assert.deepEqual(stored.filler.queue, []);
   } finally {
     await context.close();
   }

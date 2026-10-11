@@ -38,7 +38,7 @@ account, and only with a provider key the person enters (§6.6.6).
 | Value | User-facing outcome |
 |---|---|
 | Instant start | Open the app, land on Рацион. No sign-in, no spreadsheet, no setup wizard |
-| Offline | Local features work without network. Open Food Facts search and the test assistant are the only online features |
+| Offline | Local features work without network. The barcode lookup in Open Food Facts and the test assistant are the only online features |
 | Today first | Рацион and Спорт open in Учёт on the «Сегодня» card, not on a calendar editor |
 | Keep-like lists | Creating a request feels like a note checklist, not a multi-step form |
 | Plan → basket | Planned future days convert into purchase quantities with package rounding |
@@ -124,7 +124,7 @@ On one phone these are the same person at different times.
 5. **Change the future:** tap the slider → План → pick a future day → edit its Особый день, repeat the day or week, or request a range of days with package rounding.
 6. **Follow the training plan:** swipe to Спорт → mark today's workout done / changed / skipped or add an unplanned activity; in План edit the week schedule or one date.
 7. **Ask the assistant:** pull the handle → ask → review Предложения in the feed → apply all or one by one → undo from a card if needed.
-8. **Product card:** tap a chip in a request → scan a barcode / search Open Food Facts → save nutrition → reuse in ration and lists.
+8. **Product card:** tap a chip in a request → scan a barcode or type КБЖУ, or leave them to the Заполнитель → reuse in ration and lists.
 
 ---
 
@@ -283,7 +283,8 @@ On one phone these are the same person at different times.
 | PRD-1 | There is no product list screen. The assistant manages the catalog: it creates products and fixes КБЖУ through confirmed Предложения (#50). The human opens a card from a request chip, edits it there and returns to the note |
 | PRD-2 | Fields: name, category, unit, barcode, ingredients, nutrition block; plus kind/genericKey/brand/confirmed |
 | PRD-3 | Barcode scan + Open Food Facts lookup with user confirmation before save |
-| PRD-4 | Name search suggestions: local + catalog + OFF (debounced) |
+| PRD-4 | Name suggestions come only from the person's own products with full КБЖУ; typing a name asks no catalog (#62) |
+| PRD-4a | A product saved without full КБЖУ joins the Заполнитель queue (`filler.queue`, Core data) and shows «КБЖУ заполняются…» until it has them; КБЖУ the person types carry the source «Вы»; empty fields stay empty, not 0 (#62) |
 | PRD-5 | Deletion is a data command, blocked while the product is used in requests or purchases. The card has no delete button: a card opened from a chip always belongs to a request |
 | PRD-7 | Free-text create → unconfirmed product; saving product card sets confirmed |
 | PRD-8 | Category/generic from OFF when available; SKU purchase must not rewrite a different confirmed product |
