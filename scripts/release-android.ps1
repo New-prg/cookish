@@ -7,6 +7,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# git and node print UTF-8; without this Windows PowerShell decodes their
+# output in the OEM code page and Cyrillic notes reach GitHub as mojibake.
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $repository = "New-prg/cookish"
 $workflow = "release-android.yml"
 $projectRoot = Split-Path -Parent $PSScriptRoot
