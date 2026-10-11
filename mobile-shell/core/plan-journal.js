@@ -10,6 +10,8 @@
 //   sport:special:<owner|date>, sport:version:<id>,
 //   catalog:product:<id> (only when a caller names the product explicitly).
 
+import { createId } from "./replay.js";
+
 export const JOURNAL_LIMIT = 200;
 // The journal shares the device storage with the rest of the data, so its
 // serialized size is bounded as well as the number of sets.
@@ -249,5 +251,5 @@ function trimJournal(sets) {
 }
 
 function createChangeSetId() {
-  return `change_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  return createId("change");
 }

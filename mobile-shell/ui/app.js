@@ -1,10 +1,10 @@
 import {
+  STORAGE_KEY,
   activeResponses,
   formatRationDate,
   isProductConfirmed,
   isRequestFulfilled,
   normalizeProductName,
-  openLocalData,
   parseRationDate,
   productPurchasedTotal,
   rationDayFor,
@@ -20,6 +20,10 @@ import {
   validateRationProfile,
 } from "../core/local-data.js";
 import { applyThreadEvent, createThread } from "../core/assistant-thread.js";
+import { CACHE_STORAGE_KEY, OUTBOX_STORAGE_KEY, openCache } from "../core/cache.js";
+import { CACHE_WINDOW } from "../core/cache-window.js";
+import { LEDGER_STORAGE_KEY } from "../core/full-core.js";
+import { GUEST_STORAGE_KEY, openGuest } from "../core/guest.js";
 import { STRICTNESS_LEVELS, createNudgeWorker } from "../core/nudges.js";
 import { markProposals, recheckProposals } from "../core/proposals.js";
 import {
@@ -35,7 +39,7 @@ import {
 import { planOwnerKey } from "../core/plan-cycle.js";
 import { openLocalServices } from "../transport/local.js";
 import { AI_CONSENT_TEXT, aiConsentStore, aiKeyStore } from "./ai-key.js";
-import { browserStorage, isOnline, nativeAiTransport, platformFetch } from "./platform.js";
+import { browserStorage, developerOffline, isOnline, nativeAiTransport, platformFetch } from "./platform.js";
 import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
@@ -76,15 +80,31 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   const PAGE_MODE_LABELS = { log: "учёт", plan: "план" };
   const PAGE_MODE_TITLES = { log: "Учёт", plan: "План" };
 
-  const localData = openLocalData(browserStorage(window.localStorage));
-  let state = localData.load();
-  // Services answer through the transport, as a server will (ADR-0002). They
-  // read the full Core through the data port and answer with data only.
+  // ADR-0002: the full Core and the Services answer through the transport, as
+  // a server will; until there is one they run in the app over the data
+  // `cookish.android.data.v1`. The phone works with the Cache and the Outbox.
+  const guest = openGuest(browserStorage(window.localStorage, GUEST_STORAGE_KEY));
   const services = openLocalServices({
     fetchImpl: platformFetch(window),
     aiTransport: nativeAiTransport(window),
-    dataPort: { read: async () => localData.snapshot() },
+    core: {
+      storage: browserStorage(window.localStorage, STORAGE_KEY),
+      ledger: browserStorage(window.localStorage, LEDGER_STORAGE_KEY),
+    },
+    reachable: () => !developerOffline(window),
   });
+  const localData = openCache({
+    storage: browserStorage(window.localStorage, CACHE_STORAGE_KEY),
+    outbox: browserStorage(window.localStorage, OUTBOX_STORAGE_KEY),
+    transport: services,
+    guestId: guest.id,
+    onChange: () => {
+      state = localData.snapshot();
+      render();
+    },
+    onConflict: (rejected) => showConflicts(rejected),
+  });
+  let state = localData.load();
   // The AI key stays on the device apart from the local data (test mode, #44)
   // and goes to the assistant Service with each request.
   const aiKey = aiKeyStore(window.localStorage);
@@ -94,13 +114,17 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   // Тычки wait in local data; the worker merges a burst into one call to the
   // assistant Service.
   const nudgeWorker = createNudgeWorker({
-    decide: (nudges) => services.request("assistant", "decideNudges", {
-      nudges,
-      page: lastRootPage,
-      mode: pageModes[lastRootPage] || "",
-      key: aiKey.read(),
-      today: todayDateKey(),
-    }),
+    // The Service reads the full Core: the Outbox goes first.
+    decide: async (nudges) => {
+      await localData.flush();
+      return services.request("assistant", "decideNudges", {
+        nudges,
+        page: lastRootPage,
+        mode: pageModes[lastRootPage] || "",
+        key: aiKey.read(),
+        today: todayDateKey(),
+      });
+    },
     hasKey: hasAiKey,
     store: {
       pending: () => localData.snapshot().assistant?.nudges || [],
@@ -987,8 +1011,9 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   }
 
   async function openAssistantBookmark(bookmarkId) {
-    const bookmark = (state.assistant?.bookmarks || []).find((item) => item.id === bookmarkId);
-    if (!bookmark) return;
+    // The Cache keeps the header; the thread comes from the full Core.
+    const bookmark = await localData.bookmark(bookmarkId);
+    if (!bookmark) return showToast("Закладка откроется, когда будет связь.");
     const unsaved = assistantThread && !assistantThread.bookmarkId && assistantThread.log.some((entry) => entry.type === "user");
     if (unsaved && !await askConfirm("Текущий чат не в закладках и пропадёт. Открыть закладку?", "Открыть")) return;
     assistantThread = {
@@ -1021,7 +1046,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   function assistantBookmarksList() {
     const bookmarks = state.assistant?.bookmarks || [];
     const rows = bookmarks.map((bookmark) => {
-      const pending = (bookmark.proposals || []).length;
+      const pending = bookmark.header ? bookmark.proposalCount : (bookmark.proposals || []).length;
       const meta = [
         assistantContextTitle(bookmark.page, bookmark.mode),
         date(bookmark.updatedAt || bookmark.createdAt),
@@ -1059,6 +1084,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     assistantInput.value = "";
     renderAssistantFeed();
     try {
+      // The Service drafts on the full Core: the Outbox goes first.
+      await localData.flush();
       const result = await services.stream("assistant", "run", {
         thread,
         text,
@@ -1410,11 +1437,22 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   function bindFeed() {
     document.querySelectorAll(".feed-more").forEach((button) => {
-      button.onclick = () => {
+      button.onclick = async () => {
         const page = button.dataset.page;
         const mode = pageModes[page];
         const today = todayDateKey();
-        feedDays[page][mode] = feedNextCount(Math.min(feedDays[page][mode], feedAvailable(page, mode, today)), feedAvailable(page, mode, today));
+        let next = feedNextCount(Math.min(feedDays[page][mode], feedAvailable(page, mode, today)), feedAvailable(page, mode, today));
+        // The Cache holds two weeks of Учёт; older days come from the full Core.
+        if (mode === "log") {
+          button.disabled = true;
+          const loaded = await localData.ensureRange(addRationDays(today, 1 - next));
+          if (!loaded.ok) {
+            next = Math.min(next, CACHE_WINDOW.pastDays + 1);
+            showToast("Дни раньше двух недель загрузятся, когда будет связь.");
+          }
+          state = localData.snapshot();
+        }
+        feedDays[page][mode] = next;
         openFeedDay[page][mode] = "";
         openMealKey = "";
         renderRevealingNew(render);
@@ -1934,11 +1972,11 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   function matchingProductSuggestions(query = "") {
     const normalized = normalizeProductName(query);
-    const purchasedIds = new Set(activeRequests().flatMap((request) =>
+    const purchasedIds = new Set([...Object.keys(state.purchaseArchive || {}), ...activeRequests().flatMap((request) =>
       activeResponses(request).flatMap((response) =>
         response.items.map((item) => item.purchasedProductId || item.productId)
       )
-    ));
+    )]);
     const candidates = normalized
       ? productSuggestions().filter((product) => normalizeProductName(product.name).includes(normalized))
       : state.products.filter((product) => !product.deletedAt).sort((a, b) =>
@@ -2213,8 +2251,12 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   function renderRequests() {
     const sorted = [...activeRequests()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    // The Cache holds the last closed Запросы; older ones load on request.
+    const older = localData.olderRequests
+      ? `<footer class="feed-footer"><button id="requests-older" class="text-button" type="button">Показать ещё закрытые: ${localData.olderRequests}</button></footer>`
+      : "";
     app.innerHTML = sorted.length
-      ? sorted.map((request) => requestRow(request)).join("")
+      ? sorted.map((request) => requestRow(request)).join("") + older
       : `<section class="section"><div class="empty-state">
           <p class="empty">Запросов пока нет</p>
           <p class="muted">Список покупок создаётся сразу, как заметка: добавляйте позиции по одной.</p>
@@ -2222,6 +2264,13 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
         </div></section>`;
     bindRequestRows();
     document.getElementById("requests-empty-add")?.addEventListener("click", () => createEmptyRequestAndOpen());
+    document.getElementById("requests-older")?.addEventListener("click", async (event) => {
+      event.currentTarget.disabled = true;
+      const loaded = await localData.loadOlderRequests();
+      if (!loaded.ok) showToast(loaded.offline ? "Старые запросы загрузятся, когда будет связь." : loaded.reason);
+      state = localData.snapshot();
+      render();
+    });
   }
 
   function createEmptyRequestAndOpen() {
@@ -4246,7 +4295,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   }
 
   function latestProductPrice(productId) {
-    let latest = null;
+    const archived = state.purchaseArchive?.[productId];
+    let latest = archived?.price ? { price: archived.price, createdAt: archived.priceAt } : null;
     activeRequests().forEach((request) => activeResponses(request).forEach((response) => {
       response.items.forEach((item) => {
         if ((item.purchasedProductId || item.productId) !== productId || !Number(item.price)) return;
@@ -5205,6 +5255,64 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     document.body.append(toast);
   }
 
+  // What each command of the Core changes, for a conflict message.
+  const COMMAND_LABELS = {
+    clear: "удаление данных",
+    saveProduct: "карточка продукта",
+    removeProduct: "удаление продукта",
+    restoreProduct: "возврат продукта",
+    createRequest: "новый запрос",
+    createRequestFromRation: "запрос из рациона",
+    saveRequestItems: "позиции запроса",
+    removeRequest: "удаление запроса",
+    restoreVersion: "возврат версии запроса",
+    markBought: "покупка",
+    unmarkBought: "отмена покупки",
+    saveReceipt: "чек",
+    addRationMeal: "новый приём пищи",
+    updateRationMeal: "изменение приёма пищи",
+    removeRationMeal: "удаление приёма пищи",
+    undoRationRemoval: "отмена удаления",
+    addRationFood: "продукт в приёме пищи",
+    saveRationFood: "продукт в приёме пищи",
+    removeRationFood: "удаление продукта из приёма пищи",
+    setRationPortion: "порция",
+    markRationMeal: "отметка приёма пищи",
+    recordRationDiscrepancy: "расхождение",
+    removeRationDiscrepancy: "удаление расхождения",
+    transferRationMeals: "перенос приёма пищи",
+    repeatRationDays: "повтор дней",
+    undoRationRepeat: "отмена повтора дней",
+    setRationProfile: "профиль рациона",
+    setSportSpecialDay: "особый день тренировок",
+    removeSportSpecialDay: "удаление особого дня тренировок",
+    addSportSession: "новая тренировка",
+    updateSportSession: "изменение тренировки",
+    removeSportSession: "удаление тренировки",
+    releaseSportVersion: "расписание тренировок",
+    markSportSession: "отметка тренировки",
+    addUnplannedSport: "внеплановая активность",
+    removeUnplannedSport: "удаление внеплановой активности",
+    applyProposals: "предложение ассистента",
+    revertChangeSet: "отмена изменения",
+    setAssistantSettings: "настройки ассистента",
+    finishNudges: "тычки",
+    saveBookmark: "закладка",
+    removeBookmark: "удаление закладки",
+    clearAssistantNotice: "уведомление ассистента",
+  };
+
+  // The full Core rejected commands from the Outbox: the Cache already shows
+  // its data; the person learns what did not apply and why.
+  function showConflicts(rejected) {
+    const [first] = rejected;
+    const what = COMMAND_LABELS[first.name] || "изменение";
+    const reason = String(first.reason || "").replace(/\.$/, "");
+    showToast(rejected.length === 1
+      ? `Не применилось: ${what}. ${reason}.`
+      : `Не применилось изменений: ${rejected.length}. Первое — ${what}: ${reason}.`);
+  }
+
   function showToast(message, actionLabel = "", action = null) {
     toastHost().append(toast);
     toastMessage.textContent = message;
@@ -5267,7 +5375,21 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   requestAppUpdateCheck(false);
   // Тычки queued before a restart or while offline go out when possible.
   nudgeWorker.schedule();
-  window.addEventListener?.("online", () => nudgeWorker.schedule(1000));
+  window.addEventListener?.("online", () => {
+    nudgeWorker.schedule(1000);
+    localData.sync();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "hidden" && appUpdate.status === "installing") requestAppUpdateCheck(true);
+    // Back in the app: deliver the Outbox and move the windows to today.
+    if (document.visibilityState !== "hidden") localData.sync();
   });
+  // The first start after the update builds the Cache from the full Core
+  // without holding the first screen: with a server it waits for the network.
+  localData.build().then((built) => {
+    if (!built.changed) return;
+    state = localData.snapshot();
+    render();
+  });
+  // After the first screen: the Outbox of the last session and today's windows.
+  setTimeout(() => localData.sync(), 1500);

@@ -39,7 +39,8 @@ test("app opens locally without Google Sheets or a sign-in flow", () => {
   );
 
   assert.match(appSource, /let route = "ration";/);
-  assert.match(appSource, /openLocalData\(browserStorage/);
+  assert.match(appSource, /openCache\(\{\s*storage: browserStorage/);
+  assert.match(appSource, /storage: browserStorage\(window\.localStorage, STORAGE_KEY\)/);
   assert.match(localDataSource, new RegExp(STORAGE_KEY.replaceAll(".", "\\.")));
   assert.doesNotMatch(appSource, /localStorage\.setItem|localStorage\.getItem/);
   assert.doesNotMatch(appSource, /authorizeGoogle|__onNativeGoogleAuth|onboarding-google|google-auth/);

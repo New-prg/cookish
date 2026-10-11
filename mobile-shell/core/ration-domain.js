@@ -1,3 +1,4 @@
+import { createId } from "./replay.js";
 import {
   activePlanVersion,
   buildPlanVersion,
@@ -473,9 +474,7 @@ export function formatRationDate(value) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-export function createId(prefix) {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-}
+export { createId };
 
 export function normalizeProductName(name) {
   return String(name || "").trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " ");

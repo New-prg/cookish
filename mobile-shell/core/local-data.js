@@ -46,6 +46,7 @@ import {
   STRICTNESS_LEVELS,
 } from "./nudges.js";
 import { batchSummary, pageOf, tryProposal } from "./proposals.js";
+import { currentDay, currentTime } from "./replay.js";
 
 export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationMeasure, rationOwner, readRationDayActual, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
@@ -134,10 +135,11 @@ export function openLocalData(storage) {
 
   function apply(scope, mutator) {
     const next = draft(scope);
+    // The clock of a replayed command is the one it had on the Cache.
     const context = {
-      now: new Date().toISOString(),
+      now: currentTime(),
       actor: String(next.user?.email || "local"),
-      today: todayDateKey(),
+      today: currentDay(),
     };
     const result = mutator(next, context) || { ok: false };
     if (result.ok === false) return result;
@@ -949,8 +951,10 @@ export function materializePurchasedProduct(nextState, item, changedAt, actor = 
   return product.id;
 }
 
+// The Cache adds what its Запросы outside the window bought (purchaseArchive).
 export function productPurchasedTotal(productId, source) {
-  return (source.requests || []).filter((request) => !request.deletedAt).reduce((total, request) => total + activeResponses(request).reduce(
+  const archived = Number(source.purchaseArchive?.[productId]?.quantity) || 0;
+  return archived + (source.requests || []).filter((request) => !request.deletedAt).reduce((total, request) => total + activeResponses(request).reduce(
     (requestTotal, response) => requestTotal + response.items.reduce((responseTotal, item) => {
       return responseTotal + ((item.purchasedProductId || item.productId) === productId ? Number(item.quantity) || 0 : 0);
     }, 0),

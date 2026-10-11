@@ -1,4 +1,5 @@
 import { readRationDay, readRationHistoryDay } from "./ration-domain.js";
+import { createId } from "./replay.js";
 import { SPORT_INTENSITY_LABELS, SPORT_TYPE_LABELS, readSportDay, readSportLogDay } from "./sport-domain.js";
 
 // Тычки: every deviation from the plan reaches the assistant, which decides
@@ -117,7 +118,7 @@ export function enqueueNudges(assistantState, nudges) {
 }
 
 function nudge(now, fields) {
-  return { id: `nudge_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, createdAt: now, ...fields };
+  return { id: createId("nudge"), createdAt: now, ...fields };
 }
 
 function historyMeal(state, date, mealId) {

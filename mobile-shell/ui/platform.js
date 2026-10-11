@@ -48,6 +48,19 @@ export function isOnline(host = globalThis) {
   return host.navigator?.onLine !== false;
 }
 
+export const DEVELOPER_OFFLINE_KEY = "cookish.dev.offline";
+
+// A developer flag for offline checks (ADR-0002): with
+// localStorage["cookish.dev.offline"] = "1" the transport answers as without
+// a network.
+export function developerOffline(host = globalThis) {
+  try {
+    return host.localStorage?.getItem(DEVELOPER_OFFLINE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 // The Android bridge performs the request natively: the WebView origin is not
 // subject to the provider's CORS rules there. `host` receives the callback.
 export function nativeTransport(bridge, host = globalThis) {

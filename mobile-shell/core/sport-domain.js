@@ -2,6 +2,7 @@
 // weekly cycle from an anchor date, versions from a date, Особые дни) with
 // Тренировки instead of meals, a log of what was done, and an estimate of the
 // energy a session takes. The log is a fact: only the human writes it.
+import { createId } from "./replay.js";
 import {
   DATE_PATTERN,
   buildPlanVersion,
@@ -358,7 +359,7 @@ function shortDate(value) {
 }
 
 function createSportId(prefix) {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  return createId(prefix);
 }
 
 function fail(reason) {

@@ -1,11 +1,14 @@
+import { createFullCore } from "../core/full-core.js";
 import { createServices } from "../services/index.js";
 import { TransportError, errorPayload, unwrapResponse } from "./protocol.js";
 
 // The in-process transport: until there is a server, the Services run in the
 // app. The request, every streamed event and the response each go through
 // structuredClone, as through a network, so functions, DOM objects and shared
-// references to the state never cross the boundary.
-export function createLocalTransport(handlers, { clone = structuredClone } = {}) {
+// references to the state never cross the boundary. `reachable()` false
+// makes every request fail as without a network: a developer flag for
+// offline checks (ADR-0002).
+export function createLocalTransport(handlers, { clone = structuredClone, reachable = () => true } = {}) {
   async function respond(service, method, payload, onEvent) {
     const target = Object.hasOwn(handlers, service) ? handlers[service] : null;
     const handler = target && Object.hasOwn(target, method) ? target[method] : null;
@@ -27,6 +30,7 @@ export function createLocalTransport(handlers, { clone = structuredClone } = {})
   }
 
   async function call(service, method, payload, onEvent) {
+    if (!reachable()) throw new TransportError("network");
     const response = await respond(String(service), String(method), payload, onEvent);
     let delivered;
     try {
@@ -49,9 +53,14 @@ export function createLocalTransport(handlers, { clone = structuredClone } = {})
   };
 }
 
-// The local «server»: every Service with the platform's adapters behind the
-// local transport (see services/index.js for the options). Moving to a server
-// replaces it with an HTTP transport.
-export function openLocalServices(options) {
-  return createLocalTransport(createServices(options));
+// The local «server»: the full Core over `core.storage` and every Service
+// with the platform's adapters behind the local transport (see
+// services/index.js for the options). The Services read the full Core.
+// Moving to a server replaces it with an HTTP transport.
+export function openLocalServices({ core, reachable, ...options }) {
+  const fullCore = core ? createFullCore(core) : null;
+  const dataPort = options.dataPort || (fullCore ? { read: async () => fullCore.read() } : undefined);
+  const handlers = createServices({ ...options, dataPort });
+  if (fullCore) handlers.core = fullCore.endpoint;
+  return createLocalTransport(handlers, { reachable });
 }
