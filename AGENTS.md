@@ -14,19 +14,17 @@ branch.
 
 The plan lives in GitHub issues, not in repo files. One epic is active:
 
-- Epic #59 (milestone «Haiku и заполнение каталога ИИ»): the assistant on Claude
-  Haiku 5.5, context compaction and AI filling of product nutrition. Start
-  points: #60, #62, #63. Then #60 → #61; #63 → #64; #60 + #62 + #64 → #65
-  (#69 and #70 are closed). Tools and the Заполнитель
-  live in `mobile-shell/services/`. Work on `master`.
+- Epic #21 (milestone «Безопасность, импорт и backend»): #36 (safety gate) →
+  #35 (import), both in test mode with the Profile key; then #29 → #30 and
+  #29 → #31 → #32. #42 is the end-to-end QA and comes last. Before #29 the
+  person decides hosting, runtime, database, paid accounts and the open
+  questions of #71 (production inference and billing). Work on `master`.
 - Each issue lists its dependencies; do not start an issue before they are closed.
-- After #59 comes epic #21 (milestone «Безопасность, импорт и backend»):
-  #36 (safety gate) → #35 (import), both in test mode; then #29 → #30 and
-  #29 → #31 → #32. #42 is the end-to-end QA and comes last. #71 collects
-  open ideas on production inference and billing.
 - Epic #44 (three pages and the test assistant) is done.
 - Epic #66 (UI, Ядро and Сервисы with a local transport; Кэш and Outbox over
   the full Core, ADR-0002) is done.
+- Epic #59 (the assistant on Claude Haiku 5.5, context compaction, the
+  reference of common products and the Заполнитель КБЖУ) is done.
 - The AI provider key is never committed or bundled. The app reads it from the
   temporary Profile field; `scripts/ai-lab/` reads it from the local opencode config.
 - Milestone «Бэклог» issues are parked; do not reopen them without the user.
