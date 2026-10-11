@@ -11,7 +11,6 @@ import {
   materializePurchasedProduct,
   memoryStorage,
   migrateRationState,
-  openFoodFactsSuggestion,
   openLocalData,
   plannedRationRequestItems,
   prepareState,
@@ -20,11 +19,12 @@ import {
   rationDayFor,
   restoreRequestVersion,
   STORAGE_KEY,
-} from "../mobile-shell/local-data.js";
+} from "../mobile-shell/core/local-data.js";
+import { openFoodFactsSuggestion } from "../mobile-shell/services/catalog/open-food-facts.js";
 
 test("app opens locally without Google Sheets or a sign-in flow", () => {
-  const appSource = fs.readFileSync(new URL("../mobile-shell/app.js", import.meta.url), "utf8");
-  const localDataSource = fs.readFileSync(new URL("../mobile-shell/local-data.js", import.meta.url), "utf8");
+  const appSource = fs.readFileSync(new URL("../mobile-shell/ui/app.js", import.meta.url), "utf8");
+  const localDataSource = fs.readFileSync(new URL("../mobile-shell/core/local-data.js", import.meta.url), "utf8");
   const activitySource = fs.readFileSync(
     new URL("../android/app/src/main/java/ru/listok/purchases/MainActivity.java", import.meta.url),
     "utf8"
@@ -39,7 +39,8 @@ test("app opens locally without Google Sheets or a sign-in flow", () => {
   );
 
   assert.match(appSource, /let route = "ration";/);
-  assert.match(appSource, /openLocalData\(browserStorage/);
+  assert.match(appSource, /openCache\(\{\s*storage: browserStorage/);
+  assert.match(appSource, /storage: browserStorage\(window\.localStorage, STORAGE_KEY\)/);
   assert.match(localDataSource, new RegExp(STORAGE_KEY.replaceAll(".", "\\.")));
   assert.doesNotMatch(appSource, /localStorage\.setItem|localStorage\.getItem/);
   assert.doesNotMatch(appSource, /authorizeGoogle|__onNativeGoogleAuth|onboarding-google|google-auth/);
@@ -88,15 +89,17 @@ function response(id, quantity, updatedAt, createdAt = updatedAt) {
   };
 }
 
-test("local data loads and commits through a memory adapter", () => {
-  const storage = memoryStorage();
-  const data = openLocalData(storage);
-  data.commit({
+test("local data loads and saves through a memory adapter", () => {
+  const storage = memoryStorage({
     products: [baseProduct],
     requests: [],
     spreadsheetId: "legacy_sheet",
   });
+  const data = openLocalData(storage);
+  assert.equal(data.load().products[0].id, baseProduct.id);
+  assert.equal(data.saveProduct({ name: "Хлеб", unit: "шт." }).ok, true);
   const loaded = openLocalData(storage).load();
+  assert.ok(loaded.products.some((product) => product.name === "Хлеб"));
   assert.equal(loaded.schemaVersion, SCHEMA_VERSION);
   assert.equal(loaded.onboardingCompleted, true);
   assert.equal(loaded.products[0].id, baseProduct.id);

@@ -45,6 +45,8 @@ import {
   sportNudges,
   STRICTNESS_LEVELS,
 } from "./nudges.js";
+import { batchSummary, pageOf, tryProposal } from "./proposals.js";
+import { currentDay, currentTime } from "./replay.js";
 
 export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationMeasure, rationOwner, readRationDayActual, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
@@ -82,43 +84,14 @@ export function memoryStorage(initial = null) {
   };
 }
 
-export function browserStorage(localStorage, key = STORAGE_KEY) {
-  // Backups are written once per label and never overwritten, so the data an
-  // older build left behind survives a faulty migration or an unreadable blob.
-  function keepOnce(label, raw) {
-    const backupKey = `${key}.backup.${label}`;
-    try {
-      if (localStorage.getItem(backupKey) == null) localStorage.setItem(backupKey, raw);
-    } catch {
-      // A backup must never block opening the app.
-    }
-  }
-
-  return {
-    read() {
-      let raw = null;
-      try {
-        raw = localStorage.getItem(key);
-        return raw ? JSON.parse(raw) : null;
-      } catch {
-        if (raw) keepOnce("unreadable", raw);
-        return null;
-      }
-    },
-    write(state) {
-      localStorage.setItem(key, JSON.stringify(state));
-    },
-    backup(state, label) {
-      keepOnce(label, JSON.stringify(state));
-    },
-  };
-}
-
+// `storage` is the platform's adapter: { read(), write(state),
+// backup(state, label) }. memoryStorage is one; the app passes browserStorage
+// from ui/platform.js.
 export function openLocalData(storage) {
   // `current` is always normalized and deep-frozen, so it is shared with callers
   // without copying. Commands mutate a private draft and replace `current` only
   // after the storage write succeeds. Normalization (`prepareState`) runs only
-  // for data that comes from outside: storage on load and `commit`.
+  // for data that comes from outside: storage on load.
   let current = deepFreeze(prepareState(emptyState()));
 
   function snapshot() {
@@ -162,10 +135,11 @@ export function openLocalData(storage) {
 
   function apply(scope, mutator) {
     const next = draft(scope);
+    // The clock of a replayed command is the one it had on the Cache.
     const context = {
-      now: new Date().toISOString(),
+      now: currentTime(),
       actor: String(next.user?.email || "local"),
-      today: todayDateKey(),
+      today: currentDay(),
     };
     const result = mutator(next, context) || { ok: false };
     if (result.ok === false) return result;
@@ -179,6 +153,22 @@ export function openLocalData(storage) {
     return result;
   }
 
+  // Applies several plan changes as one Набор изменений. `mutator(draft,
+  // context)` changes the draft through domain commands and returns
+  // { ok, ... }; a failure discards the whole batch. Products the batch
+  // creates or edits are journaled only when it names them in `productIds`.
+  function changePlan({ actor = "human", page = "", summary = "", productIds = [] } = {}, mutator) {
+    return apply({ ration: true, sport: true, products: true, journal: true }, (next, context) => {
+      const ctx = actor === "ai" ? { ...context, actor: "ai" } : context;
+      const result = mutator(next, ctx) || { ok: false };
+      if (result.ok === false) return result;
+      const diff = diffPlan(current, next, { productIds: [...productIds, ...(result.productIds || [])] });
+      if (!diff) return { ...result, ok: true, changed: false };
+      const set = appendChangeSet(next, { now: ctx.now, actor, page, summary: result.summary || summary, diff });
+      return { ...result, ok: true, changeSetId: set.id };
+    });
+  }
+
   return {
     load() {
       const stored = storage.read();
@@ -187,9 +177,6 @@ export function openLocalData(storage) {
       if (usable && version < SCHEMA_VERSION) storage.backup?.(stored, `v${version}`);
       current = deepFreeze(prepareState(usable ? stored : emptyState()));
       return current;
-    },
-    commit(nextState) {
-      return replaceAll(nextState);
     },
     snapshot,
     clear() {
@@ -515,20 +502,40 @@ export function openLocalData(storage) {
       return runRation({ type: "removeItem", date: dateKey, mealId, itemId });
     },
 
-    // Applies several plan changes as one Набор изменений. `mutator(draft,
-    // context)` changes the draft through domain commands and returns
-    // { ok, ... }; a failure discards the whole batch. Products the batch
-    // creates or edits are journaled only when it names them in `productIds`.
-    changePlan({ actor = "human", page = "", summary = "", productIds = [] } = {}, mutator) {
-      return apply({ ration: true, sport: true, products: true, journal: true }, (next, context) => {
-        const ctx = actor === "ai" ? { ...context, actor: "ai" } : context;
-        const result = mutator(next, ctx) || { ok: false };
-        if (result.ok === false) return result;
-        const diff = diffPlan(current, next, { productIds: [...productIds, ...(result.productIds || [])] });
-        if (!diff) return { ...result, ok: true, changed: false };
-        const set = appendChangeSet(next, { now: ctx.now, actor, page, summary: result.summary || summary, diff });
-        return { ...result, ok: true, changeSetId: set.id };
+    // Applies Предложения of the Ассистент: together as one Набор изменений,
+    // or one set each. Every Предложение is re-checked on the current plan; a
+    // stale one gets a conflict instead of applying. The proposals stay as
+    // they are; the results say what happened to each (see markProposals).
+    applyProposals(proposals, { together = true, today = todayDateKey() } = {}) {
+      const list = (proposals || []).filter((proposal) => proposal && proposal.status !== "applied");
+      if (!list.length) return { ok: false, reason: "Нечего применять.", results: [] };
+      const groups = together ? [list] : list.map((proposal) => [proposal]);
+      const results = [];
+      groups.forEach((group) => {
+        const outcomes = new Map();
+        const written = changePlan({ actor: "ai", page: pageOf(group), summary: batchSummary(group) }, (draft, context) => {
+          const productIds = [];
+          group.forEach((proposal) => {
+            const outcome = tryProposal(draft, proposal, context, today);
+            outcomes.set(proposal.id, outcome);
+            if (outcome.ok) productIds.push(...outcome.productIds);
+          });
+          const applied = group.filter((proposal) => outcomes.get(proposal.id)?.ok);
+          if (!applied.length) return { ok: false, reason: outcomes.get(group[0].id)?.reason || "Предложение устарело." };
+          return { ok: true, productIds, summary: batchSummary(applied) };
+        });
+        group.forEach((proposal) => {
+          const outcome = outcomes.get(proposal.id) || { ok: false, reason: written.reason };
+          const ok = Boolean(written.ok && outcome.ok);
+          results.push({
+            id: proposal.id,
+            ok,
+            changeSetId: ok ? written.changeSetId || "" : "",
+            reason: ok ? "" : (outcome.ok ? written.reason : outcome.reason),
+          });
+        });
       });
+      return { ok: results.some((result) => result.ok), results };
     },
 
     revertChangeSet(changeSetId, { actor = "human" } = {}) {
@@ -813,28 +820,6 @@ export function normalizeProductRecord(product) {
   };
 }
 
-export function openFoodFactsSuggestion(product) {
-  const name = String(product.product_name_ru || product.product_name || product.generic_name_ru || "").trim();
-  if (!name) return null;
-  const brand = Array.isArray(product.brands) ? product.brands.join(", ") : String(product.brands || "").trim();
-  const category = openFoodFactsCategory(product);
-  const genericName = String(product.generic_name_ru || product.generic_name || "").trim();
-  return {
-    id: `off_${product.code || normalizeProductName(name)}`,
-    name,
-    brand,
-    category,
-    genericKey: genericKeyFromParts(category, genericName || name),
-    kind: product.code ? "sku" : "generic",
-    unit: openFoodFactsUnit(product),
-    barcode: String(product.code || ""),
-    ingredients: String(product.ingredients_text_ru || product.ingredients_text || "").trim(),
-    nutrition: openFoodFactsNutrition(product),
-    catalogSource: "Open Food Facts",
-    confirmed: false,
-  };
-}
-
 export function activeResponses(request) {
   return (request.responses || []).filter((response) => !response.deletedAt);
 }
@@ -966,8 +951,10 @@ export function materializePurchasedProduct(nextState, item, changedAt, actor = 
   return product.id;
 }
 
+// The Cache adds what its Запросы outside the window bought (purchaseArchive).
 export function productPurchasedTotal(productId, source) {
-  return (source.requests || []).filter((request) => !request.deletedAt).reduce((total, request) => total + activeResponses(request).reduce(
+  const archived = Number(source.purchaseArchive?.[productId]?.quantity) || 0;
+  return archived + (source.requests || []).filter((request) => !request.deletedAt).reduce((total, request) => total + activeResponses(request).reduce(
     (requestTotal, response) => requestTotal + response.items.reduce((responseTotal, item) => {
       return responseTotal + ((item.purchasedProductId || item.productId) === productId ? Number(item.quantity) || 0 : 0);
     }, 0),
@@ -1088,81 +1075,6 @@ function inferProductKind(product) {
   if (product?.kind === "generic" || product?.kind === "sku") return product.kind;
   if (product?.barcode || product?.brand) return "sku";
   return "generic";
-}
-
-function formatAmount(value) {
-  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(value);
-}
-
-function finiteNutrient(value) {
-  const result = Number(value);
-  return value === "" || value == null || !Number.isFinite(result) ? null : result;
-}
-
-export function openFoodFactsUnit(product) {
-  const water = (product.categories_tags || []).some((tag) => /water/i.test(tag));
-  const quantity = String(product.quantity || "").toLowerCase();
-  // `\b` treats Cyrillic letters as non-word characters, so match unit tokens explicitly.
-  const hasUnit = (units) => new RegExp(`(^|[^a-zа-яё])(${units})($|[^a-zа-яё])`).test(quantity);
-  if (water || hasUnit("ml|мл|l|л")) return "л";
-  if (hasUnit("kg|кг")) return "кг";
-  if (hasUnit("g|г")) return "г";
-  return "шт.";
-}
-
-export function openFoodFactsCategory(product) {
-  const tags = (product.categories_tags || []).join(" ").toLowerCase();
-  const categories = String(product.categories || "").toLowerCase();
-  const value = `${tags} ${categories}`;
-  if (/water|beverage|drink/.test(value)) return "Напитки";
-  if (/milk|dairy|cheese|yogurt|кефир|молоч/.test(value)) return "Молочные продукты";
-  if (/fruit/.test(value)) return "Фрукты";
-  if (/vegetable/.test(value)) return "Овощи";
-  if (/meat|poultry/.test(value)) return "Мясо и птица";
-  if (/fish|seafood/.test(value)) return "Рыба и морепродукты";
-  if (/bread|bakery/.test(value)) return "Хлеб и выпечка";
-  return product.categories ? String(product.categories).split(",")[0].trim() : "";
-}
-
-function openFoodFactsNutrientText(nutriments, definitions) {
-  return Object.entries(definitions).flatMap(([key, [label, multiplier, unit]]) => {
-    const value = finiteNutrient(nutriments[key]);
-    return value == null ? [] : [`${label}: ${formatAmount(value * multiplier)} ${unit}`];
-  }).join("; ");
-}
-
-export function openFoodFactsNutrition(product) {
-  const nutriments = product.nutriments || {};
-  const water = (product.categories_tags || []).some((tag) => /water/i.test(tag));
-  const calories = finiteNutrient(nutriments["energy-kcal_100g"])
-    ?? (finiteNutrient(nutriments.energy_100g) == null ? null : finiteNutrient(nutriments.energy_100g) / 4.184);
-  const values = {
-    calories: calories ?? (water ? 0 : null),
-    protein: finiteNutrient(nutriments.proteins_100g) ?? (water ? 0 : null),
-    fat: finiteNutrient(nutriments.fat_100g) ?? (water ? 0 : null),
-    carbs: finiteNutrient(nutriments.carbohydrates_100g) ?? (water ? 0 : null),
-    fiber: finiteNutrient(nutriments.fiber_100g) ?? (water ? 0 : null),
-  };
-  const vitamins = openFoodFactsNutrientText(nutriments, {
-    "vitamin-a_100g": ["A", 1_000_000, "мкг"], "vitamin-d_100g": ["D", 1_000_000, "мкг"],
-    "vitamin-e_100g": ["E", 1_000, "мг"], "vitamin-c_100g": ["C", 1_000, "мг"],
-    "vitamin-b1_100g": ["B1", 1_000, "мг"], "vitamin-b2_100g": ["B2", 1_000, "мг"],
-    "vitamin-b6_100g": ["B6", 1_000, "мг"], "vitamin-b9_100g": ["B9", 1_000_000, "мкг"],
-    "vitamin-b12_100g": ["B12", 1_000_000, "мкг"],
-  });
-  const minerals = openFoodFactsNutrientText(nutriments, {
-    calcium_100g: ["Кальций", 1_000, "мг"], iron_100g: ["Железо", 1_000, "мг"],
-    magnesium_100g: ["Магний", 1_000, "мг"], potassium_100g: ["Калий", 1_000, "мг"],
-    zinc_100g: ["Цинк", 1_000, "мг"], sodium_100g: ["Натрий", 1_000, "мг"],
-  });
-  if (!Object.values(values).some((value) => value != null) && !vitamins && !minerals) return null;
-  return {
-    ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value == null ? null : Number(value.toFixed(2))])),
-    vitamins,
-    minerals,
-    basis: "100 г/мл",
-    source: "Open Food Facts",
-  };
 }
 
 function requestSnapshot(request) {

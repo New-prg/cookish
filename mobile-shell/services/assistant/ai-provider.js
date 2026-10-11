@@ -1,7 +1,7 @@
-// Provider port of the test assistant (epic #44). The routerai.ru adapter
-// speaks the OpenAI-compatible API with a key the person enters in Profile;
-// the mock adapter answers tests. The key lives on the device apart from the
-// local data and never appears in error texts.
+// Provider port of the assistant Service (epic #44). The routerai.ru adapter
+// speaks the OpenAI-compatible API; until #31 the key comes from Profile with
+// each request (ui/ai-key.js keeps it on the device). The mock adapter answers
+// tests. The key never appears in error texts.
 
 export const AI_PROVIDER_CONFIG = Object.freeze({
   baseUrl: "https://routerai.ru",
@@ -15,8 +15,6 @@ export const AI_PROVIDER_CONFIG = Object.freeze({
 });
 
 export const AI_PROVIDER_NAME = "routerai.ru";
-export const AI_KEY_STORAGE = "cookish.ai.key.test";
-export const AI_CONSENT_STORAGE = "cookish.ai.consent.v1";
 
 export const AI_ERROR_TEXTS = {
   no_key: "Ключ ИИ не задан. Добавьте его в Профиле.",
@@ -39,63 +37,11 @@ export class AiError extends Error {
   }
 }
 
-// The key is stored under its own storage key, so it never enters the local
-// data blob, its backups or a future export and sync.
-export function aiKeyStore(storage) {
-  return {
-    read() {
-      try {
-        return String(storage?.getItem(AI_KEY_STORAGE) || "").trim();
-      } catch {
-        return "";
-      }
-    },
-    write(key) {
-      const value = String(key || "").trim();
-      if (!value) return false;
-      try {
-        storage.setItem(AI_KEY_STORAGE, value);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    clear() {
-      try {
-        storage?.removeItem(AI_KEY_STORAGE);
-      } catch {
-        // Nothing to remove.
-      }
-    },
-  };
-}
-
-// One-time warning that plan and statistics data go to the external provider.
-export function aiConsentStore(storage) {
-  return {
-    accepted() {
-      try {
-        return storage?.getItem(AI_CONSENT_STORAGE) === "1";
-      } catch {
-        return false;
-      }
-    },
-    accept() {
-      try {
-        storage.setItem(AI_CONSENT_STORAGE, "1");
-      } catch {
-        // The warning shows again next time.
-      }
-    },
-  };
-}
-
-export const AI_CONSENT_TEXT = `Ассистент отправляет данные плана, профиля и статистики внешнему провайдеру ${AI_PROVIDER_NAME}. Ключ остаётся на этом устройстве. Продолжить?`;
-
 // A transport performs one HTTP request: ({ method, url, headers, body,
-// timeoutMs, signal }) → { status, text }. It throws { kind: "network" } when
-// the request did not reach the provider.
-export function fetchTransport(fetchImpl = globalThis.fetch) {
+// timeoutMs, signal }) → { status, text }. It throws an error with `kind`
+// "network" or "timeout" when the request did not reach the provider.
+// `fetchImpl` is the platform fetch.
+export function fetchTransport(fetchImpl) {
   return async ({ method, url, headers, body, signal }) => {
     let response;
     try {
@@ -106,39 +52,6 @@ export function fetchTransport(fetchImpl = globalThis.fetch) {
     }
     return { status: response.status, text: await response.text().catch(() => "") };
   };
-}
-
-// The Android bridge performs the request natively: the WebView origin is not
-// subject to the provider's CORS rules there. `host` receives the callback.
-export function nativeTransport(bridge, host = globalThis) {
-  const pending = new Map();
-  let sequence = 0;
-  host.__onNativeAiResponse = (id, payload) => {
-    const entry = pending.get(id);
-    if (!entry) return;
-    pending.delete(id);
-    let result = null;
-    try {
-      result = JSON.parse(payload);
-    } catch {
-      entry.reject(new AiError("bad_response"));
-      return;
-    }
-    if (result?.error) entry.reject(new AiError(result.error === "timeout" ? "timeout" : "network"));
-    else entry.resolve({ status: Number(result?.status) || 0, text: String(result?.body || "") });
-  };
-  return ({ method, url, headers, body, timeoutMs, signal }) => new Promise((resolve, reject) => {
-    const id = `ai_${Date.now()}_${sequence += 1}`;
-    pending.set(id, { resolve, reject });
-    signal?.addEventListener?.("abort", () => {
-      if (pending.delete(id)) reject(new AiError("timeout"));
-    });
-    bridge.aiRequest(id, JSON.stringify({ method, url, headers, body: body || "", timeoutMs }));
-  });
-}
-
-export function defaultTransport(host = globalThis) {
-  return host.NativeCookish?.aiRequest ? nativeTransport(host.NativeCookish, host) : fetchTransport(host.fetch?.bind(host));
 }
 
 export function createRouterAiProvider({
@@ -170,7 +83,7 @@ export function createRouterAiProvider({
           signal,
         }));
       } catch (error) {
-        const kind = error instanceof AiError ? error.kind : "network";
+        const kind = typeof error?.kind === "string" && AI_ERROR_TEXTS[error.kind] ? error.kind : "network";
         if (kind === "network" && attempt < settings.retries) {
           attempt += 1;
           await sleep(settings.retryDelayMs * attempt);

@@ -3,14 +3,14 @@ import test from "node:test";
 
 import {
   REQUEST_HISTORY_LIMIT,
-  browserStorage,
   memoryStorage,
   openLocalData,
   prepareState,
   rationDayFor,
   readRationHistoryDay,
   todayDateKey,
-} from "../mobile-shell/local-data.js";
+} from "../mobile-shell/core/local-data.js";
+import { browserStorage } from "../mobile-shell/ui/platform.js";
 
 function openData(initial = null) {
   const data = openLocalData(memoryStorage(initial));

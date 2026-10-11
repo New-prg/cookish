@@ -2,7 +2,7 @@
 import {
   executeRationCommand, migrateRationState, readRationDay, readRationDayNutrition,
   validateRationProfile, normalizeProductName, formatRationDate, parseRationDate,
-} from "../../mobile-shell/ration-domain.js";
+} from "../../mobile-shell/core/ration-domain.js";
 
 export const TODAY = "2026-10-01"; // четверг
 export const CTX = { now: "2026-10-01T09:00:00.000Z", today: TODAY, actor: "ai" };

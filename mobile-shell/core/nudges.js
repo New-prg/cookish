@@ -1,10 +1,12 @@
 import { readRationDay, readRationHistoryDay } from "./ration-domain.js";
+import { createId } from "./replay.js";
 import { SPORT_INTENSITY_LABELS, SPORT_TYPE_LABELS, readSportDay, readSportLogDay } from "./sport-domain.js";
 
 // Тычки: every deviation from the plan reaches the assistant, which decides
-// whether to tell the person. Detection is code; the queue lives in local data
-// and survives a restart; bursts merge into one background call. Nothing in
-// the plan changes here: a notice only becomes the first message of the chat.
+// whether to tell the person. Detection is code; the queue lives in the Core,
+// survives a restart and goes out in bursts. The decision on a burst is the
+// assistant Service (services/assistant/nudges.js). Nothing in the plan
+// changes here: a notice only becomes the first message of the chat.
 
 export const NUDGE_BURST_MS = 30_000;
 export const NUDGE_RETRY_MS = 5 * 60_000;
@@ -115,58 +117,31 @@ export function enqueueNudges(assistantState, nudges) {
   return assistantState;
 }
 
-// One background call for a burst of nudges. The answer is JSON
-// { notify, text }; the strictness paragraph and the free text «Как
-// реагировать» are part of the prompt.
-export async function decideNudges(provider, { nudges, settings, context }) {
-  const level = STRICTNESS_LEVELS[settings?.strictness] || STRICTNESS_LEVELS.any;
-  const howToReact = String(settings?.howToReact || "").trim();
-  const system = [
-    "Ты ассистент приложения Cookish. Человек отметил отклонения от своего плана питания или тренировок (тычки).",
-    "Реши, стоит ли сейчас сказать ему об этом. Ничего не меняй и не обещай изменить: изменения плана предлагаются только в открытом чате.",
-    level.prompt,
-    howToReact ? `Как реагировать (пожелание человека): ${howToReact}` : "",
-    "Не лечи и не ставь диагнозов.",
-    "Ответь только JSON: {\"notify\": true|false, \"text\": \"короткое сообщение по-русски, 1–2 предложения\"}.",
-  ].filter(Boolean).join("\n");
-  const user = JSON.stringify({
-    events: nudges.map(({ kind, date, text, page }) => ({ kind, date, page, text })),
-    context,
-  });
-  const answer = await provider.complete({
-    messages: [{ role: "system", content: system }, { role: "user", content: user }],
-    responseFormat: { type: "json_object" },
-  });
-  if (!answer.ok) return { ok: false, kind: answer.kind, reason: answer.reason };
-  const parsed = parseDecision(answer.message?.content);
-  if (!parsed) return { ok: false, kind: "bad_response", reason: "Ответ ассистента не JSON." };
-  return { ok: true, ...parsed };
+function nudge(now, fields) {
+  return { id: createId("nudge"), createdAt: now, ...fields };
 }
 
-export function parseDecision(content) {
-  const text = String(content || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) return null;
-  try {
-    const value = JSON.parse(text.slice(start, end + 1));
-    const message = String(value.text || "").trim();
-    return { notify: Boolean(value.notify) && Boolean(message), text: message };
-  } catch {
-    return null;
-  }
+function historyMeal(state, date, mealId) {
+  return readRationHistoryDay(state, date)?.meals?.[mealId] || null;
 }
 
-// Background worker: waits for a quiet burst window, then sends everything
-// queued in one call. Without a key or a network the queue waits; on a
-// transient failure it retries later. `store` reads and writes local data.
+function mealOf(state, date, mealId) {
+  return readRationDay(state, date)?.meals?.find((meal) => meal.id === mealId) || null;
+}
+
+// Background worker: waits for a quiet burst window, then hands everything
+// queued to `decide(nudges)` in one call — the assistant Service decides
+// through the transport. Without a key or a network the queue waits; on a
+// transient failure it retries later. `store` reads and writes local data;
+// `isOnline` comes from the platform.
 export function createNudgeWorker({
-  provider,
+  decide,
+  hasKey = () => true,
   store,
-  buildContext,
-  isOnline = () => globalThis.navigator?.onLine !== false,
+  isOnline = () => true,
   allowed = () => true,
-  timers = globalThis,
+  // Wrapped: a browser rejects setTimeout called on another object.
+  timers = { setTimeout: (run, ms) => setTimeout(run, ms), clearTimeout: (id) => clearTimeout(id) },
   burstMs = NUDGE_BURST_MS,
   retryMs = NUDGE_RETRY_MS,
   onNotice = () => {},
@@ -186,11 +161,14 @@ export function createNudgeWorker({
     const nudges = store.pending();
     if (!nudges.length || running) return { ok: true, sent: 0 };
     // Without a key, the provider warning or a network the queue waits.
-    if (!provider.hasKey() || !allowed() || !isOnline()) return { ok: false, waiting: true };
+    if (!hasKey() || !allowed() || !isOnline()) return { ok: false, waiting: true };
     running = true;
     let result;
     try {
-      result = await decideNudges(provider, { nudges, settings: store.settings(), context: buildContext() });
+      result = await decide(nudges);
+    } catch (error) {
+      // The transport failed: the Service is unreachable, the queue waits.
+      result = { ok: false, kind: typeof error?.kind === "string" ? error.kind : "network", reason: String(error?.message || "") };
     } finally {
       running = false;
     }
@@ -216,16 +194,4 @@ export function createNudgeWorker({
       return Boolean(timer);
     },
   };
-}
-
-function nudge(now, fields) {
-  return { id: `nudge_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, createdAt: now, ...fields };
-}
-
-function historyMeal(state, date, mealId) {
-  return readRationHistoryDay(state, date)?.meals?.[mealId] || null;
-}
-
-function mealOf(state, date, mealId) {
-  return readRationDay(state, date)?.meals?.find((meal) => meal.id === mealId) || null;
 }

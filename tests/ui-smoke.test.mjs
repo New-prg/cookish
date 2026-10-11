@@ -50,7 +50,14 @@ async function openPage(viewport = { width: 412, height: 915 }, { hasTouch = fal
     throw new Error(`Unhandled page error: ${error.message}`);
   });
   await page.goto(baseUrl, { waitUntil: "load" });
+  await appRendered(page);
   return { context, page };
+}
+
+// With an empty Cache the app shows its first screen and then builds the
+// Cache from the full Core.
+function appRendered(page) {
+  return page.waitForFunction(() => localStorage.getItem("cookish.cache.v1") !== null && document.getElementById("app").childElementCount > 0);
 }
 
 const ROOT_PAGES = ["ration", "sport", "requests"];
@@ -113,7 +120,7 @@ async function openRoute(page, route) {
 // open the page with { hasTouch: true }.
 async function openProductCard(page, productId) {
   const now = new Date().toISOString();
-  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("cookish.android.data.v1") || "null"));
+  const stored = await storedState(page);
   await seedState(page, {
     schemaVersion: 12,
     products: stored?.products?.length ? stored.products : [{ id: productId, name: "Чай", unit: "г" }],
@@ -180,7 +187,7 @@ test("smoke: request with two items and one purchase mark", async () => {
     await page.click("#save-purchase-item");
     await page.waitForTimeout(120);
 
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("cookish.android.data.v1")));
+    const stored = await storedState(page);
     const request = stored.requests[0];
     assert.equal(request.items.length, 2);
     const boughtLines = request.responses.filter((response) => !response.deletedAt)
@@ -220,7 +227,9 @@ test("smoke: Рацион opens in Учёт on «Сегодня»; the button be
     assert.equal(await page.locator(`.feed-day[data-date="${dateKey(-1)}"] .ration-today-meal`).count(), 1, "a row opens its meals");
     await page.click(".feed-more");
     assert.equal(await rows.count(), 7);
+    // Days past the Cache window come from the full Core.
     await page.click(".feed-more");
+    await page.waitForFunction(() => document.querySelectorAll(".feed-day").length > 7);
     assert.equal(await rows.count(), 41, "then the whole history back to the plan start");
     assert.equal(await page.locator(".feed-more").count(), 0);
     await page.click(".feed-less");
@@ -267,7 +276,7 @@ test("smoke: План starts with tomorrow, edits a future day and requests a ra
     await page.waitForTimeout(80);
     assert.equal(await page.locator("#ration-meal-dialog").count(), 0, "a plan edit never opens today's meal card");
 
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("cookish.android.data.v1")));
+    const stored = await storedState(page);
     const specialDates = Object.keys(stored.ration.specialDays);
     assert.deepEqual(specialDates, [`local|${dateKey(1)}`]);
     assert.match(await days.first().innerText(), /Особый день/);
@@ -276,7 +285,7 @@ test("smoke: План starts with tomorrow, edits a future day and requests a ra
     await page.waitForSelector("#ration-request-dialog[open]");
     await page.click("#ration-plan-request button[type=submit]");
     await page.waitForSelector("#request-items");
-    const afterRequest = await page.evaluate(() => JSON.parse(localStorage.getItem("cookish.android.data.v1")));
+    const afterRequest = await storedState(page);
     assert.equal(afterRequest.requests.length, 1);
     assert.equal(afterRequest.requests[0].items[0].unit, "уп.");
   } finally {
@@ -411,13 +420,21 @@ function dateKey(offsetDays) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+// Seeds the full Core; the Cache builds from it on the next start.
 async function seedState(page, state) {
-  await page.evaluate((value) => localStorage.setItem("cookish.android.data.v1", JSON.stringify(value)), state);
+  await page.evaluate((value) => {
+    localStorage.setItem("cookish.android.data.v1", JSON.stringify(value));
+    localStorage.removeItem("cookish.cache.v1");
+    localStorage.removeItem("cookish.outbox.v1");
+  }, state);
   await page.reload({ waitUntil: "load" });
+  await appRendered(page);
 }
 
-function storedState(page) {
-  return page.evaluate(() => JSON.parse(localStorage.getItem("cookish.android.data.v1")));
+// The full Core once the Outbox has delivered every command.
+async function storedState(page) {
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("cookish.outbox.v1") || "[]").length === 0);
+  return page.evaluate(() => JSON.parse(localStorage.getItem("cookish.android.data.v1") || "null"));
 }
 
 test("smoke: Учёт corrects the state of a past meal, not today", async () => {
@@ -504,6 +521,51 @@ test("smoke: barcode lookup fills the product form from Open Food Facts", async 
     assert.equal(await form.locator("[name=calories]").inputValue(), "40");
     assert.equal(await form.locator("[name=ingredients]").inputValue(), "молоко нормализованное");
     assert.doesNotMatch(await page.locator("#barcode-status").innerText(), /not defined/);
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a barcode scanned in the purchase dialog shows the bought product, and a network error says why", async () => {
+  const { context, page } = await openPage(undefined, { hasTouch: true });
+  try {
+    let offline = false;
+    await page.route("https://world.openfoodfacts.org/**", (route) => (offline ? route.abort("internetdisconnected") : route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ status: 1, product: { code: "4600000000001", product_name_ru: "Молоко Простоквашино 2,5%", quantity: "930 мл" } }),
+    })));
+    await openRoute(page, "requests");
+    await page.click("#requests-empty-add");
+    const line = page.locator("#request-items .request-line-editor").first();
+    await line.click();
+    await line.fill("Молоко");
+    await line.press("Enter");
+    await page.waitForTimeout(120);
+    await page.click("#header-action");
+    await page.waitForTimeout(120);
+    await page.locator(".request-link").first().click();
+    await page.waitForSelector("#request-items .request-line-editor");
+    const row = page.locator("#request-items .request-item:not(.is-blank)").first();
+    const box = await row.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 - 160, box.y + box.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForSelector("#answer-action-dialog[open]", { timeout: 3000 });
+
+    await page.evaluate(() => {
+      window.NativeCookish = { scanBarcode: () => window.__onNativeBarcodeScan(JSON.stringify({ ok: true, barcode: "4600000000001" })) };
+    });
+    await page.click("#scan-purchase-barcode");
+    await page.waitForSelector("#answer-dialog-title .purchase-dialog-new-name");
+    assert.equal(await page.locator("#answer-dialog-title .purchase-dialog-new-name").innerText(), "Молоко Простоквашино 2,5%");
+    assert.equal(await page.locator("#purchase-status").innerText(), "Штрихкод: 4600000000001");
+
+    offline = true;
+    await page.click("#scan-purchase-barcode");
+    await page.waitForFunction(() => document.getElementById("purchase-status").classList.contains("error"));
+    assert.match(await page.locator("#purchase-status").innerText(), /Нет связи с Open Food Facts/);
+    assert.equal(await page.locator("#answer-dialog-title .purchase-dialog-new-name").count(), 0);
   } finally {
     await context.close();
   }
@@ -1703,6 +1765,41 @@ test("smoke: on Спорт the assistant proposes a workout change and applying 
     const stored = await storedState(page);
     assert.equal(stored.journal.at(-1).page, "sport");
     assert.equal(stored.journal.at(-1).actor, "ai");
+  } finally {
+    await context.close();
+  }
+});
+
+test("smoke: a mark made offline on a meal removed meanwhile rolls back and says why", async () => {
+  const { context, page } = await openPage();
+  try {
+    await seedState(page, assistantPlanState());
+    await page.evaluate(() => localStorage.setItem("cookish.dev.offline", "1"));
+    await openRoute(page, "ration");
+    await openMealDetails(page, dateKey(0), "meal_2");
+    await page.click('#ration-meal-dialog .ration-state-set[data-state="skipped"]');
+    await page.click("#close-ration-meal");
+    assert.ok((await page.evaluate(() => JSON.parse(localStorage.getItem("cookish.outbox.v1")))).some((entry) => entry.name === "markRationMeal"));
+
+    // Meanwhile another device removes the evening meal from today in the full Core.
+    await page.evaluate(async (today) => {
+      const { openLocalData } = await import("./core/local-data.js");
+      const key = "cookish.android.data.v1";
+      const core = openLocalData({
+        read: () => JSON.parse(localStorage.getItem(key)),
+        write: (state) => localStorage.setItem(key, JSON.stringify(state)),
+        backup: () => {},
+      });
+      core.load();
+      if (!core.removeRationMeal(today, "meal_2").ok) throw new Error("meal_2 was not removed");
+      localStorage.removeItem("cookish.dev.offline");
+    }, dateKey(0));
+    await page.reload({ waitUntil: "load" });
+
+    await page.waitForFunction(() => /^Не применилось: отметка приёма пищи\. .+\.$/.test(document.getElementById("toast-message").textContent));
+    const stored = await storedState(page);
+    assert.equal(stored.ration.history[`local|${dateKey(0)}`]?.meals?.meal_2, undefined, "the full Core has no mark");
+    assert.equal(await page.locator(`.ration-today-meal[data-meal-id="meal_2"]`).count(), 0, "the Cache rolled the meal back");
   } finally {
     await context.close();
   }

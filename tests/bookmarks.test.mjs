@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createMockProvider } from "../mobile-shell/ai-provider.js";
-import { createAssistant, createThread, recheckProposals, viewDay } from "../mobile-shell/ai-tools.js";
-import { BOOKMARK_LIMIT } from "../mobile-shell/nudges.js";
-import { memoryStorage, openLocalData } from "../mobile-shell/local-data.js";
+import { createMockProvider } from "../mobile-shell/services/assistant/ai-provider.js";
+import { viewDay } from "../mobile-shell/services/assistant/ai-tools.js";
+import { createThread } from "../mobile-shell/core/assistant-thread.js";
+import { recheckProposals } from "../mobile-shell/core/proposals.js";
+import { assistantHarness } from "./helpers/assistant-harness.mjs";
+import { BOOKMARK_LIMIT } from "../mobile-shell/core/nudges.js";
+import { memoryStorage, openLocalData } from "../mobile-shell/core/local-data.js";
 import { TODAY, makeState } from "../scripts/ai-lab/fixture.mjs";
 
 const TOMORROW = "2026-10-02";
@@ -55,12 +58,7 @@ test("bookmarks: a stale proposal from a bookmark is marked as a conflict, never
     { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "set_special_day", arguments: JSON.stringify({ date: TOMORROW, meals }) } }] },
     { role: "assistant", content: "Ок." },
   ];
-  const assistant = createAssistant({
-    provider: createMockProvider((request, index) => turns[index]),
-    getState: () => data.snapshot(),
-    changePlan: data.changePlan,
-    today: () => TODAY,
-  });
+  const assistant = assistantHarness({ data, provider: createMockProvider((request, index) => turns[index]), today: () => TODAY });
   const thread = createThread({ page: "ration", mode: "plan" });
   await assistant.run(thread, "Завтра без говядины");
   data.saveBookmark(bookmark("bookmark_x", { proposals: thread.proposals }));

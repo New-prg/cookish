@@ -10,10 +10,10 @@ import {
   readSportLogDay,
   readSportRange,
   sessionEnergy,
-} from "../mobile-shell/sport-domain.js";
-import { activePlanVersion, cycleDayFor } from "../mobile-shell/plan-cycle.js";
-import { RATION_SCHEMA_VERSION } from "../mobile-shell/ration-domain.js";
-import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/local-data.js";
+} from "../mobile-shell/core/sport-domain.js";
+import { activePlanVersion, cycleDayFor } from "../mobile-shell/core/plan-cycle.js";
+import { RATION_SCHEMA_VERSION } from "../mobile-shell/core/ration-domain.js";
+import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/core/local-data.js";
 
 const CTX = { now: "2026-10-01T09:00:00.000Z", today: "2026-10-01", actor: "local" };
 const MONDAY = "2026-09-28";

@@ -3,7 +3,7 @@
 **Product name:** Cookish
 **Platform:** Android (Capacitor WebView, native barcode scan, in-app APK update)
 **Primary language:** Russian UI
-**Updated:** 2026-10-02
+**Updated:** 2026-10-11
 **Package id:** `ru.listok.purchases`
 
 This file is the source of truth for **what problems the app must solve** and
@@ -11,11 +11,13 @@ This file is the source of truth for **what problems the app must solve** and
 How data is stored today is documented in [`README.md`](../README.md).
 Implementation may lag; when code and this file disagree, treat this file as
 the intended product unless a deliberate product change is recorded here.
-The approved data scheme is offline-first with account sync, see
-[ADR-0001](adr/0001-offline-first-with-account-sync.md). While the assistant is
-in test mode (epic #44), the app calls the AI provider directly with a key from
-a temporary Profile field; the ADR rule «AI only through the backend and an
-account» is suspended until the AI proxy (#31).
+The approved data scheme is the server as the primary copy and the phone as a
+cache with an outbox, see [ADR-0002](adr/0002-server-primary-phone-cache.md);
+it replaces ADR-0001. Until the server exists, the full Core and the Services
+run in the app process behind a local transport. While the assistant is in test
+mode, it calls the AI provider with a key from a temporary Profile field; the
+ADR rule «AI only through the server and an account» is suspended until the AI
+proxy (#31).
 
 ---
 
@@ -26,9 +28,9 @@ account» is suspended until the AI proxy (#31).
 Cookish helps one person plan food and physical activity, follow both plans
 day by day, turn the food plan into a shopping list, and record purchases and
 spend. One assistant plans across the pages and proposes changes that the
-person confirms. The phone is the system of record. Local features work
-without an account; account sync stays off until an account exists
-(ADR-0001). The test assistant is the only network feature without an
+person confirms. Today the phone holds the whole data set. Under ADR-0002 the
+server becomes the primary copy, a guest account is created silently on first
+run, and everything except AI keeps working offline. The test assistant is the only network feature without an
 account, and only with a provider key the person enters (§6.6.6).
 
 ### 1.2 Core value propositions
@@ -62,8 +64,8 @@ account, and only with a provider key the person enters (§6.6.6).
 - Rework of the connection between ration and Requests (#19); current behavior stays
 - Product metrics (#20); Summary and spend metrics return after the page shell settles
 
-Accounts, backend sync, the AI proxy and billing (#29–#32) are part of the
-approved scheme (ADR-0001, epic #21) and come after epic #44.
+Accounts, the server copy, the AI proxy and billing (#29–#32) are part of the
+approved scheme (ADR-0002, epic #21) and come after epics #66 and #59.
 
 ---
 
@@ -71,15 +73,17 @@ approved scheme (ADR-0001, epic #21) and come after epic #44.
 
 | Layer | Reality |
 |---|---|
-| UI shell | Single-page vanilla JS `mobile-shell/app.js` + `styles.css` |
-| Ration rules | `mobile-shell/ration-domain.js`, a deep in-process module; UI, sync and AI tools call one command/projection interface (#23) |
-| Sport rules | `mobile-shell/sport-domain.js` (#53): План тренировок, Учёт тренировок and the MET energy estimate; the cycle and version logic it shares with the ration lives in `plan-cycle.js` |
-| Assistant | `mobile-shell/ai-tools.js` (#50): agent loop, read tools, Предложения executed on a copy and gated, apply with re-check and the change journal (`plan-journal.js`, #48); provider port `ai-provider.js` with the routerai.ru adapter and a mock for tests (#49) |
+| Layers | `mobile-shell/ui/` (screens and platform adapters), `mobile-shell/core/` (data, domain rules, commands), `mobile-shell/services/` (assistant, catalog), `mobile-shell/transport/` (the local transport to the Services); see ADR-0002 |
+| UI shell | Single-page vanilla JS `mobile-shell/ui/app.js` + `styles.css` |
+| Ration rules | `mobile-shell/core/ration-domain.js`, a deep in-process module; UI, sync and AI tools call one command/projection interface (#23) |
+| Sport rules | `mobile-shell/core/sport-domain.js` (#53): План тренировок, Учёт тренировок and the MET energy estimate; the cycle and version logic it shares with the ration lives in `plan-cycle.js` |
+| Assistant | A Service in `mobile-shell/services/assistant/` behind the transport (#69): the agent loop and read tools (`ai-tools.js`, #50) read the full Core through a data port; Предложения are executed on a copy, gated and streamed to the UI as data; the Core applies them with a re-check and the change journal (`core/proposals.js`, `plan-journal.js`, #48); provider port `ai-provider.js` with the routerai.ru adapter and a mock for tests (#49); the Тычки queue and worker are in the Core, the decision is the Service |
+| Catalog | `mobile-shell/services/catalog/`: Open Food Facts search and barcode cards; the UI asks it through the transport (#68) |
 | Navigation | Three root pages Рацион → Спорт → Покупки switched by a horizontal swipe; a slider shows the page and the mode; Profile from a header button; stack routes for request note, purchase editor, product card and forms |
 | Data | Local data on the device. See README |
-| Auth | None yet. Account + backend sync are planned (#29, #30); sync stays off without an account |
+| Auth | None yet. A guest account and the server copy are planned (ADR-0002, #29, #30) |
 | Updates | Profile checks the latest public GitHub Release and can install `Cookish.apk` |
-| Tests | Node tests for local domain helpers; Playwright UI smoke tests |
+| Tests | Node tests for local domain helpers, the layer boundaries and the Service contracts over the transport; Playwright UI smoke tests |
 
 ### 2.1 Must-not-regress behaviors
 

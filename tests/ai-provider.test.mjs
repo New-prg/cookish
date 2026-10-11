@@ -2,17 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  AI_KEY_STORAGE,
   AI_PROVIDER_CONFIG,
   AiError,
-  aiConsentStore,
-  aiKeyStore,
   createMockProvider,
   createRouterAiProvider,
   fetchTransport,
-  nativeTransport,
-} from "../mobile-shell/ai-provider.js";
-import { STORAGE_KEY, browserStorage, openLocalData } from "../mobile-shell/local-data.js";
+} from "../mobile-shell/services/assistant/ai-provider.js";
+import { STORAGE_KEY, openLocalData } from "../mobile-shell/core/local-data.js";
+import { AI_KEY_STORAGE, aiConsentStore, aiKeyStore } from "../mobile-shell/ui/ai-key.js";
+import { browserStorage, nativeTransport } from "../mobile-shell/ui/platform.js";
 
 const KEY = "sk-test-secret-123";
 
@@ -167,6 +165,20 @@ test("native transport: the Android bridge answers through a callback", async ()
   const failing = transport({ method: "GET", url: "https://routerai.ru/api/v1/key" });
   host.__onNativeAiResponse(sent[1].id, JSON.stringify({ error: "timeout" }));
   await assert.rejects(failing, (error) => error.kind === "timeout");
+});
+
+test("native transport: the provider reads the kind of a bridge failure", async () => {
+  const host = {};
+  const sent = [];
+  const transport = nativeTransport({ aiRequest: (id) => sent.push(id) }, host);
+  const provider = createRouterAiProvider({ getKey: () => KEY, transport, sleep: async () => {} });
+  const answer = provider.complete({ messages: [{ role: "user", content: "Привет" }] });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  host.__onNativeAiResponse(sent[0], JSON.stringify({ error: "timeout" }));
+  const result = await answer;
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, "timeout");
+  assert.equal(sent.length, 1, "a timeout is not retried");
 });
 
 test("key store: the key lives apart from the local data", () => {

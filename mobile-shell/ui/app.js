@@ -1,15 +1,10 @@
 import {
+  STORAGE_KEY,
   activeResponses,
-  browserStorage,
   formatRationDate,
   isProductConfirmed,
   isRequestFulfilled,
   normalizeProductName,
-  openFoodFactsCategory,
-  openFoodFactsNutrition,
-  openFoodFactsSuggestion,
-  openFoodFactsUnit,
-  openLocalData,
   parseRationDate,
   productPurchasedTotal,
   rationDayFor,
@@ -23,16 +18,14 @@ import {
   timestamp,
   todayDateKey,
   validateRationProfile,
-} from "./local-data.js";
-import {
-  AI_CONSENT_TEXT,
-  aiConsentStore,
-  aiKeyStore,
-  createRouterAiProvider,
-  defaultTransport,
-} from "./ai-provider.js";
-import { assistantContext, createAssistant, createThread } from "./ai-tools.js";
-import { STRICTNESS_LEVELS, createNudgeWorker } from "./nudges.js";
+} from "../core/local-data.js";
+import { applyThreadEvent, createThread } from "../core/assistant-thread.js";
+import { CACHE_STORAGE_KEY, OUTBOX_STORAGE_KEY, openCache } from "../core/cache.js";
+import { CACHE_WINDOW } from "../core/cache-window.js";
+import { LEDGER_STORAGE_KEY } from "../core/full-core.js";
+import { GUEST_STORAGE_KEY, openGuest } from "../core/guest.js";
+import { STRICTNESS_LEVELS, createNudgeWorker } from "../core/nudges.js";
+import { markProposals, recheckProposals } from "../core/proposals.js";
 import {
   SPORT_INTENSITIES,
   SPORT_INTENSITY_LABELS,
@@ -42,8 +35,11 @@ import {
   readSportDay,
   readSportDayEnergy,
   readSportLogDay,
-} from "./sport-domain.js";
-import { planOwnerKey } from "./plan-cycle.js";
+} from "../core/sport-domain.js";
+import { planOwnerKey } from "../core/plan-cycle.js";
+import { openLocalServices } from "../transport/local.js";
+import { AI_CONSENT_TEXT, aiConsentStore, aiKeyStore } from "./ai-key.js";
+import { browserStorage, developerOffline, isOnline, nativeAiTransport, platformFetch } from "./platform.js";
 import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
@@ -84,30 +80,60 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   const PAGE_MODE_LABELS = { log: "учёт", plan: "план" };
   const PAGE_MODE_TITLES = { log: "Учёт", plan: "План" };
 
-  const localData = openLocalData(browserStorage(window.localStorage));
+  // ADR-0002: the full Core and the Services answer through the transport, as
+  // a server will; until there is one they run in the app over the data
+  // `cookish.android.data.v1`. The phone works with the Cache and the Outbox.
+  const guest = openGuest(browserStorage(window.localStorage, GUEST_STORAGE_KEY));
+  const services = openLocalServices({
+    fetchImpl: platformFetch(window),
+    aiTransport: nativeAiTransport(window),
+    core: {
+      storage: browserStorage(window.localStorage, STORAGE_KEY),
+      ledger: browserStorage(window.localStorage, LEDGER_STORAGE_KEY),
+    },
+    reachable: () => !developerOffline(window),
+  });
+  const localData = openCache({
+    storage: browserStorage(window.localStorage, CACHE_STORAGE_KEY),
+    outbox: browserStorage(window.localStorage, OUTBOX_STORAGE_KEY),
+    transport: services,
+    guestId: guest.id,
+    onChange: () => {
+      state = localData.snapshot();
+      render();
+    },
+    onConflict: (rejected) => showConflicts(rejected),
+  });
   let state = localData.load();
-  // The AI key stays on the device apart from the local data (test mode, #44).
+  // The AI key stays on the device apart from the local data (test mode, #44)
+  // and goes to the assistant Service with each request.
   const aiKey = aiKeyStore(window.localStorage);
   const aiConsent = aiConsentStore(window.localStorage);
-  const aiProvider = createRouterAiProvider({ getKey: () => aiKey.read(), transport: defaultTransport(window) });
+  const hasAiKey = () => Boolean(aiKey.read());
   let aiKeyStatus = { text: "", tone: "muted", busy: false };
-  const assistant = createAssistant({
-    provider: aiProvider,
-    getState: () => localData.snapshot(),
-    changePlan: localData.changePlan,
-  });
-  // Тычки wait in local data; the worker merges a burst into one background call.
+  // Тычки wait in local data; the worker merges a burst into one call to the
+  // assistant Service.
   const nudgeWorker = createNudgeWorker({
-    provider: aiProvider,
+    // The Service reads the full Core: the Outbox goes first.
+    decide: async (nudges) => {
+      await localData.flush();
+      return services.request("assistant", "decideNudges", {
+        nudges,
+        page: lastRootPage,
+        mode: pageModes[lastRootPage] || "",
+        key: aiKey.read(),
+        today: todayDateKey(),
+      });
+    },
+    hasKey: hasAiKey,
     store: {
       pending: () => localData.snapshot().assistant?.nudges || [],
-      settings: () => localData.snapshot().assistant?.settings || {},
       finish: (ids, text) => {
         if (applyLocal(localData.finishNudges(ids, text))) renderAssistantHandle();
       },
     },
-    buildContext: () => assistantContext(localData.snapshot(), { page: lastRootPage, mode: pageModes[lastRootPage] || "" }),
     allowed: () => aiConsent.accepted(),
+    isOnline: () => isOnline(window),
   });
   // The open chat. A thread lives only in memory and is gone after closing.
   let assistantThread = null;
@@ -768,7 +794,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   function renderAssistantHandle() {
     const visible = ROOT_PAGES.includes(route) && !assistantDialog.open;
     assistantHandle.hidden = !visible;
-    const available = aiProvider.hasKey();
+    const available = hasAiKey();
     // A notice from a Тычок: a badge on the handle and a teaser line.
     const notice = available ? state.assistant?.notice : null;
     assistantHandle.classList.toggle("unavailable", !available);
@@ -899,7 +925,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     assistantThread = createThread({ page: route, mode });
     assistantView = "chat";
     // The assistant's reaction to a Тычок opens the thread.
-    const notice = aiProvider.hasKey() ? state.assistant?.notice : null;
+    const notice = hasAiKey() ? state.assistant?.notice : null;
     if (notice) {
       assistantThread.log.push({ type: "assistant", text: notice.text });
       assistantThread.messages.push({ role: "assistant", content: notice.text });
@@ -985,8 +1011,9 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   }
 
   async function openAssistantBookmark(bookmarkId) {
-    const bookmark = (state.assistant?.bookmarks || []).find((item) => item.id === bookmarkId);
-    if (!bookmark) return;
+    // The Cache keeps the header; the thread comes from the full Core.
+    const bookmark = await localData.bookmark(bookmarkId);
+    if (!bookmark) return showToast("Закладка откроется, когда будет связь.");
     const unsaved = assistantThread && !assistantThread.bookmarkId && assistantThread.log.some((entry) => entry.type === "user");
     if (unsaved && !await askConfirm("Текущий чат не в закладках и пропадёт. Открыть закладку?", "Открыть")) return;
     assistantThread = {
@@ -1000,7 +1027,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       log: structuredClone(bookmark.log || []),
     };
     // The plan may have changed since: stale Предложения get a conflict.
-    assistant.recheck(assistantThread.proposals);
+    recheckProposals(localData.snapshot(), assistantThread.proposals);
     assistantView = "chat";
     document.getElementById("assistant-title").textContent = assistantContextTitle(bookmark.page, bookmark.mode);
     renderAssistantFeed();
@@ -1019,7 +1046,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   function assistantBookmarksList() {
     const bookmarks = state.assistant?.bookmarks || [];
     const rows = bookmarks.map((bookmark) => {
-      const pending = (bookmark.proposals || []).length;
+      const pending = bookmark.header ? bookmark.proposalCount : (bookmark.proposals || []).length;
       const meta = [
         assistantContextTitle(bookmark.page, bookmark.mode),
         date(bookmark.updatedAt || bookmark.createdAt),
@@ -1050,20 +1077,33 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   async function sendAssistantMessage(value) {
     const text = String(value || "").trim();
     if (!text || assistantBusy || !assistantThread) return;
-    if (!aiProvider.hasKey()) return renderAssistantFeed();
+    if (!hasAiKey()) return renderAssistantFeed();
     if (!await ensureAiConsent()) return;
     const thread = assistantThread;
     assistantBusy = true;
     assistantInput.value = "";
     renderAssistantFeed();
     try {
-      await assistant.run(thread, text, {
+      // The Service drafts on the full Core: the Outbox goes first.
+      await localData.flush();
+      const result = await services.stream("assistant", "run", {
+        thread,
+        text,
         page: thread.page,
         mode: thread.mode,
-        onEvent: () => {
+        key: aiKey.read(),
+        today: todayDateKey(),
+      }, {
+        onEvent: (event) => {
+          applyThreadEvent(thread, event);
           if (assistantThread === thread) renderAssistantFeed();
         },
       });
+      // The feed and the Предложения came as events; the model messages come
+      // with the answer.
+      thread.messages = result.thread.messages;
+    } catch (error) {
+      applyThreadEvent(thread, { type: "error", text: error.message || "Ассистент не ответил." });
     } finally {
       if (assistantThread === thread) {
         assistantBusy = false;
@@ -1076,7 +1116,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   function applyAssistantProposals(proposals, together) {
     if (!proposals.length) return false;
-    const result = assistant.apply(proposals, { together });
+    const result = localData.applyProposals(proposals, { together });
+    markProposals(proposals, result.results);
     state = localData.snapshot();
     render();
     renderAssistantFeed();
@@ -1100,7 +1141,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   function renderAssistantFeed() {
     if (!assistantThread) return;
-    const available = aiProvider.hasKey();
+    const available = hasAiKey();
     const listing = assistantView === "bookmarks";
     const form = document.getElementById("assistant-form");
     form.hidden = !available || listing;
@@ -1396,11 +1437,22 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   function bindFeed() {
     document.querySelectorAll(".feed-more").forEach((button) => {
-      button.onclick = () => {
+      button.onclick = async () => {
         const page = button.dataset.page;
         const mode = pageModes[page];
         const today = todayDateKey();
-        feedDays[page][mode] = feedNextCount(Math.min(feedDays[page][mode], feedAvailable(page, mode, today)), feedAvailable(page, mode, today));
+        let next = feedNextCount(Math.min(feedDays[page][mode], feedAvailable(page, mode, today)), feedAvailable(page, mode, today));
+        // The Cache holds two weeks of Учёт; older days come from the full Core.
+        if (mode === "log") {
+          button.disabled = true;
+          const loaded = await localData.ensureRange(addRationDays(today, 1 - next));
+          if (!loaded.ok) {
+            next = Math.min(next, CACHE_WINDOW.pastDays + 1);
+            showToast("Дни раньше двух недель загрузятся, когда будет связь.");
+          }
+          state = localData.snapshot();
+        }
+        feedDays[page][mode] = next;
         openFeedDay[page][mode] = "";
         openMealKey = "";
         renderRevealingNew(render);
@@ -1900,26 +1952,14 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     };
   }
 
-  async function searchOpenFoodFactsByName(query, rowKey) {
+  async function searchCatalogByName(query, rowKey) {
     const normalized = normalizeProductName(query);
     if (normalized.length < 3) return;
     const sequence = ++productNameSearchSequence;
     try {
       let suggestions = productNameSearchCache.get(normalized);
       if (!suggestions) {
-        const fields = [
-          "code", "product_name", "product_name_ru", "generic_name_ru", "brands", "quantity",
-          "categories", "categories_tags", "nutriments", "ingredients_text_ru", "ingredients_text",
-        ].join(",");
-        const params = new URLSearchParams({
-          search_terms: query.trim(), search_simple: "1", action: "process", json: "1", page_size: "3", fields,
-        });
-        const response = await fetch(`https://world.openfoodfacts.org/cgi/search.pl?${params}`, {
-          headers: { Accept: "application/json" },
-        });
-        if (!response.ok) throw new Error(`Open Food Facts: ${response.status}`);
-        const body = await response.json();
-        suggestions = (body.products || []).map(openFoodFactsSuggestion).filter(Boolean);
+        suggestions = (await services.request("catalog", "search", { query })).products;
         productNameSearchCache.set(normalized, suggestions);
       }
       if (sequence !== productNameSearchSequence) return;
@@ -1932,11 +1972,11 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   function matchingProductSuggestions(query = "") {
     const normalized = normalizeProductName(query);
-    const purchasedIds = new Set(activeRequests().flatMap((request) =>
+    const purchasedIds = new Set([...Object.keys(state.purchaseArchive || {}), ...activeRequests().flatMap((request) =>
       activeResponses(request).flatMap((response) =>
         response.items.map((item) => item.purchasedProductId || item.productId)
       )
-    ));
+    )]);
     const candidates = normalized
       ? productSuggestions().filter((product) => normalizeProductName(product.name).includes(normalized))
       : state.products.filter((product) => !product.deletedAt).sort((a, b) =>
@@ -2097,22 +2137,13 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     button.textContent = "Поиск…";
     setBarcodeStatus("Ищем товар в Open Food Facts…");
     try {
-      const fields = [
-        "code", "product_name", "product_name_ru", "generic_name_ru", "brands", "quantity",
-        "categories", "categories_tags", "nutriments", "ingredients_text_ru", "ingredients_text",
-      ].join(",");
-      const response = await fetch(
-        `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}.json?fields=${fields}`,
-        { headers: { Accept: "application/json" } }
-      );
-      if (!response.ok) throw new Error(`Open Food Facts: ${response.status}`);
-      const body = await response.json();
-      if (body.status !== 1 || !body.product) {
+      const { product } = await services.request("catalog", "productByBarcode", { barcode });
+      if (!product) {
         return setBarcodeStatus("Товар с таким штрихкодом пока отсутствует в Open Food Facts.", true);
       }
-      const nutritionUpdated = applyOpenFoodFactsProduct(form, body.product);
+      const nutritionUpdated = applyCatalogProduct(form, product);
       if (nutritionUpdated) form.dataset.nutritionSource = "Open Food Facts";
-      setBarcodeStatus(`Найдено: ${body.product.product_name_ru || body.product.product_name || barcode}. Проверьте данные перед сохранением.`);
+      setBarcodeStatus(`Найдено: ${product.name || barcode}. Проверьте данные перед сохранением.`);
     } catch (error) {
       setBarcodeStatus(error.message || "Не удалось получить карточку товара.", true);
     } finally {
@@ -2122,15 +2153,14 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     }
   }
 
-  function applyOpenFoodFactsProduct(form, product) {
+  // Fills the product form from a catalog card (services/catalog).
+  function applyCatalogProduct(form, product) {
     formDirty = true;
-    const name = product.product_name_ru || product.product_name || product.generic_name_ru || "";
-    const category = openFoodFactsCategory(product);
-    if (name) form.elements.name.value = name.trim();
-    if (category) form.elements.category.value = category;
-    form.elements.barcode.value = String(product.code || form.elements.barcode.value);
-    form.elements.unit.value = openFoodFactsUnit(product);
-    const nutrition = openFoodFactsNutrition(product);
+    if (product.name) form.elements.name.value = product.name;
+    if (product.category) form.elements.category.value = product.category;
+    form.elements.barcode.value = product.barcode || form.elements.barcode.value;
+    form.elements.unit.value = product.unit;
+    const { nutrition } = product;
     if (nutrition) {
       ["calories", "protein", "fat", "carbs", "fiber"].forEach((field) => {
         if (nutrition[field] != null) form.elements[field].value = nutrition[field];
@@ -2138,8 +2168,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       if (nutrition.vitamins) form.elements.vitamins.value = nutrition.vitamins;
       if (nutrition.minerals) form.elements.minerals.value = nutrition.minerals;
     }
-    const ingredients = product.ingredients_text_ru || product.ingredients_text || "";
-    if (ingredients) form.elements.ingredients.value = ingredients.trim();
+    const { ingredients } = product;
+    if (ingredients) form.elements.ingredients.value = ingredients;
     if (ingredients || nutrition?.vitamins || nutrition?.minerals) document.getElementById("product-more")?.setAttribute("open", "");
     return Boolean(nutrition);
   }
@@ -2221,8 +2251,12 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   function renderRequests() {
     const sorted = [...activeRequests()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    // The Cache holds the last closed Запросы; older ones load on request.
+    const older = localData.olderRequests
+      ? `<footer class="feed-footer"><button id="requests-older" class="text-button" type="button">Показать ещё закрытые: ${localData.olderRequests}</button></footer>`
+      : "";
     app.innerHTML = sorted.length
-      ? sorted.map((request) => requestRow(request)).join("")
+      ? sorted.map((request) => requestRow(request)).join("") + older
       : `<section class="section"><div class="empty-state">
           <p class="empty">Запросов пока нет</p>
           <p class="muted">Список покупок создаётся сразу, как заметка: добавляйте позиции по одной.</p>
@@ -2230,6 +2264,13 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
         </div></section>`;
     bindRequestRows();
     document.getElementById("requests-empty-add")?.addEventListener("click", () => createEmptyRequestAndOpen());
+    document.getElementById("requests-older")?.addEventListener("click", async (event) => {
+      event.currentTarget.disabled = true;
+      const loaded = await localData.loadOlderRequests();
+      if (!loaded.ok) showToast(loaded.offline ? "Старые запросы загрузятся, когда будет связь." : loaded.reason);
+      state = localData.snapshot();
+      render();
+    });
   }
 
   function createEmptyRequestAndOpen() {
@@ -2555,7 +2596,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     positionProductTokenToolbar(row, editor);
     clearTimeout(productNameSearchTimer);
     if (query.length >= 3) {
-      productNameSearchTimer = setTimeout(() => searchOpenFoodFactsByName(query, row.dataset.key), 450);
+      productNameSearchTimer = setTimeout(() => searchCatalogByName(query, row.dataset.key), 450);
     }
   }
 
@@ -3617,17 +3658,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   async function lookupPurchaseBarcode(barcode) {
     setPurchaseStatus(`Штрихкод: ${barcode}`);
     try {
-      const fields = [
-        "code", "product_name", "product_name_ru", "generic_name_ru", "brands", "quantity",
-        "categories", "categories_tags", "nutriments", "ingredients_text_ru", "ingredients_text",
-      ].join(",");
-      const response = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}.json?fields=${fields}`, {
-        headers: { Accept: "application/json" },
-      });
-      if (!response.ok) throw new Error(`Open Food Facts: ${response.status}`);
-      const body = await response.json();
-      if (body.status !== 1 || !body.product) throw new Error("Товар с таким штрихкодом не найден.");
-      const scannedProduct = openFoodFactsSuggestion(body.product);
+      const { product: scannedProduct } = await services.request("catalog", "productByBarcode", { barcode });
+      if (!scannedProduct?.name) throw new Error("Товар с таким штрихкодом не найден.");
       const dialog = document.getElementById("answer-action-dialog");
       const requestedProductId = dialog?.dataset.productId || "";
       const request = getRequest(routeId);
@@ -4263,7 +4295,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   }
 
   function latestProductPrice(productId) {
-    let latest = null;
+    const archived = state.purchaseArchive?.[productId];
+    let latest = archived?.price ? { price: archived.price, createdAt: archived.priceAt } : null;
     activeRequests().forEach((request) => activeResponses(request).forEach((response) => {
       response.items.forEach((item) => {
         if ((item.purchasedProductId || item.productId) !== productId || !Number(item.price)) return;
@@ -5076,7 +5109,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       if (typed && !aiKey.write(typed)) return setAiKeyStatus("Не удалось сохранить ключ на устройстве.", "error");
       input.value = "";
       setAiKeyStatus("Проверяем ключ…", "muted", true);
-      const result = await aiProvider.checkKey();
+      const result = await services.request("assistant", "checkKey", { key: aiKey.read() })
+        .catch((error) => ({ ok: false, reason: error.message }));
       setAiKeyStatus(result.ok ? "Ключ работает." : result.reason, result.ok ? "success" : "error");
       if (result.ok) nudgeWorker.schedule();
     });
@@ -5221,6 +5255,64 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     document.body.append(toast);
   }
 
+  // What each command of the Core changes, for a conflict message.
+  const COMMAND_LABELS = {
+    clear: "удаление данных",
+    saveProduct: "карточка продукта",
+    removeProduct: "удаление продукта",
+    restoreProduct: "возврат продукта",
+    createRequest: "новый запрос",
+    createRequestFromRation: "запрос из рациона",
+    saveRequestItems: "позиции запроса",
+    removeRequest: "удаление запроса",
+    restoreVersion: "возврат версии запроса",
+    markBought: "покупка",
+    unmarkBought: "отмена покупки",
+    saveReceipt: "чек",
+    addRationMeal: "новый приём пищи",
+    updateRationMeal: "изменение приёма пищи",
+    removeRationMeal: "удаление приёма пищи",
+    undoRationRemoval: "отмена удаления",
+    addRationFood: "продукт в приёме пищи",
+    saveRationFood: "продукт в приёме пищи",
+    removeRationFood: "удаление продукта из приёма пищи",
+    setRationPortion: "порция",
+    markRationMeal: "отметка приёма пищи",
+    recordRationDiscrepancy: "расхождение",
+    removeRationDiscrepancy: "удаление расхождения",
+    transferRationMeals: "перенос приёма пищи",
+    repeatRationDays: "повтор дней",
+    undoRationRepeat: "отмена повтора дней",
+    setRationProfile: "профиль рациона",
+    setSportSpecialDay: "особый день тренировок",
+    removeSportSpecialDay: "удаление особого дня тренировок",
+    addSportSession: "новая тренировка",
+    updateSportSession: "изменение тренировки",
+    removeSportSession: "удаление тренировки",
+    releaseSportVersion: "расписание тренировок",
+    markSportSession: "отметка тренировки",
+    addUnplannedSport: "внеплановая активность",
+    removeUnplannedSport: "удаление внеплановой активности",
+    applyProposals: "предложение ассистента",
+    revertChangeSet: "отмена изменения",
+    setAssistantSettings: "настройки ассистента",
+    finishNudges: "тычки",
+    saveBookmark: "закладка",
+    removeBookmark: "удаление закладки",
+    clearAssistantNotice: "уведомление ассистента",
+  };
+
+  // The full Core rejected commands from the Outbox: the Cache already shows
+  // its data; the person learns what did not apply and why.
+  function showConflicts(rejected) {
+    const [first] = rejected;
+    const what = COMMAND_LABELS[first.name] || "изменение";
+    const reason = String(first.reason || "").replace(/\.$/, "");
+    showToast(rejected.length === 1
+      ? `Не применилось: ${what}. ${reason}.`
+      : `Не применилось изменений: ${rejected.length}. Первое — ${what}: ${reason}.`);
+  }
+
   function showToast(message, actionLabel = "", action = null) {
     toastHost().append(toast);
     toastMessage.textContent = message;
@@ -5283,7 +5375,21 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   requestAppUpdateCheck(false);
   // Тычки queued before a restart or while offline go out when possible.
   nudgeWorker.schedule();
-  window.addEventListener?.("online", () => nudgeWorker.schedule(1000));
+  window.addEventListener?.("online", () => {
+    nudgeWorker.schedule(1000);
+    localData.sync();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "hidden" && appUpdate.status === "installing") requestAppUpdateCheck(true);
+    // Back in the app: deliver the Outbox and move the windows to today.
+    if (document.visibilityState !== "hidden") localData.sync();
   });
+  // The first start after the update builds the Cache from the full Core
+  // without holding the first screen: with a server it waits for the network.
+  localData.build().then((built) => {
+    if (!built.changed) return;
+    state = localData.snapshot();
+    render();
+  });
+  // After the first screen: the Outbox of the last session and today's windows.
+  setTimeout(() => localData.sync(), 1500);

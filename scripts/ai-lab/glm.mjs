@@ -1,7 +1,7 @@
 // GLM 5.3 Flash: agent loop with tool calls over ration domain commands.
 import { rai } from "./rai.mjs";
 import { TODAY, addDays, weekday, viewDay, viewProfile, catalog, toDomainMeals, gateDay, run } from "./fixture.mjs";
-import { parseRationDate } from "../../mobile-shell/ration-domain.js";
+import { parseRationDate } from "../../mobile-shell/core/ration-domain.js";
 
 const MODEL = "z-ai/glm-5.3-flash";
 const WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
