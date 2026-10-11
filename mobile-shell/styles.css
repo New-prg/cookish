@@ -2429,6 +2429,7 @@ body.root-page main { padding-right: 10px; }
 .assistant-proposal-product dt { color: var(--muted); }
 .assistant-proposal-product dd { margin: 0; }
 .assistant-proposal-actions { display: flex; justify-content: end; align-items: center; gap: 8px; }
+.assistant-proposal-warning { margin: 6px 0 0; color: var(--warn-text); font-size: 13px; }
 .filler-choices { display: grid; gap: 6px; margin: 8px 0; }
 .filler-choice {
   display: grid;

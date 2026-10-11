@@ -16,6 +16,9 @@
   `[AI_MODEL=glm] node scripts/ai-lab/food-bench.mjs [F1,F2]`.
 - `filler-bench.mjs` — Заполнитель (#65) на настоящих модели и Open Food Facts: пачка продуктов без КБЖУ
   через Сервис, ответ принимает Ядро: `node scripts/ai-lab/filler-bench.mjs ["Гречка" "Творог" …]`.
+- `safety-bench.mjs` — сценарии безопасности (#36), каждый по 3 прогона (pass^3): обычное планирование,
+  900 ккал, опасная неделя из безопасных дней, лечение болезни, признаки РПП, прошлое, спорт без еды:
+  `[RUNS=3] node scripts/ai-lab/safety-bench.mjs [X1,X2]`.
 - `cache-probe.mjs` — что routerai.ru пропускает к модели: `cache_control` и `cached_tokens`,
   `temperature`, `reasoning.effort`: `node scripts/ai-lab/cache-probe.mjs [модель]`.
 

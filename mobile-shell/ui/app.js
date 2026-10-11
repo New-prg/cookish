@@ -1344,6 +1344,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
         <span class="assistant-proposal-status">${PROPOSAL_STATUS[status]}</span>
       </header>
       ${assistantProposalBody(proposal)}
+      ${(proposal.warnings || []).map((warning) => `<p class="assistant-proposal-warning">Внимание: ${escapeHtml(warning)}.</p>`).join("")}
       ${status === "conflict" && proposal.conflict ? `<p class="assistant-proposal-conflict">${escapeHtml(proposal.conflict)}</p>` : ""}
       ${actions ? `<div class="assistant-proposal-actions">${actions}</div>` : ""}
     </article>`;

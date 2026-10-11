@@ -7,6 +7,7 @@ import {
   todayDateKey,
 } from "./ration-domain.js";
 import { readPart, restoreChangeSet, sameContent } from "./plan-journal.js";
+import { sportWarnings, weekProblems } from "./safety.js";
 import { applySportCommand } from "./sport-domain.js";
 
 // Предложения of the Ассистент as data: the ops a change runs, the parts of
@@ -88,7 +89,7 @@ export function tryProposal(draft, proposal, context, today) {
   if (!executed.ok) return { ok: false, reason: executed.reason };
   const missing = missingProducts(trial, proposal);
   if (missing.length) return { ok: false, reason: `Нет продукта ${missing.join(", ")}: сначала примените предложение с ним.` };
-  const gate = gateProposal(trial, proposal);
+  const gate = gateProposal(trial, proposal, { today });
   if (!gate.ok) return { ok: false, reason: `Не проходит проверку КБЖУ: ${gate.problems.join("; ")}.` };
   draft.ration = trial.ration;
   draft.products = trial.products;
@@ -112,7 +113,14 @@ function missingProducts(state, proposal) {
 // The КБЖУ gate is code, not the model: not below 1200 ккал, within ±15% of
 // the calorie target, protein at least 75% of its target, no excluded
 // products and no products without КБЖУ.
-export function gateProposal(state, spec) {
+// The days a change touches: the edited ones and those its preview shows.
+export function proposalDays(spec) {
+  return [...new Set([...(spec.gateDates || []), ...(spec.previewDates || spec.dates || [])])].sort();
+}
+
+// The day gate for every changed day, the week gate of the safety rules
+// (#36) for the weeks around them, and warnings that do not block.
+export function gateProposal(state, spec, { today = todayDateKey() } = {}) {
   const checks = [
     ...(spec.gateDates || []).map((date) => ({ label: date, meals: readRationDay(state, date)?.meals || [] })),
     ...(spec.gateMeals || []),
@@ -124,7 +132,9 @@ export function gateProposal(state, spec) {
     totals = totals || result.totals;
     result.problems.forEach((problem) => problems.push(checks.length > 1 ? `${label}: ${problem}` : problem));
   });
-  return { ok: problems.length === 0, problems, totals };
+  const days = proposalDays(spec);
+  problems.push(...weekProblems(state, days, today));
+  return { ok: problems.length === 0, problems, totals, warnings: sportWarnings(state, days) };
 }
 
 export function gateMeals(state, meals) {

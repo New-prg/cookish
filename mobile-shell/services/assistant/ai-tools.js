@@ -21,7 +21,8 @@ import { COMPACTION, compactThread, requestChars } from "./context-compaction.js
 import { changesPersonValues } from "../../core/filler.js";
 import { FOOD_TOOLS, createFoodSession, findReferenceTool, resolveCard, searchFoodTool } from "./food-tools.js";
 import { diffPlan, readChangeSets } from "../../core/plan-journal.js";
-import { executeOps, gateProposal, tryProposal } from "../../core/proposals.js";
+import { executeOps, gateProposal, proposalDays, tryProposal } from "../../core/proposals.js";
+import { disorderSigns, isMinor, raisesDeficit } from "../../core/safety.js";
 import {
   SPORT_INTENSITIES,
   SPORT_INTENSITY_LABELS,
@@ -120,9 +121,16 @@ export function createAssistant({ provider, getState, catalog, today = todayDate
       thread.messages.push({ role: "user", content: String(text || "") });
       emit({ type: "user", text: String(text || "") });
       const state = await getState();
-      const working = { state: replayPending(state, thread, day) };
+      // Signs of an eating disorder or a minor in Profile stop every change
+      // towards weight loss (#36): the code refuses it, the prompt says why.
+      const said = [...thread.log.filter((entry) => entry.type === "user").map((entry) => entry.text)];
+      const protective = [
+        ...(isMinor(state.ration?.profile) ? ["несовершеннолетний в профиле"] : []),
+        ...disorderSigns(state, said, day),
+      ];
+      const working = { state: replayPending(state, thread, day), protective };
       const session = createFoodSession(catalog);
-      const system = systemPrompt(state, { page, mode, today: day });
+      const system = systemPrompt(state, { page, mode, today: day, protective });
       // Once per turn: a long conversation shrinks before the next request.
       let compacted = false;
       for (let turn = 0; turn < maxTurns; turn += 1) {
@@ -427,7 +435,14 @@ function finishProposal(spec, { working, thread, today, emit }) {
   const context = { now: new Date().toISOString(), actor: "ai", today };
   const executed = executeOps(next, spec.ops, context);
   if (!executed.ok) return { ok: false, error: executed.reason };
-  const gate = gateProposal(next, spec);
+  if (working.protective?.length && raisesDeficit(working.state, next, proposalDays(spec))) {
+    return {
+      ok: false,
+      error: `Снижать калории или добавлять нагрузку сейчас нельзя: ${working.protective.join(", ")}.`,
+      hint: "Не помогай худеть. Мягко посоветуй обратиться к врачу или к специалисту по расстройствам пищевого поведения.",
+    };
+  }
+  const gate = gateProposal(next, spec, { today });
   if (!gate.ok) return { ok: false, gate: gate.problems, totals: gate.totals, hint: "Исправь план так, чтобы проверка прошла, и предложи снова." };
   const diff = diffPlan(working.state, next, { productIds: spec.productIds || [] });
   if (!diff) return { ok: false, error: "Предложение ничего не меняет в плане." };
@@ -448,6 +463,7 @@ function finishProposal(spec, { working, thread, today, emit }) {
     status: "pending",
     // The Core applies it as soon as it arrives (#64).
     ...(spec.autoApply ? { autoApply: true } : {}),
+    ...(gate.warnings?.length ? { warnings: gate.warnings } : {}),
     createdAt: context.now,
   };
   working.state = next;
@@ -457,6 +473,7 @@ function finishProposal(spec, { working, thread, today, emit }) {
     proposal: ref,
     note: "Предложение показано человеку карточкой. План изменится только после его подтверждения.",
     ...(gate.totals ? { totals: gate.totals } : {}),
+    ...(gate.warnings?.length ? { warnings: gate.warnings, hint: "Скажи человеку о предупреждениях." } : {}),
   };
 }
 
@@ -616,7 +633,7 @@ function spendStats(state, from, to) {
   return { receipts, total: Math.round(total * 100) / 100, currency: "RUB" };
 }
 
-export function systemPrompt(state, { page = "ration", mode = "", today = todayDateKey() } = {}) {
+export function systemPrompt(state, { page = "ration", mode = "", today = todayDateKey(), protective = [] } = {}) {
   const where = [PAGE_LABELS[page] || page, MODE_LABELS[mode]].filter(Boolean).join(" · ");
   return `Ты ассистент приложения Cookish: планируешь питание и тренировки одного человека. Сегодня ${today} (${weekday(today)}). Завтра ${addDays(today, 1)}.
 Человек открыл чат со страницы «${where}».
@@ -632,6 +649,10 @@ export function systemPrompt(state, { page = "ration", mode = "", today = todayD
 - Тренировки меняешь предложениями set_sport_special_day и release_sport_version. Учёт тренировок (отметки, внеплановую активность) пишет только человек.
 - Цели КБЖУ в профиле меняет только человек, сам ты их не меняешь никогда. В дни тренировок можешь предложить скорректировать рацион обычным предложением; одна пачка может затрагивать и питание, и тренировки.
 - Не лечи и не ставь диагнозов. При опасных просьбах откажи и посоветуй обратиться к врачу.
+- Планирование рассчитано на совершеннолетнего человека.
+- Код проверяет и неделю: еда минус расход с тренировками за 7 дней не должны давать снижение веса больше 1% в неделю.
+- Защиту от аллергенов не обещай: приложение пока аллергены не учитывает.${protective.length ? `
+- ВНИМАНИЕ: ${protective.join(", ")}. Не помогай худеть: не снижай калории и не добавляй нагрузку, код такие предложения отклонит. Поддержи человека и мягко посоветуй обратиться к врачу или к специалисту по расстройствам пищевого поведения.` : ""}
 - Отвечай кратко по-русски.
 Контекст: ${JSON.stringify(assistantContext(state, { page, mode, today }))}`;
 }
