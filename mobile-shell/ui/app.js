@@ -19,15 +19,9 @@ import {
   todayDateKey,
   validateRationProfile,
 } from "../core/local-data.js";
-import {
-  AI_CONSENT_TEXT,
-  aiConsentStore,
-  aiKeyStore,
-  createRouterAiProvider,
-} from "../services/assistant/ai-provider.js";
-import { assistantContext, createAssistant, createThread } from "../services/assistant/ai-tools.js";
-import { createNudgeWorker } from "../services/assistant/nudges.js";
-import { STRICTNESS_LEVELS } from "../core/nudges.js";
+import { applyThreadEvent, createThread } from "../core/assistant-thread.js";
+import { STRICTNESS_LEVELS, createNudgeWorker } from "../core/nudges.js";
+import { markProposals, recheckProposals } from "../core/proposals.js";
 import {
   SPORT_INTENSITIES,
   SPORT_INTENSITY_LABELS,
@@ -40,7 +34,8 @@ import {
 } from "../core/sport-domain.js";
 import { planOwnerKey } from "../core/plan-cycle.js";
 import { openLocalServices } from "../transport/local.js";
-import { browserStorage, defaultTransport, isOnline, platformFetch } from "./platform.js";
+import { AI_CONSENT_TEXT, aiConsentStore, aiKeyStore } from "./ai-key.js";
+import { browserStorage, isOnline, nativeAiTransport, platformFetch } from "./platform.js";
 import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   // Небольшой офлайн-справочник для мгновенных подсказок. Значения усреднены
@@ -83,29 +78,36 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   const localData = openLocalData(browserStorage(window.localStorage));
   let state = localData.load();
-  // Services answer through the transport, as a server will (ADR-0002).
-  const services = openLocalServices({ fetchImpl: platformFetch(window) });
-  // The AI key stays on the device apart from the local data (test mode, #44).
+  // Services answer through the transport, as a server will (ADR-0002). They
+  // read the full Core through the data port and answer with data only.
+  const services = openLocalServices({
+    fetchImpl: platformFetch(window),
+    aiTransport: nativeAiTransport(window),
+    dataPort: { read: async () => localData.snapshot() },
+  });
+  // The AI key stays on the device apart from the local data (test mode, #44)
+  // and goes to the assistant Service with each request.
   const aiKey = aiKeyStore(window.localStorage);
   const aiConsent = aiConsentStore(window.localStorage);
-  const aiProvider = createRouterAiProvider({ getKey: () => aiKey.read(), transport: defaultTransport(window) });
+  const hasAiKey = () => Boolean(aiKey.read());
   let aiKeyStatus = { text: "", tone: "muted", busy: false };
-  const assistant = createAssistant({
-    provider: aiProvider,
-    getState: () => localData.snapshot(),
-    changePlan: localData.changePlan,
-  });
-  // Тычки wait in local data; the worker merges a burst into one background call.
+  // Тычки wait in local data; the worker merges a burst into one call to the
+  // assistant Service.
   const nudgeWorker = createNudgeWorker({
-    provider: aiProvider,
+    decide: (nudges) => services.request("assistant", "decideNudges", {
+      nudges,
+      page: lastRootPage,
+      mode: pageModes[lastRootPage] || "",
+      key: aiKey.read(),
+      today: todayDateKey(),
+    }),
+    hasKey: hasAiKey,
     store: {
       pending: () => localData.snapshot().assistant?.nudges || [],
-      settings: () => localData.snapshot().assistant?.settings || {},
       finish: (ids, text) => {
         if (applyLocal(localData.finishNudges(ids, text))) renderAssistantHandle();
       },
     },
-    buildContext: () => assistantContext(localData.snapshot(), { page: lastRootPage, mode: pageModes[lastRootPage] || "" }),
     allowed: () => aiConsent.accepted(),
     isOnline: () => isOnline(window),
   });
@@ -768,7 +770,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   function renderAssistantHandle() {
     const visible = ROOT_PAGES.includes(route) && !assistantDialog.open;
     assistantHandle.hidden = !visible;
-    const available = aiProvider.hasKey();
+    const available = hasAiKey();
     // A notice from a Тычок: a badge on the handle and a teaser line.
     const notice = available ? state.assistant?.notice : null;
     assistantHandle.classList.toggle("unavailable", !available);
@@ -899,7 +901,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
     assistantThread = createThread({ page: route, mode });
     assistantView = "chat";
     // The assistant's reaction to a Тычок opens the thread.
-    const notice = aiProvider.hasKey() ? state.assistant?.notice : null;
+    const notice = hasAiKey() ? state.assistant?.notice : null;
     if (notice) {
       assistantThread.log.push({ type: "assistant", text: notice.text });
       assistantThread.messages.push({ role: "assistant", content: notice.text });
@@ -1000,7 +1002,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       log: structuredClone(bookmark.log || []),
     };
     // The plan may have changed since: stale Предложения get a conflict.
-    assistant.recheck(assistantThread.proposals);
+    recheckProposals(localData.snapshot(), assistantThread.proposals);
     assistantView = "chat";
     document.getElementById("assistant-title").textContent = assistantContextTitle(bookmark.page, bookmark.mode);
     renderAssistantFeed();
@@ -1050,20 +1052,31 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   async function sendAssistantMessage(value) {
     const text = String(value || "").trim();
     if (!text || assistantBusy || !assistantThread) return;
-    if (!aiProvider.hasKey()) return renderAssistantFeed();
+    if (!hasAiKey()) return renderAssistantFeed();
     if (!await ensureAiConsent()) return;
     const thread = assistantThread;
     assistantBusy = true;
     assistantInput.value = "";
     renderAssistantFeed();
     try {
-      await assistant.run(thread, text, {
+      const result = await services.stream("assistant", "run", {
+        thread,
+        text,
         page: thread.page,
         mode: thread.mode,
-        onEvent: () => {
+        key: aiKey.read(),
+        today: todayDateKey(),
+      }, {
+        onEvent: (event) => {
+          applyThreadEvent(thread, event);
           if (assistantThread === thread) renderAssistantFeed();
         },
       });
+      // The feed and the Предложения came as events; the model messages come
+      // with the answer.
+      thread.messages = result.thread.messages;
+    } catch (error) {
+      applyThreadEvent(thread, { type: "error", text: error.message || "Ассистент не ответил." });
     } finally {
       if (assistantThread === thread) {
         assistantBusy = false;
@@ -1076,7 +1089,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   function applyAssistantProposals(proposals, together) {
     if (!proposals.length) return false;
-    const result = assistant.apply(proposals, { together });
+    const result = localData.applyProposals(proposals, { together });
+    markProposals(proposals, result.results);
     state = localData.snapshot();
     render();
     renderAssistantFeed();
@@ -1100,7 +1114,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
 
   function renderAssistantFeed() {
     if (!assistantThread) return;
-    const available = aiProvider.hasKey();
+    const available = hasAiKey();
     const listing = assistantView === "bookmarks";
     const form = document.getElementById("assistant-form");
     form.hidden = !available || listing;
@@ -5045,7 +5059,8 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       if (typed && !aiKey.write(typed)) return setAiKeyStatus("Не удалось сохранить ключ на устройстве.", "error");
       input.value = "";
       setAiKeyStatus("Проверяем ключ…", "muted", true);
-      const result = await aiProvider.checkKey();
+      const result = await services.request("assistant", "checkKey", { key: aiKey.read() })
+        .catch((error) => ({ ok: false, reason: error.message }));
       setAiKeyStatus(result.ok ? "Ключ работает." : result.reason, result.ok ? "success" : "error");
       if (result.ok) nudgeWorker.schedule();
     });

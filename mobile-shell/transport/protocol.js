@@ -1,6 +1,7 @@
 // The wire format between the client and the Services, shared by the local
 // transport and, later, HTTP. A request is (service, method, payload); a
 // response is { ok: true, result } or { ok: false, error: { kind, message } }.
+// A stream sends events { type, ... } before the response.
 
 export const TRANSPORT_ERROR_TEXTS = Object.freeze({
   network: "Нет связи с сервером. Проверьте интернет.",

@@ -6,12 +6,12 @@ import {
   ASSISTANT_MAX_TURNS,
   ASSISTANT_TOOLS,
   assistantStats,
-  createAssistant,
-  createThread,
-  gateMeals,
   viewDay,
 } from "../mobile-shell/services/assistant/ai-tools.js";
+import { createThread } from "../mobile-shell/core/assistant-thread.js";
 import { memoryStorage, openLocalData } from "../mobile-shell/core/local-data.js";
+import { gateMeals } from "../mobile-shell/core/proposals.js";
+import { assistantHarness } from "./helpers/assistant-harness.mjs";
 import { readRationDay } from "../mobile-shell/core/ration-domain.js";
 import { TODAY, makeState } from "../scripts/ai-lab/fixture.mjs";
 
@@ -24,6 +24,7 @@ const tools = (...calls) => ({ role: "assistant", content: "", tool_calls: calls
 const say = (content) => ({ role: "assistant", content });
 
 // Each turn is a message or a function of the request (to read tool results).
+// The assistant runs as the app runs it: through the transport.
 function setup(turns, { state = makeState() } = {}) {
   const data = openLocalData(memoryStorage(state));
   data.load();
@@ -31,12 +32,7 @@ function setup(turns, { state = makeState() } = {}) {
     const turn = turns[index];
     return typeof turn === "function" ? turn(request) : turn ?? say("Готово.");
   });
-  const assistant = createAssistant({
-    provider,
-    getState: () => data.snapshot(),
-    changePlan: (meta, mutator) => data.changePlan(meta, mutator),
-    today: () => TODAY,
-  });
+  const assistant = assistantHarness({ data, provider, today: () => TODAY });
   return { data, provider, assistant, thread: createThread({ page: "ration", mode: "plan" }) };
 }
 
@@ -293,7 +289,7 @@ test("assistant: a revert of a manual change is proposed and applied through the
   const added = data.addRationMeal(TOMORROW);
   const turns = [tools(call("revert_change_set", { id: added.changeSetId })), say("Откатываю.")];
   const provider = createMockProvider((request, index) => turns[index]);
-  const reverting = createAssistant({ provider, getState: () => data.snapshot(), changePlan: data.changePlan, today: () => TODAY });
+  const reverting = assistantHarness({ data, provider, today: () => TODAY });
   await reverting.run(thread, "Верни как было");
   const [proposal] = thread.proposals;
   assert.equal(proposal.kind, "revert");
@@ -313,18 +309,12 @@ test("assistant: the loop stops after eight turns", async () => {
 });
 
 test("assistant: a provider failure is shown as an error line", async () => {
-  const { assistant, thread } = setup([]);
-  const failing = createAssistant({
-    provider: createMockProvider(() => "x", { hasKey: false }),
-    getState: () => makeState(),
-    changePlan: () => ({ ok: false }),
-    today: () => TODAY,
-  });
+  const { data, thread } = setup([]);
+  const failing = assistantHarness({ data, provider: createMockProvider(() => "x", { hasKey: false }), today: () => TODAY });
   const result = await failing.run(thread, "Привет");
   assert.equal(result.ok, false);
   assert.equal(thread.log.at(-1).type, "error");
   assert.match(thread.log.at(-1).text, /Ключ ИИ не задан/);
-  assert.ok(assistant);
 });
 
 test("assistant: aggregates count marks, discrepancies and spend for 28 days", () => {

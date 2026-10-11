@@ -1,8 +1,12 @@
 import { STORAGE_KEY } from "../core/local-data.js";
-import { AiError, fetchTransport } from "../services/assistant/ai-provider.js";
 
 // Platform adapters: the WebView's storage and network and the Android bridge.
 // Core and Services never touch these globals; the UI passes the adapters in.
+
+// An error of the AI transport port: the provider reads its `kind`.
+function transportFailure(kind) {
+  return Object.assign(new Error(kind), { kind });
+}
 
 export function browserStorage(localStorage, key = STORAGE_KEY) {
   // Backups are written once per label and never overwritten, so the data an
@@ -57,23 +61,25 @@ export function nativeTransport(bridge, host = globalThis) {
     try {
       result = JSON.parse(payload);
     } catch {
-      entry.reject(new AiError("bad_response"));
+      entry.reject(transportFailure("bad_response"));
       return;
     }
-    if (result?.error) entry.reject(new AiError(result.error === "timeout" ? "timeout" : "network"));
+    if (result?.error) entry.reject(transportFailure(result.error === "timeout" ? "timeout" : "network"));
     else entry.resolve({ status: Number(result?.status) || 0, text: String(result?.body || "") });
   };
   return ({ method, url, headers, body, timeoutMs, signal }) => new Promise((resolve, reject) => {
     const id = `ai_${Date.now()}_${sequence += 1}`;
     pending.set(id, { resolve, reject });
     signal?.addEventListener?.("abort", () => {
-      if (pending.delete(id)) reject(new AiError("timeout"));
+      if (pending.delete(id)) reject(transportFailure("timeout"));
     });
     bridge.aiRequest(id, JSON.stringify({ method, url, headers, body: body || "", timeoutMs }));
   });
 }
 
-export function defaultTransport(host = globalThis) {
-  return host.NativeCookish?.aiRequest ? nativeTransport(host.NativeCookish, host) : fetchTransport(platformFetch(host));
+// The Android bridge for the provider's requests, or undefined in a browser,
+// where the Services use fetch.
+export function nativeAiTransport(host = globalThis) {
+  return host.NativeCookish?.aiRequest ? nativeTransport(host.NativeCookish, host) : undefined;
 }
 

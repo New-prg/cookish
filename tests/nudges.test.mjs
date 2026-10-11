@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createMockProvider } from "../mobile-shell/services/assistant/ai-provider.js";
-import { NUDGE_QUEUE_LIMIT, STRICTNESS_LEVELS } from "../mobile-shell/core/nudges.js";
-import { createNudgeWorker, decideNudges, parseDecision } from "../mobile-shell/services/assistant/nudges.js";
+import { NUDGE_QUEUE_LIMIT, STRICTNESS_LEVELS, createNudgeWorker } from "../mobile-shell/core/nudges.js";
+import { parseDecision } from "../mobile-shell/services/assistant/nudges.js";
+import { TransportError } from "../mobile-shell/transport/protocol.js";
+import { assistantHarness } from "./helpers/assistant-harness.mjs";
 import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/core/local-data.js";
 
 const today = todayDateKey();
@@ -68,15 +70,21 @@ function manualTimers() {
   };
 }
 
+// The worker as the app runs it: the decision is a request to the assistant
+// Service through the transport.
+function decideThrough(data, provider) {
+  const { transport } = assistantHarness({ data, provider });
+  return (nudges) => transport.request("assistant", "decideNudges", { nudges, page: "ration", mode: "log", key: "test-key" });
+}
+
 function worker(data, provider, options = {}) {
   return createNudgeWorker({
-    provider,
+    decide: decideThrough(data, provider),
+    hasKey: () => provider.hasKey(),
     store: {
       pending: () => data.snapshot().assistant.nudges,
-      settings: () => data.snapshot().assistant.settings,
       finish: (ids, text) => data.finishNudges(ids, text),
     },
-    buildContext: () => ({ page: "Рацион" }),
     ...options,
   });
 }
@@ -186,12 +194,30 @@ test("nudges: a network failure keeps the queue and retries later", async () => 
   assert.equal(timers.pending[0].delay, 5 * 60_000);
 });
 
+test("nudges: an unreachable Service keeps the queue and retries later", async () => {
+  const { data } = openData();
+  data.markRationMeal(today, "meal_2", "skipped");
+  const timers = manualTimers();
+  const result = await createNudgeWorker({
+    decide: async () => {
+      throw new TransportError("network");
+    },
+    store: { pending: () => data.snapshot().assistant.nudges, finish: (ids, text) => data.finishNudges(ids, text) },
+    timers,
+  }).run();
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, "network");
+  assert.equal(queue(data).length, 1);
+  assert.equal(timers.pending[0].delay, 5 * 60_000);
+});
+
 test("nudges: the strictness paragraph and «Как реагировать» are in the prompt", async () => {
   const { data } = openData();
   data.setAssistantSettings({ strictness: "serious", howToReact: "Коротко и без упрёков" });
   assert.equal(data.setAssistantSettings({ strictness: "loud" }).ok, false);
   const provider = createMockProvider(decision({ notify: false }));
-  await decideNudges(provider, { nudges: [{ kind: "meal_skipped", date: today, text: "Ужин: не съеден" }], settings: data.snapshot().assistant.settings, context: {} });
+  // The Service reads the strictness from the Core through the data port.
+  await decideThrough(data, provider)([{ kind: "meal_skipped", date: today, text: "Ужин: не съеден" }]);
   const system = provider.requests[0].messages[0].content;
   assert.ok(system.includes(STRICTNESS_LEVELS.serious.prompt));
   assert.match(system, /Как реагировать \(пожелание человека\): Коротко и без упрёков/);

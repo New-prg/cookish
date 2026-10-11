@@ -45,6 +45,7 @@ import {
   sportNudges,
   STRICTNESS_LEVELS,
 } from "./nudges.js";
+import { batchSummary, pageOf, tryProposal } from "./proposals.js";
 
 export { createId, formatRationDate, genericKeyFromParts, migrateRationState, normalizeProductName, parseRationDate, plannedRationRequestItems, rationMeasure, rationOwner, readRationDayActual, readRationDayNutrition, readRationHistoryDay, readRationRange, todayDateKey, validateRationProfile, RATION_DISCREPANCY_KINDS, RATION_MEAL_STATES };
 
@@ -89,7 +90,7 @@ export function openLocalData(storage) {
   // `current` is always normalized and deep-frozen, so it is shared with callers
   // without copying. Commands mutate a private draft and replace `current` only
   // after the storage write succeeds. Normalization (`prepareState`) runs only
-  // for data that comes from outside: storage on load and `commit`.
+  // for data that comes from outside: storage on load.
   let current = deepFreeze(prepareState(emptyState()));
 
   function snapshot() {
@@ -150,6 +151,22 @@ export function openLocalData(storage) {
     return result;
   }
 
+  // Applies several plan changes as one Набор изменений. `mutator(draft,
+  // context)` changes the draft through domain commands and returns
+  // { ok, ... }; a failure discards the whole batch. Products the batch
+  // creates or edits are journaled only when it names them in `productIds`.
+  function changePlan({ actor = "human", page = "", summary = "", productIds = [] } = {}, mutator) {
+    return apply({ ration: true, sport: true, products: true, journal: true }, (next, context) => {
+      const ctx = actor === "ai" ? { ...context, actor: "ai" } : context;
+      const result = mutator(next, ctx) || { ok: false };
+      if (result.ok === false) return result;
+      const diff = diffPlan(current, next, { productIds: [...productIds, ...(result.productIds || [])] });
+      if (!diff) return { ...result, ok: true, changed: false };
+      const set = appendChangeSet(next, { now: ctx.now, actor, page, summary: result.summary || summary, diff });
+      return { ...result, ok: true, changeSetId: set.id };
+    });
+  }
+
   return {
     load() {
       const stored = storage.read();
@@ -158,9 +175,6 @@ export function openLocalData(storage) {
       if (usable && version < SCHEMA_VERSION) storage.backup?.(stored, `v${version}`);
       current = deepFreeze(prepareState(usable ? stored : emptyState()));
       return current;
-    },
-    commit(nextState) {
-      return replaceAll(nextState);
     },
     snapshot,
     clear() {
@@ -486,20 +500,40 @@ export function openLocalData(storage) {
       return runRation({ type: "removeItem", date: dateKey, mealId, itemId });
     },
 
-    // Applies several plan changes as one Набор изменений. `mutator(draft,
-    // context)` changes the draft through domain commands and returns
-    // { ok, ... }; a failure discards the whole batch. Products the batch
-    // creates or edits are journaled only when it names them in `productIds`.
-    changePlan({ actor = "human", page = "", summary = "", productIds = [] } = {}, mutator) {
-      return apply({ ration: true, sport: true, products: true, journal: true }, (next, context) => {
-        const ctx = actor === "ai" ? { ...context, actor: "ai" } : context;
-        const result = mutator(next, ctx) || { ok: false };
-        if (result.ok === false) return result;
-        const diff = diffPlan(current, next, { productIds: [...productIds, ...(result.productIds || [])] });
-        if (!diff) return { ...result, ok: true, changed: false };
-        const set = appendChangeSet(next, { now: ctx.now, actor, page, summary: result.summary || summary, diff });
-        return { ...result, ok: true, changeSetId: set.id };
+    // Applies Предложения of the Ассистент: together as one Набор изменений,
+    // or one set each. Every Предложение is re-checked on the current plan; a
+    // stale one gets a conflict instead of applying. The proposals stay as
+    // they are; the results say what happened to each (see markProposals).
+    applyProposals(proposals, { together = true, today = todayDateKey() } = {}) {
+      const list = (proposals || []).filter((proposal) => proposal && proposal.status !== "applied");
+      if (!list.length) return { ok: false, reason: "Нечего применять.", results: [] };
+      const groups = together ? [list] : list.map((proposal) => [proposal]);
+      const results = [];
+      groups.forEach((group) => {
+        const outcomes = new Map();
+        const written = changePlan({ actor: "ai", page: pageOf(group), summary: batchSummary(group) }, (draft, context) => {
+          const productIds = [];
+          group.forEach((proposal) => {
+            const outcome = tryProposal(draft, proposal, context, today);
+            outcomes.set(proposal.id, outcome);
+            if (outcome.ok) productIds.push(...outcome.productIds);
+          });
+          const applied = group.filter((proposal) => outcomes.get(proposal.id)?.ok);
+          if (!applied.length) return { ok: false, reason: outcomes.get(group[0].id)?.reason || "Предложение устарело." };
+          return { ok: true, productIds, summary: batchSummary(applied) };
+        });
+        group.forEach((proposal) => {
+          const outcome = outcomes.get(proposal.id) || { ok: false, reason: written.reason };
+          const ok = Boolean(written.ok && outcome.ok);
+          results.push({
+            id: proposal.id,
+            ok,
+            changeSetId: ok ? written.changeSetId || "" : "",
+            reason: ok ? "" : (outcome.ok ? written.reason : outcome.reason),
+          });
+        });
       });
+      return { ok: results.some((result) => result.ok), results };
     },
 
     revertChangeSet(changeSetId, { actor = "human" } = {}) {

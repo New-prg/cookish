@@ -77,7 +77,7 @@ approved scheme (ADR-0002, epic #21) and come after epics #66 and #59.
 | UI shell | Single-page vanilla JS `mobile-shell/ui/app.js` + `styles.css` |
 | Ration rules | `mobile-shell/core/ration-domain.js`, a deep in-process module; UI, sync and AI tools call one command/projection interface (#23) |
 | Sport rules | `mobile-shell/core/sport-domain.js` (#53): План тренировок, Учёт тренировок and the MET energy estimate; the cycle and version logic it shares with the ration lives in `plan-cycle.js` |
-| Assistant | `mobile-shell/services/assistant/ai-tools.js` (#50): agent loop, read tools, Предложения executed on a copy and gated, apply with re-check and the change journal (`plan-journal.js`, #48); provider port `ai-provider.js` with the routerai.ru adapter and a mock for tests (#49) |
+| Assistant | A Service in `mobile-shell/services/assistant/` behind the transport (#69): the agent loop and read tools (`ai-tools.js`, #50) read the full Core through a data port; Предложения are executed on a copy, gated and streamed to the UI as data; the Core applies them with a re-check and the change journal (`core/proposals.js`, `plan-journal.js`, #48); provider port `ai-provider.js` with the routerai.ru adapter and a mock for tests (#49); the Тычки queue and worker are in the Core, the decision is the Service |
 | Catalog | `mobile-shell/services/catalog/`: Open Food Facts search and barcode cards; the UI asks it through the transport (#68) |
 | Navigation | Three root pages Рацион → Спорт → Покупки switched by a horizontal swipe; a slider shows the page and the mode; Profile from a header button; stack routes for request note, purchase editor, product card and forms |
 | Data | Local data on the device. See README |

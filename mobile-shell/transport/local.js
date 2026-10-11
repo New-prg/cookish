@@ -2,11 +2,11 @@ import { createServices } from "../services/index.js";
 import { TransportError, errorPayload, unwrapResponse } from "./protocol.js";
 
 // The in-process transport: until there is a server, the Services run in the
-// app. The request and the response each go through structuredClone, as
-// through a network, so functions, DOM objects and shared references to the
-// state never cross the boundary.
+// app. The request, every streamed event and the response each go through
+// structuredClone, as through a network, so functions, DOM objects and shared
+// references to the state never cross the boundary.
 export function createLocalTransport(handlers, { clone = structuredClone } = {}) {
-  async function respond(service, method, payload) {
+  async function respond(service, method, payload, onEvent) {
     const target = Object.hasOwn(handlers, service) ? handlers[service] : null;
     const handler = target && Object.hasOwn(target, method) ? target[method] : null;
     if (typeof handler !== "function") return { ok: false, error: errorPayload(new TransportError("not_found")) };
@@ -18,29 +18,40 @@ export function createLocalTransport(handlers, { clone = structuredClone } = {})
       return { ok: false, error: errorPayload(new TransportError("not_serializable")) };
     }
     await null;
+    const emit = (event) => onEvent(clone(event));
     try {
-      return { ok: true, result: await handler.call(target, input) };
+      return { ok: true, result: await handler.call(target, input, { emit }) };
     } catch (error) {
       return { ok: false, error: errorPayload(error) };
     }
   }
 
+  async function call(service, method, payload, onEvent) {
+    const response = await respond(String(service), String(method), payload, onEvent);
+    let delivered;
+    try {
+      delivered = clone(response);
+    } catch {
+      throw new TransportError("not_serializable");
+    }
+    return unwrapResponse(delivered);
+  }
+
   return {
-    async request(service, method, payload = {}) {
-      const response = await respond(String(service), String(method), payload);
-      let delivered;
-      try {
-        delivered = clone(response);
-      } catch {
-        throw new TransportError("not_serializable");
-      }
-      return unwrapResponse(delivered);
+    request(service, method, payload = {}) {
+      return call(service, method, payload, () => {});
+    },
+    // A long request with progress: the Service calls `emit(event)`, the
+    // client gets each event in `onEvent` before the answer.
+    stream(service, method, payload = {}, { onEvent = () => {} } = {}) {
+      return call(service, method, payload, onEvent);
     },
   };
 }
 
 // The local «server»: every Service with the platform's adapters behind the
-// local transport. Moving to a server replaces it with an HTTP transport.
-export function openLocalServices({ fetchImpl }) {
-  return createLocalTransport(createServices({ fetchImpl }));
+// local transport (see services/index.js for the options). Moving to a server
+// replaces it with an HTTP transport.
+export function openLocalServices(options) {
+  return createLocalTransport(createServices(options));
 }

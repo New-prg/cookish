@@ -4,9 +4,18 @@ import test from "node:test";
 import { ServiceError } from "../mobile-shell/services/service-error.js";
 import { createLocalTransport, openLocalServices } from "../mobile-shell/transport/local.js";
 import { TRANSPORT_ERROR_TEXTS, TransportError } from "../mobile-shell/transport/protocol.js";
+import { assistantContract } from "./contracts/assistant-contract.mjs";
 import { catalogContract } from "./contracts/catalog-contract.mjs";
 
 catalogContract("local transport", ({ fetchImpl }) => openLocalServices({ fetchImpl }));
+assistantContract("local transport", ({ data, provider, today }) => openLocalServices({
+  fetchImpl: async () => {
+    throw new Error("No network in tests.");
+  },
+  dataPort: { read: async () => data.snapshot() },
+  providerFor: () => provider,
+  today,
+}));
 
 async function rejection(promise) {
   try {
@@ -86,6 +95,26 @@ test("local transport: a Service error keeps its kind and text, other errors sta
   assert.equal(crashed.kind, "internal");
   assert.equal(crashed.message, TRANSPORT_ERROR_TEXTS.internal);
   assert.doesNotMatch(crashed.message, /secret|sk-123/);
+});
+
+test("local transport: a stream delivers copies of the events before the answer", async () => {
+  const order = [];
+  const sent = { step: 1 };
+  const transport = createLocalTransport({
+    echo: {
+      async work(payload, { emit }) {
+        emit(sent);
+        sent.step = 2;
+        emit({ step: 3 });
+        return { done: payload.count };
+      },
+    },
+  });
+  const answer = await transport.stream("echo", "work", { count: 1 }, { onEvent: (event) => order.push(event) });
+  assert.deepEqual(order, [{ step: 1 }, { step: 3 }]);
+  assert.notEqual(order[0], sent);
+  assert.deepEqual(answer, { done: 1 });
+  assert.deepEqual(await transport.request("echo", "work", { count: 2 }), { done: 2 }, "without a listener the events are dropped");
 });
 
 test("local transport: the Service handles a request later, on the copy made when it was sent", async () => {

@@ -1,10 +1,7 @@
 import { STRICTNESS_LEVELS } from "../../core/nudges.js";
 
 // The decision on a burst of Тычки: one background call to the provider. The
-// queue itself is data and lives in the Core (core/nudges.js).
-
-export const NUDGE_BURST_MS = 30_000;
-export const NUDGE_RETRY_MS = 5 * 60_000;
+// queue and its worker are data and live in the Core (core/nudges.js).
 
 // One background call for a burst of nudges. The answer is JSON
 // { notify, text }; the strictness paragraph and the free text «Как
@@ -46,67 +43,4 @@ export function parseDecision(content) {
   } catch {
     return null;
   }
-}
-
-// Background worker: waits for a quiet burst window, then sends everything
-// queued in one call. Without a key or a network the queue waits; on a
-// transient failure it retries later. `store` reads and writes local data;
-// `isOnline` comes from the platform.
-export function createNudgeWorker({
-  provider,
-  store,
-  buildContext,
-  isOnline = () => true,
-  allowed = () => true,
-  // Wrapped: a browser rejects setTimeout called on another object.
-  timers = { setTimeout: (run, ms) => setTimeout(run, ms), clearTimeout: (id) => clearTimeout(id) },
-  burstMs = NUDGE_BURST_MS,
-  retryMs = NUDGE_RETRY_MS,
-  onNotice = () => {},
-}) {
-  let timer = null;
-  let running = false;
-
-  function schedule(delay = burstMs) {
-    if (timer || running || !store.pending().length) return;
-    timer = timers.setTimeout(() => {
-      timer = null;
-      run();
-    }, delay);
-  }
-
-  async function run() {
-    const nudges = store.pending();
-    if (!nudges.length || running) return { ok: true, sent: 0 };
-    // Without a key, the provider warning or a network the queue waits.
-    if (!provider.hasKey() || !allowed() || !isOnline()) return { ok: false, waiting: true };
-    running = true;
-    let result;
-    try {
-      result = await decideNudges(provider, { nudges, settings: store.settings(), context: buildContext() });
-    } finally {
-      running = false;
-    }
-    if (!result.ok) {
-      if (["network", "timeout", "server", "rate"].includes(result.kind)) schedule(retryMs);
-      else if (result.kind === "bad_response") store.finish(nudges.map((item) => item.id), "");
-      return result;
-    }
-    store.finish(nudges.map((item) => item.id), result.notify ? result.text : "");
-    if (result.notify) onNotice(result.text);
-    schedule();
-    return { ok: true, sent: nudges.length, notify: result.notify };
-  }
-
-  return {
-    schedule,
-    run,
-    cancel() {
-      if (timer) timers.clearTimeout(timer);
-      timer = null;
-    },
-    get scheduled() {
-      return Boolean(timer);
-    },
-  };
 }

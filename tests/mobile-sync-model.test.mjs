@@ -88,15 +88,17 @@ function response(id, quantity, updatedAt, createdAt = updatedAt) {
   };
 }
 
-test("local data loads and commits through a memory adapter", () => {
-  const storage = memoryStorage();
-  const data = openLocalData(storage);
-  data.commit({
+test("local data loads and saves through a memory adapter", () => {
+  const storage = memoryStorage({
     products: [baseProduct],
     requests: [],
     spreadsheetId: "legacy_sheet",
   });
+  const data = openLocalData(storage);
+  assert.equal(data.load().products[0].id, baseProduct.id);
+  assert.equal(data.saveProduct({ name: "Хлеб", unit: "шт." }).ok, true);
   const loaded = openLocalData(storage).load();
+  assert.ok(loaded.products.some((product) => product.name === "Хлеб"));
   assert.equal(loaded.schemaVersion, SCHEMA_VERSION);
   assert.equal(loaded.onboardingCompleted, true);
   assert.equal(loaded.products[0].id, baseProduct.id);

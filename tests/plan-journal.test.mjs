@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyRationCommand, readRationDay, RATION_SCHEMA_VERSION } from "../mobile-shell/core/ration-domain.js";
+import { readRationDay, RATION_SCHEMA_VERSION } from "../mobile-shell/core/ration-domain.js";
 import { JOURNAL_LIMIT, diffPlan, revertChangeSet } from "../mobile-shell/core/plan-journal.js";
 import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/core/local-data.js";
 
@@ -143,38 +143,46 @@ test("journal: История питания never enters the journal", () => {
   assert.deepEqual(data.snapshot().journal, []);
 });
 
-test("journal: a batch of changes writes one set; a failed batch writes nothing", () => {
+// An Предложение as the assistant Service hands it to the Core.
+function proposal(id, summary, ops, dates = []) {
+  return { id, ref: id, kind: "special_day", summary, page: "ration", dates, gateDates: [], ops, before: {}, after: {}, status: "pending" };
+}
+
+const noBreakfast = (date) => [{ op: "ration", command: { type: "setSpecialDay", date, meals: [] } }];
+
+test("journal: Предложения applied together write one set; a failing one writes nothing", () => {
   const { data } = openData();
-  const result = data.changePlan({ actor: "ai", page: "ration", summary: "Два дня без завтрака" }, (draft, context) => {
-    for (const date of [tomorrow, addDays(today, 2)]) {
-      const step = applyRationCommand(draft, { type: "setSpecialDay", date, meals: [] }, context);
-      if (!step.ok) return step;
-    }
-    return { ok: true };
-  });
+  const result = data.applyProposals([
+    proposal("p1", "Завтра без завтрака", noBreakfast(tomorrow)),
+    proposal("p2", "Послезавтра без завтрака", noBreakfast(addDays(today, 2))),
+  ], { together: true });
   assert.equal(result.ok, true);
   const [set] = data.snapshot().journal;
   assert.equal(data.snapshot().journal.length, 1);
   assert.equal(set.actor, "ai");
-  assert.equal(set.summary, "Два дня без завтрака");
+  assert.equal(set.summary, "Ассистент: Завтра без завтрака; Послезавтра без завтрака");
   assert.equal(Object.keys(set.after).length, 2);
+  assert.deepEqual(result.results.map((entry) => [entry.id, entry.ok, entry.changeSetId]), [["p1", true, set.id], ["p2", true, set.id]]);
 
-  const failed = data.changePlan({ actor: "ai" }, (draft, context) => {
-    applyRationCommand(draft, { type: "setSpecialDay", date: addDays(today, 3), meals: [] }, context);
-    return { ok: false, reason: "gate" };
-  });
+  const failed = data.applyProposals([proposal("p3", "Вчера без завтрака", noBreakfast(addDays(today, -1)), [addDays(today, -1)])]);
   assert.equal(failed.ok, false);
+  assert.match(failed.results[0].reason, /уже прошёл/);
   assert.equal(data.snapshot().journal.length, 1);
-  assert.equal(data.snapshot().ration.specialDays[`local|${addDays(today, 3)}`], undefined);
+  assert.equal(data.snapshot().ration.specialDays[`local|${addDays(today, -1)}`], undefined);
 });
 
-test("journal: the assistant cannot write История through a batch", () => {
+test("journal: an Предложение cannot write История", () => {
   const { data } = openData();
-  const result = data.changePlan({ actor: "ai" }, (draft, context) =>
-    applyRationCommand(draft, { type: "markMeal", date: today, mealId: "meal_1", state: "eaten" }, context)
-  );
+  const result = data.applyProposals([proposal("p1", "Отметить завтрак", [{ op: "ration", command: { type: "markMeal", date: today, mealId: "meal_1", state: "eaten" } }])]);
   assert.equal(result.ok, false);
-  assert.match(result.reason, /ИИ не может записывать Историю питания/);
+  assert.match(result.results[0].reason, /ИИ не может записывать Историю питания/);
+  assert.deepEqual(data.snapshot().journal, []);
+});
+
+test("journal: changePlan and commit are not part of the Core API", () => {
+  const { data } = openData();
+  assert.equal(data.changePlan, undefined);
+  assert.equal(data.commit, undefined);
 });
 
 test("journal: keeps only the newest sets", () => {

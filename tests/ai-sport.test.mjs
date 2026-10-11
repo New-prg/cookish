@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createMockProvider } from "../mobile-shell/services/assistant/ai-provider.js";
-import { assistantStats, createAssistant, createThread, viewDay } from "../mobile-shell/services/assistant/ai-tools.js";
+import { assistantStats, viewDay } from "../mobile-shell/services/assistant/ai-tools.js";
+import { createThread } from "../mobile-shell/core/assistant-thread.js";
+import { assistantHarness } from "./helpers/assistant-harness.mjs";
 import { memoryStorage, openLocalData, todayDateKey } from "../mobile-shell/core/local-data.js";
 import { readRationDay } from "../mobile-shell/core/ration-domain.js";
 import { readSportDay } from "../mobile-shell/core/sport-domain.js";
@@ -42,7 +44,7 @@ function setup(turns, state = sportState()) {
     const turn = turns[index];
     return typeof turn === "function" ? turn(request) : turn ?? say("Готово.");
   });
-  const assistant = createAssistant({ provider, getState: () => data.snapshot(), changePlan: data.changePlan, today: () => TODAY });
+  const assistant = assistantHarness({ data, provider, today: () => TODAY });
   return { data, provider, assistant, thread: createThread({ page: "sport", mode: "plan" }) };
 }
 

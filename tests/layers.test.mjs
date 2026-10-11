@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 
 // Core and Services move to a server (ADR-0002), so they import nothing from
 // the browser: no UI modules, no WebView globals, no Capacitor. Storage and
-// fetch come in as adapters.
+// fetch come in as adapters. The UI reaches the Services only through the
+// transport.
 
 const shellDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../mobile-shell");
 
@@ -57,6 +58,14 @@ export function layerViolations(layer, file, source) {
   return problems;
 }
 
+// The UI may import the Core and the transport, not the Services.
+export function uiViolations(file, source) {
+  return importSpecifiers(stripComments(source))
+    .filter((specifier) => specifier.startsWith("."))
+    .filter((specifier) => path.posix.normalize(path.posix.join(path.posix.dirname(file), specifier)).startsWith("services/"))
+    .map((specifier) => `${file}: imports "${specifier}" past the transport`);
+}
+
 function modules(dir) {
   return fs.readdirSync(path.join(shellDir, dir), { withFileTypes: true }).flatMap((entry) => {
     const relative = `${dir}/${entry.name}`;
@@ -72,6 +81,14 @@ test("core and services import nothing from the browser or the UI", () => {
   assert.deepEqual(problems, []);
   assert.ok(modules("core").includes("core/local-data.js"));
   assert.ok(modules("services").includes("services/catalog/catalog.js"));
+});
+
+test("the UI reaches the Services only through the transport", () => {
+  const problems = modules("ui").flatMap((file) => uiViolations(file, fs.readFileSync(path.join(shellDir, file), "utf8")));
+  assert.deepEqual(problems, []);
+  assert.deepEqual(uiViolations("ui/x.js", 'import { createAssistant } from "../services/assistant/ai-tools.js";').length, 1);
+  assert.deepEqual(uiViolations("ui/x.js", 'import { openLocalServices } from "../transport/local.js";'), []);
+  assert.deepEqual(uiViolations("ui/x.js", 'import { createThread } from "../core/assistant-thread.js";'), []);
 });
 
 test("the layer check catches UI imports, packages and browser globals", () => {
