@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { USER_NUTRITION_SOURCE, hasNutrition } from "../mobile-shell/core/filler.js";
+import { hasNutrition } from "../mobile-shell/core/filler.js";
+import { NUTRITION_SOURCES } from "../mobile-shell/core/nutrition-source.js";
 import { memoryStorage, openLocalData } from "../mobile-shell/core/local-data.js";
 
-const FULL = { calories: 380, protein: 10, fat: 3, carbs: 78, fiber: null, source: USER_NUTRITION_SOURCE };
+const FULL = { calories: 380, protein: 10, fat: 3, carbs: 78, fiber: null, source: NUTRITION_SOURCES.user };
 
 function open(initial = null) {
   const storage = memoryStorage(initial);

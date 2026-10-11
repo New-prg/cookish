@@ -6,10 +6,6 @@ import { createId } from "./replay.js";
 
 export const REQUIRED_NUTRITION_FIELDS = Object.freeze(["calories", "protein", "fat", "carbs"]);
 
-// КБЖУ the person typed carry this source; the Заполнитель asks before it
-// changes them (#64).
-export const USER_NUTRITION_SOURCE = "Вы";
-
 function filled(value) {
   return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
 }

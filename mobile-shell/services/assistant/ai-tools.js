@@ -16,6 +16,7 @@ import {
   todayDateKey,
 } from "../../core/ration-domain.js";
 import { applyThreadEvent } from "../../core/assistant-thread.js";
+import { NUTRITION_SOURCES } from "../../core/nutrition-source.js";
 import { diffPlan, readChangeSets } from "../../core/plan-journal.js";
 import { executeOps, gateProposal, tryProposal } from "../../core/proposals.js";
 import {
@@ -352,7 +353,7 @@ function proposeProduct(args, { working, thread, today, emit }) {
     }),
     name: existing?.name || name,
     unit: existing?.unit || (unit === "мл" ? "л" : unit),
-    nutrition: { ...nutrition, vitamins: existing?.nutrition?.vitamins || "", minerals: existing?.nutrition?.minerals || "", basis: "100 г/мл", source: "Ассистент" },
+    nutrition: { ...nutrition, vitamins: existing?.nutrition?.vitamins || "", minerals: existing?.nutrition?.minerals || "", basis: "100 г/мл", source: NUTRITION_SOURCES.estimate },
     nutritionSource: "Ассистент",
     confirmed: existing ? Boolean(existing.confirmed) : false,
   };

@@ -23,7 +23,8 @@ import { applyThreadEvent, createThread } from "../core/assistant-thread.js";
 import { CACHE_STORAGE_KEY, OUTBOX_STORAGE_KEY, openCache } from "../core/cache.js";
 import { CACHE_WINDOW } from "../core/cache-window.js";
 import { LEDGER_STORAGE_KEY } from "../core/full-core.js";
-import { USER_NUTRITION_SOURCE, hasNutrition, isQueuedForFilling } from "../core/filler.js";
+import { hasNutrition, isQueuedForFilling } from "../core/filler.js";
+import { NUTRITION_SOURCES, nutritionSourceLabel, openFoodFactsUrl } from "../core/nutrition-source.js";
 import { GUEST_STORAGE_KEY, openGuest } from "../core/guest.js";
 import { STRICTNESS_LEVELS, createNudgeWorker } from "../core/nudges.js";
 import { markProposals, recheckProposals } from "../core/proposals.js";
@@ -1920,7 +1921,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       vitamins,
       minerals,
       basis: "100 г/мл",
-      source: lookedUp || (changed || !previous?.source ? USER_NUTRITION_SOURCE : previous.source),
+      source: lookedUp || (changed || !previous?.source ? NUTRITION_SOURCES.user : previous.source),
     };
   }
 
@@ -1928,6 +1929,24 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
   function nutritionPendingLabel(product) {
     if (!product || hasNutrition(product)) return "";
     return isQueuedForFilling(state, product.id) ? "КБЖУ заполняются…" : "нет КБЖУ";
+  }
+
+  // Under the КБЖУ of a card: who is still filling them, or where they came
+  // from. Open Food Facts leads to the product page and names its licence.
+  function nutritionSourceLine(product) {
+    const pending = nutritionPendingLabel(product);
+    if (pending) return `<p class="muted nutrition-pending">${pending}</p>`;
+    const label = nutritionSourceLabel(product);
+    if (!label) return "";
+    if (label !== NUTRITION_SOURCES.off) return `<p class="muted nutrition-source">Источник: ${escapeHtml(label)}</p>`;
+    const url = openFoodFactsUrl(product.barcode);
+    const name = url ? `<a class="nutrition-source-link" href="${escapeAttr(url)}" data-external-url="${escapeAttr(url)}">${label}</a>` : label;
+    return `<p class="muted nutrition-source">Источник: ${name} <small class="nutrition-license">· ODbL</small></p>`;
+  }
+
+  function openExternalUrl(url) {
+    if (window.NativeCookish?.openUrl) window.NativeCookish.openUrl(url);
+    else window.open(url, "_blank", "noopener");
   }
 
   function matchingProductSuggestions(query = "") {
@@ -2145,7 +2164,7 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
         </label>
         <section class="nutrition-editor">
           <h2 class="section-title">Пищевая ценность на 100 г/мл</h2>
-          ${nutritionPendingLabel(product) ? `<p class="muted nutrition-pending">${nutritionPendingLabel(product)}</p>` : ""}
+          ${nutritionSourceLine(product)}
           <div class="nutrition-grid">
             ${nutritionField("Ккал", "calories", product?.nutrition?.calories)}
             ${nutritionField("Белки, г", "protein", product?.nutrition?.protein)}
@@ -2163,6 +2182,10 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       </form>
     `;
     document.getElementById("lookup-barcode").addEventListener("click", lookupProductBarcode);
+    document.querySelector(".nutrition-source-link")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      openExternalUrl(event.currentTarget.dataset.externalUrl);
+    });
     document.getElementById("scan-barcode").addEventListener("click", () => {
       if (!window.NativeCookish?.scanBarcode) return setBarcodeStatus("Сканирование доступно в Android-приложении.", true);
       barcodeScanTarget = "product";
@@ -5066,6 +5089,10 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       ${strictnessSection()}
       ${themeSection()}
       ${renderAppUpdateSection()}
+      <section class="section profile-about-data">
+        <h2 class="profile-section-title">О данных</h2>
+        <p class="muted">КБЖУ товаров с маркой — Open Food Facts (лицензия ODbL), общих продуктов — справочник по данным USDA FoodData Central.</p>
+      </section>
       <section class="section danger-zone">
         <span class="eyebrow">Опасная зона</span>
         <h2 class="profile-section-title">Данные устройства</h2>

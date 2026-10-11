@@ -1862,3 +1862,42 @@ test("smoke: a product saved without КБЖУ waits for the Заполнител
     await context.close();
   }
 });
+
+test("smoke: the product card names the source of КБЖУ; Open Food Facts links its page and licence", async () => {
+  const { context, page } = await openPage(undefined, { hasTouch: true });
+  try {
+    const now = new Date().toISOString();
+    await seedState(page, {
+      schemaVersion: 12,
+      products: [
+        { id: "product_off", name: "Кефир Простоквашино", unit: "л", barcode: "4600000000001", nutrition: { calories: 53, protein: 3, fat: 2.5, carbs: 4, source: "Open Food Facts" } },
+        { id: "product_ref", name: "Гречка", unit: "г", catalogSource: "Встроенный справочник", nutrition: { calories: 313, protein: 12.6, fat: 3.3, carbs: 62.1, source: "Встроенный справочник" } },
+      ],
+      requests: [{ id: "request_card", status: "open", createdAt: now, updatedAt: now, items: [{ productId: "product_off", quantity: 1 }, { productId: "product_ref", quantity: 1 }], responses: [] }],
+    });
+    await page.evaluate(() => {
+      window.NativeCookish = { ...window.NativeCookish, openUrl: (url) => { window.openedUrl = url; } };
+    });
+    await openRoute(page, "requests");
+    await page.locator(".request-link").first().click();
+    await page.tap('#request-items .product-chip[data-product-id="product_off"]');
+    await page.waitForSelector("#product-form");
+    assert.equal(await page.locator(".nutrition-source").innerText(), "Источник: Open Food Facts · ODbL");
+    await page.click(".nutrition-source-link");
+    assert.equal(await page.evaluate(() => window.openedUrl), "https://world.openfoodfacts.org/product/4600000000001");
+    assert.equal(await page.locator("#product-form").count(), 1, "the app stays on the card");
+
+    await page.click("#header-back");
+    await page.tap('#request-items .product-chip[data-product-id="product_ref"]');
+    await page.waitForSelector("#product-form");
+    assert.equal(await page.locator(".nutrition-source").innerText(), "Источник: Справочник");
+
+    await page.click("#header-back");
+    // The request editor is left through its header action.
+    await page.click("#header-action");
+    await openRoute(page, "profile");
+    assert.match(await page.locator(".profile-about-data").innerText(), /Open Food Facts \(лицензия ODbL\)[\s\S]*USDA FoodData Central/);
+  } finally {
+    await context.close();
+  }
+});
