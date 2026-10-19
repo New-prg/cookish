@@ -65,6 +65,25 @@ demoLegacyState(today) // старое состояние для примера,
 
 Проверка: `tests/objects-domain.test.mjs` сверяет расчёты старых функций (`readRationDay`, `readRationDayNutrition`, `readRationDayActual`, `readSportDayEnergy`, `plannedRationRequestItems`, суммы Запросов) с объектной моделью после переноса, по дням.
 
+## Наборы и виджеты: точная форма
+
+```js
+// Набор: объект типа set
+props.query = { source: { type } | { ids } | { builtin, args }, filters, sorts, group, aggregates, limit } // как в runQuery
+props.view = { layout: "list" | "table" | "kanban" | "calendar" | "gallery" | "checklist", relations: [relKey], groupRel?, dateRel? }
+
+// Виджет: элемент массива props.widgets у объекта типа dashboard
+{ id, kind: "ration-today" | "sport-today" | "requests" | "set", title,
+  setId, display: "list" | "number" | "bars",           // только для kind "set"
+  aggregate: { rel, fn },                              // для "number", по умолчанию { fn: "count" }
+  series: { dateRel, valueRel, fn, range: "@last7d" }, // для "bars"
+  goal }                                               // необязательно: «X из goal»
+```
+
+## Сборщик (`core/builder.js`)
+
+ИИ собирает типы, связи, наборы и виджеты. Модель видит только структуру пространства (ключи и названия типов, связей, наборов), без текста объектов. Она отвечает JSON с маленьким языком операций (`defineRelation`, `defineType`, `createSet`, `addWidget`), Сборщик переводит его в операции хранилища, проверяет на копии пространства от имени `ai` и возвращает Предложение. Применяет его человек, откат через журнал.
+
 ## Интерфейс (`objects.html`, `objects/ui/`, делает агент интерфейса)
 
 Anytype для питания, спорта и покупок: главная панель с виджетами, библиотека типов и наборов, вид набора (список, таблица, канбан, календарь, галерея, чек-лист), страница объекта со связями, создание своих типов и связей, день Рациона и день Спорта, Запрос с отметкой покупки, отмена через журнал.
