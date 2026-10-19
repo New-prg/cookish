@@ -5345,6 +5345,12 @@ import { THEME_OPTIONS, themeStore } from "./theme.js";
       ${fillerSection()}
       ${themeSection()}
       ${renderAppUpdateSection()}
+      <section class="section profile-objects-prototype">
+        <span class="eyebrow">Прототип</span>
+        <h2 class="profile-section-title">Cookish на объектах</h2>
+        <p class="muted">Новая версия, где всё собрано из типов, связей и наборов. Ваши данные она копирует к себе и здесь ничего не меняет.</p>
+        <a class="button secondary full" href="objects.html">Открыть прототип</a>
+      </section>
       <section class="section profile-about-data">
         <h2 class="profile-section-title">О данных</h2>
         <p class="muted">КБЖУ товаров с маркой — Open Food Facts (лицензия ODbL), общих продуктов — справочник по данным USDA FoodData Central.</p>
