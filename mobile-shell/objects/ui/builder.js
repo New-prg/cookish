@@ -2,22 +2,13 @@
 // with a checked Предложение of types, relations, sets and widgets, and the
 // person applies it as one undoable change or asks for another version.
 import { buildProposal } from "../core/builder.js";
-import { homeOf } from "../core/values.js";
-import { AI_PROVIDER_NAME, createRouterAiProvider, fetchTransport } from "../../services/assistant/ai-provider.js";
-import { aiKeyStore } from "../../ui/ai-key.js";
-import { nativeAiTransport } from "../../ui/platform.js";
+import { changeRows } from "../core/changes.js";
+import { AI_PROVIDER_NAME } from "../../services/assistant/ai-provider.js";
+import { aiKey, aiProvider as provider } from "./ai.js";
 import { go, store } from "./runtime.js";
-import { fill, h, num, openSheet, toast } from "./dom.js";
-import { FORMAT_NAMES } from "./editors.js";
-import { DISPLAY_NAMES } from "./widgets.js";
+import { fill, h, openSheet, toast } from "./dom.js";
 
 const EXAMPLES = ["Вода: цель 2 литра в день", "Вес по утрам, тренд за месяц", "Давление и пульс утром и вечером", "Сколько трачу на еду по неделям"];
-
-const aiKey = aiKeyStore(window.localStorage);
-const provider = createRouterAiProvider({
-  getKey: () => aiKey.read(),
-  transport: nativeAiTransport(window) || fetchTransport((...args) => window.fetch(...args)),
-});
 
 export function builderSheet() {
   const chat = { history: [], proposal: null, reply: "", error: "", busy: false };
@@ -90,20 +81,5 @@ export function builderSheet() {
 
     render();
     return body;
-  });
-}
-
-// What the Предложение adds, in the person's words.
-function changeRows(state, ops) {
-  const home = homeOf(state);
-  const had = new Set((home?.props?.widgets || []).map((w) => w.id));
-  return ops.flatMap((op) => {
-    if (op.op === "defineRelation") return [["Связь", op.relation.name, [FORMAT_NAMES[op.relation.format] || op.relation.format, op.relation.unit].filter(Boolean).join(", ")]];
-    if (op.op === "defineType") return [["Тип", `${op.type.icon || ""} ${op.type.name}`.trim(), op.type.fact ? "записи вносите вы" : ""]];
-    if (op.op === "create" && op.type === "set") return [["Набор", op.name, ""]];
-    if (op.op === "update" && op.id === home?.id) {
-      return (op.props.widgets || []).filter((w) => !had.has(w.id)).map((w) => ["Виджет на главной", w.title, [DISPLAY_NAMES[w.display], w.goal != null ? `цель ${num(w.goal)}` : ""].filter(Boolean).join(", ")]);
-    }
-    return [];
   });
 }

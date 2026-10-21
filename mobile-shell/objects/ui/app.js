@@ -9,6 +9,7 @@ import { objectScreen } from "./object.js";
 import { rationScreen, sportScreen } from "./day.js";
 import { requestScreen } from "./request.js";
 import { profileScreen } from "./profile.js";
+import { assistantScreen } from "./assistant.js";
 
 const LEGACY_KEY = "cookish.android.data.v1";
 // A calendar date: 2026-13-45 has the shape but is not a day.
@@ -24,6 +25,7 @@ const ROUTES = {
   object: { tab: null, render: objectScreen },
   request: { tab: null, render: requestScreen },
   profile: { tab: null, render: profileScreen },
+  assistant: { tab: "assistant", render: assistantScreen },
   ration: { tab: "home", render: (arg) => rationScreen(isDate(arg) ? arg : store.today()) },
   sport: { tab: "home", render: (arg) => sportScreen(isDate(arg) ? arg : store.today()) },
 };
@@ -73,6 +75,7 @@ function renderNav(tab) {
     item("library", "#/library", "Библиотека", "library"),
     h("button", { class: "nav-plus", "aria-label": "Создать", onclick: createSheet }, icon("plus", 28)),
     item("search", "#/search", "Поиск", "search"),
+    item("assistant", "#/assistant", "Ассистент", "assistant"),
   );
 }
 

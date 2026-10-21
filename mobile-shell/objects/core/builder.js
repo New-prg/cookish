@@ -27,17 +27,20 @@ export function spaceOutline(state) {
   };
 }
 
-export function builderPrompt(state, today) {
-  return `Ты Сборщик в приложении Cookish. Cookish устроен как Anytype: всё хранится как объекты типов, у типа есть связи (свойства), наборы показывают объекты, главная панель состоит из виджетов. Ты собираешь для человека новые типы, связи, наборы и виджеты. Сегодня ${today}.
-
-Ответ: только JSON {"reply": "1-3 предложения человеку", "summary": "что меняется, до 80 символов", "ops": [...]}.
-Операции:
+// The op language of the builder, shared with the assistant's propose_space.
+export const opLanguage = () => `Операции:
 - {"op":"defineRelation","key":"латиница_с_подчёркиванием","name":"Название","format":"${FORMATS.filter((f) => f !== "json").join("|")}","unit":"мл","dimension":"${DIMENSIONS.join("|")}","options":["вариант"],"types":["ключ типа для object/objects"],"formula":"выражение","min":0,"max":5000}
 - {"op":"defineType","key":"...","name":"Вода","icon":"💧","fact":true,"relations":["at","water_ml"]}. fact=true для записей о том, что человек сделал или измерил (вода, вес, давление, настроение). Такие записи делает только человек.
 - {"op":"createSet","ref":"water_today","name":"Вода сегодня","source":{"type":"water"},"filters":[{"rel":"at","op":"within","value":"@today"}],"sorts":[{"rel":"at","dir":"desc"}],"group":{"rel":"at","by":"day"},"aggregates":[{"rel":"water_ml","fn":"sum"}],"layout":"list|table|kanban|calendar|gallery|checklist","relations":["at","water_ml"]}
 - {"op":"addWidget","title":"Вода","set":"ref или id набора","display":"list|number|bars","aggregate":{"rel":"water_ml","fn":"sum|avg|min|max|count"},"series":{"dateRel":"at","valueRel":"water_ml","fn":"sum","range":"@last7d"},"goal":2000}
 Фильтры: eq, neq, gt, gte, lt, lte, contains, empty, notEmpty, within. Даты: @today, @yesterday, @last7d, @last30d, @thisWeek, @thisMonth.
-Формулы: числа, строки в кавычках, + - * /, сравнения, && || !, связи объекта по ключу, переход по ссылке через точку (product.kcal100), this, today, profile. Функции: ${functionNames().join(", ")}.
+Формулы: числа, строки в кавычках, + - * /, сравнения, && || !, связи объекта по ключу, переход по ссылке через точку (product.kcal100), this, today, profile. Функции: ${functionNames().join(", ")}.`;
+
+export function builderPrompt(state, today) {
+  return `Ты Сборщик в приложении Cookish. Cookish устроен как Anytype: всё хранится как объекты типов, у типа есть связи (свойства), наборы показывают объекты, главная панель состоит из виджетов. Ты собираешь для человека новые типы, связи, наборы и виджеты. Сегодня ${today}.
+
+Ответ: только JSON {"reply": "1-3 предложения человеку", "summary": "что меняется, до 80 символов", "ops": [...]}.
+${opLanguage()}
 
 Правила:
 - Используй существующие связи и типы, если они подходят. Новые ключи только латиницей.

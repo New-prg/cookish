@@ -17,7 +17,8 @@ export const WIDGET_KINDS = {
 
 export const AGG_NAMES = { count: "Количество", sum: "Сумма", avg: "Среднее", min: "Минимум", max: "Максимум" };
 const AGG_SUFFIX = { count: "", sum: "", avg: "в среднем", min: "минимум", max: "максимум" };
-export const DISPLAY_NAMES ={ list: "Список", number: "Число", bars: "Столбцы за 7 дней" };
+import { DISPLAY_NAMES } from "../core/changes.js";
+export { DISPLAY_NAMES };
 
 function requestsWidget(state, w, c) {
   const open = objectsOfType(state, "request").filter((r) => r.props?.status !== "done");

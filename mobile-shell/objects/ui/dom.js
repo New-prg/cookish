@@ -43,6 +43,7 @@ const ICONS = {
   up: "M6 15l6-6 6 6",
   down: "M6 9l6 6 6-6",
   check: "M5 12.5 10 17l9-10",
+  assistant: "M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 4v-4H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM8 10h8",
 };
 
 export function icon(name, size = 24) {

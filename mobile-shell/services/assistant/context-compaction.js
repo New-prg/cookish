@@ -19,7 +19,7 @@ export const COMPACTION = Object.freeze({
 export const STALE_READ = "[устарело — перечитай";
 export const COMPACTED_TEXT = "Сжал начало разговора";
 
-const READ_TOOLS = new Set(["search_food", "find_reference"]);
+const READ_TOOLS = new Set(["search_food", "find_reference", "find_objects"]);
 
 export function isReadTool(name) {
   return String(name).startsWith("get_") || READ_TOOLS.has(name);

@@ -4,11 +4,8 @@ import { displayValue, formulaError, objectsOfType, valueOf } from "../core/valu
 import { act, ctx, freeKey, hrefFor, iconOf, isVisibleRelation, nameOf, store } from "./runtime.js";
 import { fill, dayShort, field, h, icon, openSheet, segmented, toast } from "./dom.js";
 
-export const FORMAT_NAMES = {
-  text: "Текст", number: "Число", date: "Дата", time: "Время", datetime: "Дата и время",
-  select: "Один вариант", multiselect: "Несколько вариантов", checkbox: "Да или нет",
-  object: "Ссылка на объект", objects: "Ссылки на объекты", url: "Ссылка на сайт", formula: "Формула",
-};
+import { FORMAT_NAMES } from "../core/changes.js";
+export { FORMAT_NAMES };
 
 const setProp = (obj, rel, value) => act({ op: "update", id: obj.id, props: { [rel.key]: value } }, { summary: `${nameOf(obj)}: ${rel.name.toLowerCase()}` });
 
