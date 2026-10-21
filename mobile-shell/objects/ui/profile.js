@@ -3,9 +3,8 @@
 // the theme and the data of the prototype.
 import { profileOf } from "../core/values.js";
 import { emptyObjectState } from "../core/store.js";
-import { createRouterAiProvider, fetchTransport } from "../../services/assistant/ai-provider.js";
-import { AI_CONSENT_TEXT, AI_PROVIDER_LABEL, aiConsentStore, aiKeyStore } from "../../ui/ai-key.js";
-import { nativeAiTransport } from "../../ui/platform.js";
+import { AI_PROVIDER_LABEL } from "../../ui/ai-key.js";
+import { aiKey, aiProvider as provider, withAiConsent as withConsent } from "./ai.js";
 import { THEME_OPTIONS, themeStore } from "../../ui/theme.js";
 import { act, ensureHome, go, isVisibleRelation, rerender, store } from "./runtime.js";
 import { fill, h, num, openSheet, pageHeader, segmented, toast } from "./dom.js";
@@ -60,15 +59,6 @@ function applyTheme() {
 applyTheme();
 systemDark?.addEventListener?.("change", () => { if (themes.read() === "system") applyTheme(); });
 
-// The AI key and the consent are the current app's own stores, so both apps
-// share them. The provider reads the key at each call and never keeps it.
-const aiKey = aiKeyStore(window.localStorage);
-const aiConsent = aiConsentStore(window.localStorage);
-const provider = createRouterAiProvider({
-  getKey: () => aiKey.read(),
-  transport: nativeAiTransport(window) || fetchTransport((...args) => window.fetch(...args)),
-});
-
 // What the person typed and the last answer outlive a re-render of the screen.
 let draft = "";
 let aiStatus = { text: "", tone: "", busy: false };
@@ -97,10 +87,6 @@ function aiSection() {
   });
   const typed = () => input.value.trim();
   const reset = () => { input.value = ""; draft = ""; };
-  // Before the first request the person sees once where the data goes.
-  const withConsent = (proceed) => (aiConsent.accepted()
-    ? proceed()
-    : confirmSheet({ title: "Данные уходят провайдеру", text: AI_CONSENT_TEXT, yes: "Понятно, продолжить", onYes: () => { aiConsent.accept(); proceed(); } }));
 
   const save = () => {
     if (!typed()) return setAiStatus("Вставьте ключ, чтобы сохранить его.", "error");

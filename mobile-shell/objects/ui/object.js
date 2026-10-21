@@ -3,6 +3,7 @@
 import { act, allBacklinks, hrefFor, iconOf, isVisibleRelation, local, nameOf, rerender, store, typeOf } from "./runtime.js";
 import { h, pageHeader, empty } from "./dom.js";
 import { pickRelation, relationEditor } from "./editors.js";
+import { productSection } from "./product.js";
 
 const ACTORS = { human: "Вы", ai: "Ассистент", import: "Перенос", connector: "Коннектор" };
 const TIME = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -61,6 +62,7 @@ export function objectScreen(id) {
       }),
       h("button", { class: "btn btn-quiet btn-block", onclick: addRelation }, "+ Добавить связь"),
     ),
+    obj.type === "product" && !obj.archivedAt ? productSection(state, obj) : null,
     h("section", { class: "block" }, h("h2", { class: "section-title", text: "Заметка" }), note),
     links.length ? h("section", { class: "block" },
       h("h2", { class: "section-title", text: "Ссылаются сюда" }),

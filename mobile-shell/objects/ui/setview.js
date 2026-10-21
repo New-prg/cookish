@@ -4,6 +4,7 @@ import { aggregate, runQuery } from "../core/query.js";
 import { act, ctx, go, hrefFor, iconOf, isNumeric, isVisibleRelation, local, nameOf, newObjectProps, rerender, store, typeOf } from "./runtime.js";
 import { fill, dayShort, empty, field, h, icon, monthLabel, num, openSheet, pageHeader, segmented, shiftDate, toast } from "./dom.js";
 import { parseNumber, pickObject, shownValue } from "./editors.js";
+import { catalogAction } from "./product.js";
 
 const LAYOUTS = {
   list: { name: "Список", render: listRows },
@@ -101,7 +102,7 @@ export function setScreen(kind, arg) {
     ));
 
   return [
-    pageHeader({ title: model.saved ? "Набор" : "Тип", back: true }),
+    pageHeader({ title: model.saved ? "Набор" : "Тип", back: true, actions: model.typeKey === "product" ? [catalogAction()] : [] }),
     h("section", { class: "hero hero-set" },
       h("span", { class: "hero-icon", "aria-hidden": "true", text: model.icon || "🗂" }),
       title,

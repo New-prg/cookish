@@ -441,3 +441,14 @@ body:has(.sheet-backdrop) .toasts { top: calc(12px + env(safe-area-inset-top)); 
 .profile-status.is-error { color: var(--red); }
 .profile-ai, .profile-data { display: flex; flex-direction: column; gap: 12px; }
 .row-fields.row-dates { grid-template-columns: 1fr 1fr; }
+
+/* Каталог и Заполнитель КБЖУ */
+.search-row { display: flex; gap: 8px; }
+.search-row .input { flex: 1; min-width: 0; }
+.catalog { display: flex; flex-direction: column; gap: 12px; }
+.filler-tools { display: flex; flex-direction: column; gap: 12px; }
+.filler-card { display: flex; flex-direction: column; gap: 10px; }
+.filler-card p { margin: 0; }
+.filler-new { font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.filler-tag { flex: none; padding: 2px 10px; border-radius: 999px; background: var(--amber-soft); color: var(--amber); font-size: 13px; font-weight: 650; }
+.filler-card .pick-list .row-btn { padding-left: 0; padding-right: 0; }
