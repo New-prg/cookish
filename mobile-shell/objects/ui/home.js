@@ -5,6 +5,7 @@ import { fill, dayLong, empty, field, h, icon, openSheet, segmented, toast } fro
 import { AGG_NAMES, DISPLAY_NAMES, WIDGET_KINDS } from "./widgets.js";
 import { defaultView, PERIODS } from "./setview.js";
 import { homeOf, objectsOfType } from "../core/values.js";
+import { requestFromPlanSheet } from "./request.js";
 
 export function homeScreen() {
   const state = store.state();
@@ -22,7 +23,10 @@ export function homeScreen() {
   return [
     h("header", { class: "page-head" },
       h("div", {}, h("h1", { class: "page-title", text: "Сегодня" }), h("p", { class: "page-sub", text: date })),
-      dash ? h("button", { class: `btn btn-quiet btn-small${mode.editing ? " is-on" : ""}`, onclick: () => { mode.editing = !mode.editing; rerender(); } }, mode.editing ? "Готово" : "Изменить") : null,
+      h("div", { class: "head-actions" },
+        dash ? h("button", { class: `btn btn-quiet btn-small${mode.editing ? " is-on" : ""}`, onclick: () => { mode.editing = !mode.editing; rerender(); } }, mode.editing ? "Готово" : "Изменить") : null,
+        h("a", { class: "icon-btn profile-link", href: "#/profile", "aria-label": "Профиль" }, h("span", { "aria-hidden": "true", text: "👤" })),
+      ),
     ),
     widgets.length ? null : empty("На главной пока нет виджетов"),
     widgets.map((w, i) => {
@@ -37,7 +41,10 @@ export function homeScreen() {
             h("button", { class: "icon-btn", "aria-label": `Убрать: ${title}`, onclick: () => save(widgets.filter((x) => x.id !== w.id), `Убран виджет «${title}»`) }, icon("close", 20)),
           ) : null,
         ),
-        mode.editing ? null : h("div", { class: "widget-body" }, kind ? kind.render(state, w, c) : empty("Неизвестный виджет")),
+        mode.editing ? null : h("div", { class: "widget-body" },
+          kind ? kind.render(state, w, c) : empty("Неизвестный виджет"),
+          w.kind === "requests" ? h("button", { class: "btn btn-quiet btn-block", onclick: requestFromPlanSheet }, "Запрос из плана") : null,
+        ),
       );
     }),
     mode.editing && dash ? h("button", { class: "btn btn-primary btn-block", onclick: () => widgetSheet(dash) }, "+ Виджет") : null,
