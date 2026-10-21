@@ -1,0 +1,27 @@
+<!-- Запрос: Покажи календарь моих тренировок и сколько минут я занимался -->
+<c-dashboard v="1">
+  <h2>Тренировки</h2>
+  <c-card title="Календарь тренировок" caption="Чем темнее, тем больше минут">
+    <c-heatmap set="set_activity" value="duration" fn="sum" range="@last12w"></c-heatmap>
+  </c-card>
+  <c-grid cols="2">
+    <c-card title="Минут на этой неделе">
+      <c-stat set="set_activity" value="duration" fn="sum" range="@thisWeek" compare="yes" spark="yes"></c-stat>
+    </c-card>
+    <c-card title="Тренировок за 30 дней">
+      <c-stat set="set_activity" fn="count" range="@last30d"></c-stat>
+    </c-card>
+  </c-grid>
+  <section>
+    <h3>Нагрузка по неделям</h3>
+    <c-card title="Минуты по видам">
+      <c-bars set="set_activity" value="duration" fn="sum" range="@last8w" by="week" category="kind" stack="stacked"></c-bars>
+    </c-card>
+    <c-card title="Последние тренировки">
+      <c-table set="set_activity" columns="date,kind,duration" limit="5"></c-table>
+    </c-card>
+  </section>
+  <c-card title="Минуты по дням">
+    <c-spark set="set_activity" value="duration" fn="sum" range="@last30d"></c-spark>
+  </c-card>
+</c-dashboard>

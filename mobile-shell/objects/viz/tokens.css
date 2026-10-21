@@ -1,0 +1,178 @@
+/* Tokens of the chart kit.
+
+   Section 1 is the theme contract of the HTML frames in T3 Code: the same custom
+   property names, so a dashboard drafted in a T3 chat looks the same here. The
+   values are Cookish's palette from objects.css (warm neutrals, green accent).
+   The names --accent and --ring mean something else in objects.css, so the
+   contract is defined only on the kit's own elements (SCOPE below) and never on
+   :root.
+
+   Section 2 is what the chart method needs on top: a sequential ramp of one
+   hue, the reserved status colors, and the ink of grid, axes and labels.
+
+   scripts/check-palette.mjs reads the blocks between "@mode" and "@end" and
+   checks chart-1..6 (six checks), the ramp and the status colors in both modes.
+   The dark values live in two blocks (OS setting and the forced theme) that
+   tests/objects-viz.test.mjs compares.
+
+   SCOPE = c-card, c-grid, c-stat, c-meter, c-bars, c-line, c-spark, c-heatmap,
+           c-table, c-list, c-empty, .viz */
+
+/* ---- 1. theme contract (light, then dark) ---------------------------------- */
+/* @contract-start */
+:is(c-card, c-grid, c-stat, c-meter, c-bars, c-line, c-spark, c-heatmap, c-table, c-list, c-empty, .viz) {
+  /* @mode light */
+  --background: #f5f4ef;
+  --foreground: #191b19;
+  --muted: #eeede7;
+  --muted-foreground: #5e635d;
+  --card: #ffffff;
+  --card-foreground: #191b19;
+  --border: #e4e3dd;
+  --input: #c2c1ba;
+  --ring: #1f5d3b;
+  --primary: #1f5d3b;
+  --primary-foreground: #ffffff;
+  --accent: #e4eee7;
+  --accent-foreground: #1f5d3b;
+  --destructive: #9f2f2f;
+  --warning: #a15c12;
+  --success: #1f6b3f;
+  --info: #285f9e;
+  --chart-1: #1f7a46;
+  --chart-2: #2a78d6;
+  --chart-3: #eb6834;
+  --chart-4: #6250d6;
+  --chart-5: #eda100;
+  --chart-6: #e87ba4;
+  /* @end */
+  --radius: 14px;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-viz-mode="light"]) :is(c-card, c-grid, c-stat, c-meter, c-bars, c-line, c-spark, c-heatmap, c-table, c-list, c-empty, .viz) {
+    /* @mode dark */
+    --background: #121412;
+    --foreground: #ecede8;
+    --muted: #2a2e29;
+    --muted-foreground: #a3a8a0;
+    --card: #1c1f1c;
+    --card-foreground: #ecede8;
+    --border: #2e322d;
+    --input: #555a54;
+    --ring: #86cfa5;
+    --primary: #2c7a50;
+    --primary-foreground: #ffffff;
+    --accent: #1f3a2a;
+    --accent-foreground: #86cfa5;
+    --destructive: #e58a7f;
+    --warning: #e3a465;
+    --success: #86cfa5;
+    --info: #8db8f0;
+    --chart-1: #3a9d68;
+    --chart-2: #3987e5;
+    --chart-3: #d95926;
+    --chart-4: #9085e9;
+    --chart-5: #c98500;
+    --chart-6: #d55181;
+    /* @end */
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] :is(c-card, c-grid, c-stat, c-meter, c-bars, c-line, c-spark, c-heatmap, c-table, c-list, c-empty, .viz),
+:root[data-viz-mode="dark"] :is(c-card, c-grid, c-stat, c-meter, c-bars, c-line, c-spark, c-heatmap, c-table, c-list, c-empty, .viz) {
+  /* @mode dark */
+  --background: #121412;
+  --foreground: #ecede8;
+  --muted: #2a2e29;
+  --muted-foreground: #a3a8a0;
+  --card: #1c1f1c;
+  --card-foreground: #ecede8;
+  --border: #2e322d;
+  --input: #555a54;
+  --ring: #86cfa5;
+  --primary: #2c7a50;
+  --primary-foreground: #ffffff;
+  --accent: #1f3a2a;
+  --accent-foreground: #86cfa5;
+  --destructive: #e58a7f;
+  --warning: #e3a465;
+  --success: #86cfa5;
+  --info: #8db8f0;
+  --chart-1: #3a9d68;
+  --chart-2: #3987e5;
+  --chart-3: #d95926;
+  --chart-4: #9085e9;
+  --chart-5: #c98500;
+  --chart-6: #d55181;
+  /* @end */
+  color-scheme: dark;
+}
+/* @contract-end */
+
+/* ---- 2. chart-only roles --------------------------------------------------- */
+/* Inks derive from the contract, so they follow any host that sets it. */
+:is(c-card, c-grid, c-stat, c-meter, c-bars, c-line, c-spark, c-heatmap, c-table, c-list, c-empty, .viz) {
+  --viz-grid: color-mix(in srgb, var(--foreground) 9%, var(--card));
+  --viz-axis: color-mix(in srgb, var(--foreground) 22%, var(--card));
+  --viz-label: var(--muted-foreground);
+  --viz-ink: var(--foreground);
+  --viz-goal: color-mix(in srgb, var(--foreground) 62%, var(--card));
+  --viz-track: var(--accent);
+  --viz-surface: var(--card);
+
+  /* @mode light */
+  /* sequential: one hue (the brand green), step 1 is the least, 5 the most */
+  --viz-seq-0: #eeede7;
+  --viz-seq-1: #cfe6d8;
+  --viz-seq-2: #98cdb0;
+  --viz-seq-3: #5bab81;
+  --viz-seq-4: #2e8758;
+  --viz-seq-5: #1b5a39;
+  /* status: reserved meaning, never a series, always with an icon and a label */
+  --viz-good: #0ca30c;
+  --viz-warning: #fab219;
+  --viz-serious: #ec835a;
+  --viz-critical: #d03b3b;
+  /* the tail of a series list and other de-emphasized marks */
+  --viz-other: #a3a79f;
+  /* @end */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-viz-mode="light"]) :is(c-card, c-grid, c-stat, c-meter, c-bars, c-line, c-spark, c-heatmap, c-table, c-list, c-empty, .viz) {
+    /* @mode dark */
+    --viz-seq-0: #2a2e29;
+    --viz-seq-1: #26402f;
+    --viz-seq-2: #2f6446;
+    --viz-seq-3: #3f8a5f;
+    --viz-seq-4: #66b185;
+    --viz-seq-5: #a3dcbb;
+    --viz-good: #0ca30c;
+    --viz-warning: #fab219;
+    --viz-serious: #ec835a;
+    --viz-critical: #d03b3b;
+    --viz-other: #6f746d;
+    /* @end */
+  }
+}
+
+:root[data-theme="dark"] :is(c-card, c-grid, c-stat, c-meter, c-bars, c-line, c-spark, c-heatmap, c-table, c-list, c-empty, .viz),
+:root[data-viz-mode="dark"] :is(c-card, c-grid, c-stat, c-meter, c-bars, c-line, c-spark, c-heatmap, c-table, c-list, c-empty, .viz) {
+  /* @mode dark */
+  --viz-seq-0: #2a2e29;
+  --viz-seq-1: #26402f;
+  --viz-seq-2: #2f6446;
+  --viz-seq-3: #3f8a5f;
+  --viz-seq-4: #66b185;
+  --viz-seq-5: #a3dcbb;
+  --viz-good: #0ca30c;
+  --viz-warning: #fab219;
+  --viz-serious: #ec835a;
+  --viz-critical: #d03b3b;
+  --viz-other: #6f746d;
+  /* @end */
+}

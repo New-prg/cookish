@@ -1,0 +1,25 @@
+<!-- Запрос: Покажи, сколько воды я пью каждый день, цель два литра -->
+<c-dashboard v="1">
+  <h2>Вода</h2>
+  <p>Отмечайте воду в Журнале, графики обновятся сами.</p>
+  <c-card title="Выпито сегодня" caption="Цель 2000 мл в день">
+    <c-meter set="set_water" value="drunk" fn="sum" range="@today" goal="2000"></c-meter>
+  </c-card>
+  <c-card title="Вода по дням" caption="Последние 7 дней">
+    <c-bars set="set_water" value="drunk" fn="sum" range="@last7d" by="day" goal="2000"></c-bars>
+  </c-card>
+  <c-grid cols="2">
+    <c-card title="Неделя к неделе">
+      <c-stat set="set_water" value="drunk" fn="sum" range="@last7d" compare="yes"></c-stat>
+    </c-card>
+    <c-card title="Динамика">
+      <c-spark set="set_water" value="drunk" fn="sum" range="@last14d"></c-spark>
+    </c-card>
+  </c-grid>
+  <c-card title="Календарь воды" caption="Чем темнее, тем больше выпито">
+    <c-heatmap set="set_water" value="drunk" fn="sum" range="@last8w"></c-heatmap>
+  </c-card>
+  <c-card title="Последние записи">
+    <c-list set="set_water" columns="date,drunk" limit="4"></c-list>
+  </c-card>
+</c-dashboard>

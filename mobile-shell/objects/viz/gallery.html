@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Cookish: набор графиков</title>
+  <link rel="stylesheet" href="tokens.css">
+  <style>
+    :root { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #f5f4ef; color: #191b19; color-scheme: light; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { background: #121412; color: #ecede8; color-scheme: dark; } }
+    :root[data-theme="dark"] { background: #121412; color: #ecede8; color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; overflow-x: hidden; }
+    .gallery { max-width: 720px; margin: 0 auto; padding: 16px 16px 48px; display: flex; flex-direction: column; gap: 28px; }
+    .gallery-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .gallery-bar h1 { flex: 1 1 100%; margin: 0; font-size: 26px; }
+    .gallery-bar button { min-height: 44px; min-width: 44px; padding: 0 16px; border: 1px solid #c2c1ba; border-radius: 12px; background: transparent; color: inherit; font: inherit; font-size: 16px; cursor: pointer; }
+    .gallery-bar button[aria-pressed="true"] { background: #1f5d3b; border-color: #1f5d3b; color: #fff; }
+    .gallery section > h2 { margin: 0 0 4px; font-size: 20px; }
+    .gallery-note { margin: 0 0 12px; font-size: 14px; opacity: 0.75; }
+    .gallery-example { display: flex; flex-direction: column; gap: 8px; margin-bottom: 28px; }
+    .gallery-request { margin: 0; font-size: 14px; opacity: 0.75; }
+    .gallery-problems { margin: 0; padding: 12px; border-radius: 12px; background: #f5e3e1; color: #9f2f2f; font-size: 14px; }
+    .gallery-demo { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .gallery-demo > small { font-size: 12px; opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <main id="screen" class="gallery">
+    <header class="gallery-bar">
+      <h1>Набор графиков Cookish</h1>
+      <button type="button" data-theme-button="system" aria-pressed="true">Как в системе</button>
+      <button type="button" data-theme-button="light" aria-pressed="false">Светлая</button>
+      <button type="button" data-theme-button="dark" aria-pressed="false">Тёмная</button>
+    </header>
+    <section data-gallery="components"><h2>Компоненты</h2></section>
+    <section data-gallery="examples"><h2>Примеры панелей</h2></section>
+  </main>
+  <script type="module" src="gallery.js"></script>
+</body>
+</html>

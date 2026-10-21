@@ -1,0 +1,25 @@
+<!-- Запрос: Покажи КБЖУ за неделю против моих целей -->
+<c-dashboard v="1">
+  <h2>КБЖУ за неделю</h2>
+  <c-card title="Калории по дням" caption="Цель 2400 ккал в день">
+    <c-bars set="set_eaten" value="eaten_kcal" fn="sum" range="@last7d" by="day" goal="2400"></c-bars>
+  </c-card>
+  <h3>В среднем за день</h3>
+  <c-grid cols="2">
+    <c-card title="Калории">
+      <c-meter set="set_eaten" value="eaten_kcal" fn="avg" range="@last7d" goal="2400" goal-type="max"></c-meter>
+    </c-card>
+    <c-card title="Белки">
+      <c-meter set="set_eaten" value="eaten_protein" fn="avg" range="@last7d" goal="140"></c-meter>
+    </c-card>
+    <c-card title="Жиры">
+      <c-meter set="set_eaten" value="eaten_fat" fn="avg" range="@last7d" goal="80"></c-meter>
+    </c-card>
+    <c-card title="Углеводы">
+      <c-meter set="set_eaten" value="eaten_carbs" fn="avg" range="@last7d" goal="280"></c-meter>
+    </c-card>
+  </c-grid>
+  <c-card title="По дням">
+    <c-table set="set_eaten" columns="date,eaten_kcal,eaten_protein,eaten_fat,eaten_carbs" limit="5"></c-table>
+  </c-card>
+</c-dashboard>

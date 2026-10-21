@@ -1,0 +1,25 @@
+<!-- Запрос: Собери экран «Мой день»: вода, калории, вес и открытые покупки -->
+<c-dashboard v="1">
+  <h2>Мой день</h2>
+  <c-grid cols="2">
+    <c-card title="Вода">
+      <c-meter set="set_water" value="drunk" fn="sum" range="@today" goal="2000"></c-meter>
+    </c-card>
+    <c-card title="Калории">
+      <c-meter set="set_eaten" value="eaten_kcal" fn="sum" range="@today" goal="2400" goal-type="max"></c-meter>
+    </c-card>
+  </c-grid>
+  <section>
+    <h3>Вес</h3>
+    <c-card title="Последние дни">
+      <c-line set="set_weight" value="weightKg" fn="avg" range="@last14d" by="day"></c-line>
+    </c-card>
+  </section>
+  <section>
+    <h3>Покупки</h3>
+    <c-card title="Открытые запросы">
+      <c-list set="set_open_requests" columns="date,progress" limit="3"></c-list>
+    </c-card>
+  </section>
+  <c-empty>Шаги пока не ведутся: подключите счётчик, и они появятся здесь.</c-empty>
+</c-dashboard>

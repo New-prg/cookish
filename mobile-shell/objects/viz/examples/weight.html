@@ -1,0 +1,20 @@
+<!-- Запрос: Покажи, как меняется мой вес за месяц -->
+<c-dashboard v="1">
+  <h2>Вес за месяц</h2>
+  <p>Линия соединяет дни, когда вы взвешивались.</p>
+  <c-card title="Вес за 30 дней">
+    <c-line set="set_weight" value="weightKg" fn="avg" range="@last30d" by="day" area="yes"></c-line>
+  </c-card>
+  <c-grid cols="2">
+    <c-card title="Средний вес за 7 дней">
+      <c-stat set="set_weight" value="weightKg" fn="avg" range="@last7d" compare="yes" good="down"></c-stat>
+    </c-card>
+    <c-card title="Тренд">
+      <c-spark set="set_weight" value="weightKg" fn="avg" range="@last30d"></c-spark>
+    </c-card>
+  </c-grid>
+  <c-card title="Последние взвешивания">
+    <c-table set="set_weight" columns="date,weightKg" limit="5"></c-table>
+  </c-card>
+  <c-empty>Взвешивайтесь по утрам: так линия честнее.</c-empty>
+</c-dashboard>

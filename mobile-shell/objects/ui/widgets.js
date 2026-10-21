@@ -3,7 +3,9 @@
 import { aggregate, runQuery, runSeries } from "../core/query.js";
 import { objectsOfType, valueOf } from "../core/values.js";
 import { hrefFor, iconOf, nameOf } from "./runtime.js";
-import { empty, h, num, progressBar, weekdayShort } from "./dom.js";
+import { empty, h, num, progressBar } from "./dom.js";
+import "../viz/kit.js";
+import { rangeCaption } from "../viz/util.js";
 import { shownValue } from "./editors.js";
 import { rationDayBody, sportDayBody } from "./day.js";
 import { defaultView } from "./setview.js";
@@ -47,15 +49,20 @@ function setWidget(state, w, c) {
 
 const unitOf = (state, relKey) => (relKey ? state.relations[relKey]?.unit || "" : "");
 
+// The three displays of a set widget are the chart kit: c-list, c-stat or c-meter
+// (a goal makes it a meter), c-bars. They keep the class names the tests read:
+// .metric-value and .metric-of inside the number, the headline of the bars.
 const DISPLAYS = {
   list(state, w, set, c) {
     const rows = runQuery(state, set.props?.query || {}, c).rows;
     if (!rows.length) return empty("Пока пусто");
     const keys = set.props?.view?.relations || defaultView(state, set.props?.query?.source?.type).relations;
-    return h("div", { class: "list" }, rows.slice(0, 5).map((obj) => h("a", { class: "row", href: hrefFor(obj) },
-      h("span", { class: "row-icon", text: iconOf(state, obj) }),
-      h("span", { class: "row-main" }, h("span", { class: "row-title", text: nameOf(obj) }), h("span", { class: "row-sub", text: keys.map((k) => shownValue(state, obj, k, c)).filter(Boolean).join(" · ") })),
-    )), rows.length > 5 ? h("span", { class: "row-sub more", text: `и ещё ${rows.length - 5}` }) : null);
+    const list = h("c-list");
+    list.data = {
+      total: rows.length,
+      rows: rows.slice(0, 5).map((obj) => ({ id: obj.id, href: hrefFor(obj), icon: iconOf(state, obj), title: nameOf(obj), sub: keys.map((k) => shownValue(state, obj, k, c)).filter(Boolean).join(" · ") })),
+    };
+    return list;
   },
   number(state, w, set, c) {
     const agg = w.aggregate?.fn ? w.aggregate : { fn: "count" };
@@ -63,30 +70,25 @@ const DISPLAYS = {
     const value = aggregate(state, rows, agg, c);
     const unit = agg.fn === "count" ? "" : unitOf(state, agg.rel);
     const goal = Number(w.goal) > 0 ? Number(w.goal) : null;
-    return h("div", { class: "metric" },
-      h("p", { class: "metric-line" },
-        h("span", { class: "metric-value", text: value == null ? "—" : num(value) }),
-        h("span", { class: "metric-of", text: [goal ? `из ${num(goal)}` : "", unit, AGG_SUFFIX[agg.fn]].filter(Boolean).join(" ") }),
-      ),
-      goal ? progressBar(value || 0, goal) : null,
-    );
+    const el = h(goal ? "c-meter" : "c-stat");
+    el.data = { value, goal, unit, note: AGG_SUFFIX[agg.fn] };
+    return el;
   },
   bars(state, w, set, c) {
-    const series = runSeries(state, set.props?.query || {}, { dateRel: w.series?.dateRel || "date", valueRel: w.series?.valueRel, fn: w.series?.fn || "sum", range: w.series?.range || "@last7d" }, c);
-    const max = Math.max(Number(w.goal) || 0, ...series.map((p) => p.value || 0));
+    const range = w.series?.range || "@last7d";
     const fn = w.series?.fn || "sum";
+    const series = runSeries(state, set.props?.query || {}, { dateRel: w.series?.dateRel || "date", valueRel: w.series?.valueRel, fn, range }, c);
     const unit = fn === "count" ? "" : unitOf(state, w.series?.valueRel);
     const values = series.map((p) => p.value).filter((v) => v != null);
     const total = !values.length ? null : fn === "sum" || fn === "count" ? values.reduce((a, b) => a + b, 0) : values.reduce((a, b) => a + b, 0) / values.length;
-    return h("div", { class: "bars-wrap" },
-      h("p", { class: "metric-line" }, h("span", { class: "metric-value metric-small", text: total == null ? "—" : num(total) }), h("span", { class: "metric-of", text: [unit, fn === "sum" || fn === "count" ? "за 7 дней" : "в среднем за день"].filter(Boolean).join(" ") })),
-      h("div", { class: "bars", role: "img", "aria-label": series.map((p) => `${weekdayShort(p.date)} ${p.value == null ? "нет" : num(p.value)}`).join(", ") },
-        series.map((p) => {
-          const bar = h("span", { class: `bars-bar${p.value == null ? " is-empty" : ""}` });
-          bar.style.height = `${max > 0 && p.value ? Math.max(4, (p.value / max) * 100) : 4}%`;
-          return h("span", { class: `bars-col${p.date === c.today ? " is-today" : ""}` }, h("span", { class: "bars-track" }, bar), h("span", { class: "bars-label", text: weekdayShort(p.date) }));
-        }),
-      ),
-    );
+    const headline = h("c-stat", { class: "is-small" });
+    headline.data = { value: total, unit, note: fn === "sum" || fn === "count" ? rangeCaption(range) : "в среднем за день" };
+    const bars = h("c-bars");
+    bars.data = {
+      by: "day", unit, fn, goal: Number(w.goal) > 0 ? Number(w.goal) : null, label: AGG_NAMES[fn],
+      buckets: series.map((p) => p.date),
+      series: [{ key: "value", label: AGG_NAMES[fn], color: 0, values: series.map((p) => p.value) }],
+    };
+    return h("div", { class: "bars-wrap" }, headline, bars);
   },
 };
