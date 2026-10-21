@@ -6,6 +6,7 @@
 import { openObjectStore } from "./store.js";
 import { functionNames } from "./formula.js";
 import { FORMATS, DIMENSIONS } from "./schema.js";
+import { homeOf } from "./values.js";
 
 export const BUILDER_OPS = Object.freeze(["defineRelation", "defineType", "createSet", "addWidget"]);
 const MAX_OPS = 30;
@@ -21,7 +22,7 @@ export function spaceOutline(state) {
       ...(r.types ? { types: r.types } : {}),
     })),
     sets: Object.values(state.objects).filter((o) => o.type === "set" && !o.archivedAt).map((o) => ({ id: o.id, name: o.name })),
-    widgets: (state.objects[state.meta.home]?.props?.widgets || []).map((w) => ({ title: w.title, kind: w.kind })),
+    widgets: (homeOf(state)?.props?.widgets || []).map((w) => ({ title: w.title, kind: w.kind })),
     counts: Object.fromEntries(Object.values(state.types).map((t) => [t.key, Object.values(state.objects).filter((o) => o.type === t.key && !o.archivedAt).length]).filter(([, n]) => n)),
   };
 }
@@ -54,7 +55,8 @@ export function translate(state, ops) {
   const problems = [];
   const storeOps = [];
   const refs = new Map();
-  const home = state.objects[state.meta.home];
+  const home = homeOf(state);
+  const stamp = Date.now().toString(36);
   const widgets = [...(home?.props?.widgets || [])];
   let widgetsChanged = false;
   if (!Array.isArray(ops)) return { storeOps, problems: ["ops должен быть списком"] };
@@ -74,7 +76,7 @@ export function translate(state, ops) {
         break;
       }
       case "createSet": {
-        const id = `set_${String(op.ref || op.name || index).toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 30)}_${index}`;
+        const id = `set_${String(op.ref || op.name || index).toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 30)}_${stamp}_${index}`;
         refs.set(op.ref || op.name, id);
         storeOps.push({
           op: "create", type: "set", id, name: String(op.name || "Набор"),
@@ -89,7 +91,7 @@ export function translate(state, ops) {
         if (!home) { problems.push(`${where}: нет главной панели`); break; }
         const setId = refs.get(op.set) || (state.objects[op.set]?.type === "set" ? op.set : null);
         if (!setId) { problems.push(`${where}: нет набора «${op.set}»`); break; }
-        const widget = { id: `w_${Date.now().toString(36)}_${index}`, kind: "set", title: String(op.title || ""), setId, display: op.display || "list" };
+        const widget = { id: `w_${stamp}_${index}`, kind: "set", title: String(op.title || ""), setId, display: op.display || "list" };
         if (op.aggregate) widget.aggregate = op.aggregate;
         if (op.series) widget.series = op.series;
         if (op.goal != null) widget.goal = Number(op.goal);
@@ -150,6 +152,7 @@ export async function buildProposal({ provider, state, request, today, history =
         ok: true,
         usage,
         attempts: attempt + 1,
+        answer: content,
         proposal: { reply: String(parsed.reply || ""), summary: String(parsed.summary || "Изменения пространства").slice(0, 80), ops: storeOps },
       };
     }

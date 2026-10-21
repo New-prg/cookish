@@ -381,3 +381,8 @@ body:has(.sheet-backdrop) .toasts { top: calc(12px + env(safe-area-inset-top)); 
 @keyframes fade { from { opacity: 0; } }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* Собрать с ИИ */
+.builder-reply { margin: 0; padding: 12px 14px; border-radius: var(--radius-md); background: var(--surface); border: 1px solid var(--line); line-height: 1.4; }
+.builder-note { margin: 0; line-height: 1.4; }
+.builder-error { color: var(--red); }

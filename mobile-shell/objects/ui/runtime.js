@@ -2,7 +2,7 @@
 // undo, navigation, and small reads over the schema.
 import { openObjectStore } from "../core/store.js";
 import "../core/domain.js";
-import { objectsOfType } from "../core/values.js";
+import { homeOf } from "../core/values.js";
 import { resolveDate } from "../core/query.js";
 import { localNow, toast } from "./dom.js";
 
@@ -82,14 +82,6 @@ export const isNumeric = (state, relKey) => {
 };
 export const dateRelationOf = (state, typeKey) => (state.types[typeKey]?.relations || []).find((k) => ["date", "datetime"].includes(state.relations[k]?.format)) || null;
 
-// The home is the dashboard named in meta; the store has no op to write meta,
-// so a space without one falls back to its first dashboard.
-export function homeDashboard(state) {
-  const named = state.objects[state.meta?.home];
-  if (named && !named.archivedAt && named.type === "dashboard") return named;
-  return objectsOfType(state, "dashboard")[0] || null;
-}
-
 const DEFAULT_WIDGETS = [
   { id: "w_ration", kind: "ration-today", title: "Сегодня в Рационе" },
   { id: "w_sport", kind: "sport-today", title: "Спорт сегодня" },
@@ -97,7 +89,7 @@ const DEFAULT_WIDGETS = [
 ];
 
 export function ensureHome() {
-  if (homeDashboard(store.state())) return;
+  if (homeOf(store.state())) return;
   store.apply({ op: "create", type: "dashboard", name: "Главная", props: { widgets: DEFAULT_WIDGETS } }, { actor: "human", summary: "Главная панель" });
 }
 

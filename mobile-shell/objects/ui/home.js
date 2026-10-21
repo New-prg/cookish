@@ -1,15 +1,15 @@
 // The home: the dashboard object and its widgets, with an edit mode to add,
 // remove and reorder them.
-import { act, ctx, dateRelationOf, homeDashboard, isNumeric, local, nameOf, rerender, store } from "./runtime.js";
+import { act, ctx, dateRelationOf, isNumeric, local, nameOf, rerender, store } from "./runtime.js";
 import { fill, dayLong, empty, field, h, icon, openSheet, segmented, toast } from "./dom.js";
 import { AGG_NAMES, DISPLAY_NAMES, WIDGET_KINDS } from "./widgets.js";
 import { defaultView, PERIODS } from "./setview.js";
-import { objectsOfType } from "../core/values.js";
+import { homeOf, objectsOfType } from "../core/values.js";
 
 export function homeScreen() {
   const state = store.state();
   const c = ctx();
-  const dash = homeDashboard(state);
+  const dash = homeOf(state);
   const mode = local("home", () => ({ editing: false }));
   const widgets = dash?.props?.widgets || [];
   const save = (next, summary) => act({ op: "update", id: dash.id, props: { widgets: next } }, { summary });

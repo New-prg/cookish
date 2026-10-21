@@ -37,6 +37,14 @@ export function objectsOfType(state, typeKey) {
   return cache.byType.get(typeKey) || [];
 }
 
+// The home is the dashboard named in meta, else the first dashboard: the store
+// has no op to write meta.
+export function homeOf(state) {
+  const named = state.objects[state.meta?.home];
+  if (named && !named.archivedAt && named.type === "dashboard") return named;
+  return objectsOfType(state, "dashboard")[0] || null;
+}
+
 export function profileOf(state) {
   const cache = cacheFor(state);
   if (cache.profile === undefined) cache.profile = objectsOfType(state, "profile")[0] || null;

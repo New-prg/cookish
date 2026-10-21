@@ -4,6 +4,7 @@ import { act, freeKey, go, hrefFor, iconOf, local, nameOf, newObjectProps, reren
 import { fill, empty, field, h, icon, openSheet, pageHeader, toast } from "./dom.js";
 import { FORMAT_NAMES, pickRelation } from "./editors.js";
 import { defaultView } from "./setview.js";
+import { builderSheet } from "./builder.js";
 
 const isLibraryType = (t) => !t.hidden && !["set", "dashboard"].includes(t.layout);
 const libraryTypes = (state) => Object.values(state.types).filter(isLibraryType)
@@ -93,12 +94,12 @@ export function newTypeScreen() {
   ];
 }
 
-// The ＋ menu. «Собрать с ИИ» is a slot the builder fills in later.
+// The ＋ menu.
 export const CREATE_ACTIONS = [
   { id: "object", title: "Объект", sub: "Продукт, запрос, запись трекера", run: (close) => { close(); pickTypeSheet(); } },
   { id: "type", title: "Новый тип", sub: "Свой вид объектов со своими связями", run: (close) => { close(); go("#/new-type"); } },
   { id: "set", title: "Новый набор", sub: "Объекты типа с фильтром и видом", run: (close) => { close(); newSetSheet(); } },
-  { id: "builder", title: "Собрать с ИИ", sub: "Скоро: опишите словами, что отслеживать", run: null },
+  { id: "builder", title: "Собрать с ИИ", sub: "Опишите словами, что отслеживать", run: (close) => { close(); builderSheet(); } },
 ];
 
 export function createSheet() {
