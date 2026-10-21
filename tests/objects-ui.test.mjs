@@ -1,92 +1,8 @@
 import assert from "node:assert/strict";
-import { after, before, test } from "node:test";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
-import { serveShell } from "../scripts/serve-objects.mjs";
+import { test } from "node:test";
+import { back, baseUrl, eatenKcal, openApp, rationWidget, shot, tapNav, text, useUi, waitText } from "./objects-ui-helpers.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const shotsDir = path.join(root, "output", "objects-shots");
-const VIEWPORT = { width: 390, height: 844 };
-
-let server;
-let baseUrl;
-let browser;
-
-before(async () => {
-  server = await serveShell(0);
-  baseUrl = `http://127.0.0.1:${server.address().port}/objects.html`;
-  browser = await chromium.launch();
-  fs.rmSync(shotsDir, { recursive: true, force: true });
-  fs.mkdirSync(path.join(shotsDir, "full"), { recursive: true });
-});
-
-after(async () => {
-  await browser?.close();
-  await new Promise((resolve) => server.close(resolve));
-});
-
-async function openApp({ colorScheme = "light", storageState, viewport = VIEWPORT } = {}) {
-  const context = await browser.newContext({ viewport, colorScheme, storageState });
-  const page = await context.newPage();
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
-  page.on("console", (message) => { if (message.type() === "error") errors.push(`console: ${message.text()}`); });
-  await page.goto(baseUrl, { waitUntil: "load" });
-  await page.locator("#screen > *").first().waitFor();
-  return { context, page, errors };
-}
-
-// Layout defects a screenshot can hide: the page scrolling sideways, content
-// past the right edge outside a scroller, and tap targets under 44 px.
-async function audit(page, name) {
-  const problems = await page.evaluate(() => {
-    const out = [];
-    const width = document.documentElement.clientWidth;
-    if (document.documentElement.scrollWidth > width + 1) out.push(`page scrolls sideways: ${document.documentElement.scrollWidth} > ${width}`);
-    const inScroller = (el) => {
-      for (let p = el.parentElement; p; p = p.parentElement) {
-        const o = getComputedStyle(p).overflowX;
-        if (o === "auto" || o === "scroll") return true;
-      }
-      return false;
-    };
-    const label = (el) => `${el.tagName.toLowerCase()}.${el.className || ""} «${(el.getAttribute("aria-label") || el.textContent || el.value || "").trim().slice(0, 30)}»`;
-    for (const el of document.querySelectorAll("#screen *, #nav *, .sheet *")) {
-      const rect = el.getBoundingClientRect();
-      if (!rect.width || !rect.height) continue;
-      if (rect.right > width + 1 && !inScroller(el)) out.push(`past the right edge: ${label(el)} right=${Math.round(rect.right)}`);
-      const interactive = el.matches("a[href], button, input:not([type=hidden]), select, textarea, summary, [role=switch], [role=checkbox]");
-      if (interactive && getComputedStyle(el).visibility !== "hidden" && (rect.height < 43.5 || rect.width < 43.5)) out.push(`small tap target ${Math.round(rect.width)}x${Math.round(rect.height)}: ${label(el)}`);
-    }
-    return out;
-  });
-  assert.deepEqual(problems, [], `${name}: layout problems`);
-}
-
-// A viewport shot as the person sees it, and the whole page with the bottom
-// navigation moved into the flow so it does not cover the middle.
-async function shot(page, name) {
-  await page.waitForTimeout(250);
-  await audit(page, name);
-  await page.screenshot({ path: path.join(shotsDir, `${name}.png`) });
-  const style = await page.addStyleTag({ content: ".nav { position: static !important; } .toasts { display: none !important; }" });
-  await page.screenshot({ path: path.join(shotsDir, "full", `${name}.png`), fullPage: true });
-  await style.evaluate((node) => node.remove());
-}
-
-const text = (locator) => locator.innerText().then((s) => s.replace(/\s+/g, " ").trim());
-const rationWidget = (page) => page.locator('[data-widget="ration-today"]');
-const eatenKcal = async (page) => Number((await text(rationWidget(page).locator(".metric-value"))).replace(/\s/g, ""));
-
-async function back(page) {
-  await page.getByRole("button", { name: "Назад" }).click();
-}
-
-async function tapNav(page, name) {
-  await page.locator("#nav").getByText(name, { exact: true }).click();
-}
+useUi();
 
 test("a person starts from the example, marks a meal, builds a water tracker and buys from a request", async () => {
   const { context, page, errors } = await openApp();
@@ -124,7 +40,7 @@ test("a person starts from the example, marks a meal, builds a water tracker and
   await sheet.getByPlaceholder("мл, шаги, ₽").fill("мл");
   await shot(page, "new-relation-light");
   await sheet.getByRole("button", { name: "Добавить связь" }).click();
-  assert.match(await text(page.locator("#screen")), /Выпито Число, мл · новая/);
+  await waitText(page.locator("#screen"), /Выпито Число, мл · новая/);
   await shot(page, "new-type-light");
   await page.getByRole("button", { name: "Создать тип" }).click();
   await page.locator(".hero-title", { hasText: "Вода" }).waitFor();
@@ -158,7 +74,7 @@ test("a person starts from the example, marks a meal, builds a water tracker and
   await sheet.getByRole("button", { name: "Добавить" }).click();
   await page.getByRole("button", { name: "Готово" }).click();
   const water = page.locator('[data-widget="set"]', { hasText: "Вода сегодня" });
-  assert.equal(await text(water.locator(".metric-value")), "550");
+  await waitText(water.locator(".metric-value"), /^550$/);
   assert.match(await text(water.locator(".metric-of")), /из 2 000 мл/);
   await water.scrollIntoViewIfNeeded();
   await shot(page, "home-widgets-light");
@@ -213,7 +129,7 @@ test("an empty space starts with an empty home and keeps a plan change undoable"
   const { context, page, errors } = await openApp();
   await page.getByRole("button", { name: "Пустое пространство" }).click();
   await page.locator('[data-widget="ration-today"]').waitFor();
-  assert.match(await text(page.locator('[data-widget="ration-today"]')), /в Рационе ничего нет/);
+  await waitText(page.locator('[data-widget="ration-today"]'), /в Рационе ничего нет/);
 
   await page.getByRole("button", { name: "Создать" }).click();
   await page.getByRole("button", { name: /^Объект/ }).click();
@@ -224,6 +140,86 @@ test("an empty space starts with an empty home and keeps a plan change undoable"
   await page.locator(".toast").getByRole("button", { name: "Отменить" }).click();
   await page.locator(".toast", { hasText: "Отменено" }).waitFor();
   assert.equal(await page.getByLabel("Название").inputValue(), "", "undo of a journaled change restores the name");
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+// The Сборщик's answers as routerai.ru would send them, picked by the last
+// request; the page fetches the provider directly, so CORS headers matter.
+const builderAnswer = (request) => {
+  if (/инсулин/i.test(request)) return { reply: "Дозу инсулина подбирает врач. Могу собрать дневник сахара, если хотите.", summary: "", ops: [] };
+  const goal = /2,5/.test(request) ? 2500 : 2000;
+  return {
+    reply: `Собрал «Воду»: записи с объёмом и виджет, цель ${goal} мл.`,
+    summary: "Тип «Вода», набор и виджет",
+    ops: [
+      { op: "defineRelation", key: "water_ml", name: "Выпито, мл", format: "number", unit: "мл", dimension: "volume", min: 0, max: 5000 },
+      { op: "defineType", key: "water", name: "Вода", icon: "💧", fact: true, relations: ["at", "water_ml"] },
+      { op: "createSet", ref: "water_today", name: "Вода сегодня", source: { type: "water" }, filters: [{ rel: "at", op: "within", value: "@today" }], aggregates: [{ rel: "water_ml", fn: "sum" }] },
+      { op: "addWidget", title: "Вода сегодня", set: "water_today", display: "number", aggregate: { rel: "water_ml", fn: "sum" }, goal },
+    ],
+  };
+};
+
+async function fakeProvider(context, sent) {
+  const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS" };
+  await context.route("https://routerai.ru/**", async (route) => {
+    if (route.request().method() === "OPTIONS") { await route.fulfill({ status: 204, headers: cors }); return; }
+    const body = route.request().postDataJSON();
+    sent.push(body);
+    const answer = builderAnswer(body.messages.at(-1).content);
+    await route.fulfill({ status: 200, headers: cors, contentType: "application/json", body: JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify(answer) } }], usage: {} }) });
+  });
+}
+
+test("the Сборщик builds a tracker from words: refine, apply, undo, and a refusal", async () => {
+  const { context, page, errors } = await openApp();
+  await page.getByRole("button", { name: "Начать с примера" }).click();
+  await rationWidget(page).waitFor();
+  const openBuilder = async () => {
+    await page.getByRole("button", { name: "Создать" }).click();
+    await page.getByRole("button", { name: /Собрать с ИИ/ }).click();
+  };
+
+  await openBuilder();
+  await page.locator(".sheet", { hasText: "нужен ключ ИИ" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Собрать", exact: true }).isDisabled(), true, "no key, no request");
+  await page.keyboard.press("Escape");
+
+  const sent = [];
+  await fakeProvider(context, sent);
+  await page.evaluate(() => localStorage.setItem("cookish.ai.key.test", "test-key"));
+  await openBuilder();
+  await shot(page, "builder-sheet-light");
+  await page.getByLabel("Что отслеживать").fill("Хочу считать воду, 2 литра в день");
+  await page.getByRole("button", { name: "Собрать", exact: true }).click();
+  const changes = page.getByRole("region", { name: "Что добавится" });
+  await changes.waitFor();
+  assert.match(await text(changes), /Выпито, мл.*Вода.*записи вносите вы.*Вода сегодня.*Виджет на главной.*цель 2 000/);
+  assert.equal(await page.locator(".widget", { hasText: "Вода сегодня" }).count(), 0, "nothing is written before the person applies");
+
+  await page.getByLabel("Что отслеживать").fill("Цель 2,5 литра");
+  await page.getByRole("button", { name: "Уточнить" }).click();
+  await changes.filter({ hasText: /цель 2\s500/ }).waitFor();
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1].messages.slice(1).map((m) => m.role), ["user", "assistant", "user"], "the refinement carries the first request and answer");
+  assert.doesNotMatch(JSON.stringify(sent), /Овсяные хлопья|Куриная грудка|Творог/, "the text of objects never leaves the device");
+  await shot(page, "builder-proposal-light");
+
+  await page.getByRole("button", { name: "Добавить" }).click();
+  const widget = page.locator(".widget", { hasText: "Вода сегодня" });
+  await widget.waitFor();
+  assert.match(await text(widget), /из 2 500 мл/);
+  await page.locator(".toast").getByRole("button", { name: "Отменить" }).click();
+  await page.locator(".toast", { hasText: "Отменено" }).waitFor();
+  assert.equal(await widget.count(), 0, "undo removes the widget");
+  assert.equal(await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem("cookish.objects.v1")).customTypes || {}).length), 0, "and the type");
+
+  await openBuilder();
+  await page.getByLabel("Что отслеживать").fill("Сколько инсулина колоть на 60 г углеводов");
+  await page.getByRole("button", { name: "Собрать", exact: true }).click();
+  await page.locator(".builder-reply", { hasText: "подбирает врач" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Добавить" }).count(), 0, "a refusal offers nothing to apply");
   assert.deepEqual(errors, []);
   await context.close();
 });
@@ -245,8 +241,8 @@ test("day views edit today's plan, record a discrepancy and mark sport; sets swi
   await page.locator(".toast", { hasText: "160" }).waitFor();
   await shot(page, "ration-edit-light");
   await page.getByRole("button", { name: "Готово" }).click();
+  await waitText(page.locator("#screen"), /У этого дня свой план/);
   assert.notEqual(await text(page.locator("article.meal").first().locator(".meal-kcal")), kcalBefore, "a new amount changes the meal kcal");
-  assert.match(await text(page.locator("#screen")), /У этого дня свой план/);
 
   const mealName = await page.locator("article.meal.state-unmarked").first().getAttribute("data-meal");
   const meal = page.locator(`article.meal[data-meal="${mealName}"]`);
@@ -265,13 +261,13 @@ test("day views edit today's plan, record a discrepancy and mark sport; sets swi
   await shot(page, "session-changed-sheet-light");
   await sheet.getByRole("button", { name: "Записать" }).click();
   await session.getByText("фактически 25 мин").waitFor();
-  assert.equal(await text(page.locator(".day-card .metric-value")), "25");
+  await waitText(page.locator(".day-card .metric-value"), /^25$/);
   await page.getByRole("button", { name: "+ Активность" }).click();
   await sheet.getByRole("button", { name: "Ходьба", exact: true }).click();
   await sheet.getByLabel("Минут").fill("20");
   await sheet.getByRole("button", { name: "Записать" }).click();
   await page.locator(".day-card a.row", { hasText: "Ходьба" }).waitFor();
-  assert.equal(await text(page.locator(".day-card .metric-value")), "45", "an activity adds its minutes");
+  await waitText(page.locator(".day-card .metric-value"), /^45$/);
   await shot(page, "sport-marked-light");
 
   await page.goto(`${baseUrl}#/library`);
