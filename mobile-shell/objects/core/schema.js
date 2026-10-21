@@ -94,18 +94,20 @@ export const BUILTIN_RELATIONS = Object.freeze([
   rel("total", "Потрачено", "formula", { dimension: "money", unit: "₽", formula: "sum(backlinks('purchase', 'request'), 'price')" }),
   rel("progress", "Куплено позиций", "formula", { formula: "count(items, 'isBought') + ' из ' + count(items)" }),
 
-  // Профиль
+  // Профиль: границы те же, что у проверки профиля в текущем приложении. Минимум
+  // в 1200 ккал относится к плану ассистента (проверка дня), не к цели человека.
   rel("ageGroup", "Возраст", "select", { options: [opt("child", "Ребёнок"), opt("teen", "Подросток"), opt("adult", "Взрослый"), opt("senior", "Пожилой")] }),
-  rel("heightCm", "Рост, см", "number", { min: 50, max: 250 }),
-  rel("weightKg", "Вес, кг", "number", { min: 20, max: 400, dimension: "mass", unit: "кг" }),
+  rel("heightCm", "Рост, см", "number", { min: 1, max: 300 }),
+  rel("weightKg", "Вес, кг", "number", { min: 1, max: 1000, dimension: "mass", unit: "кг" }),
   rel("goal", "Цель", "select", { options: [opt("lose", "снизить вес"), opt("keep", "держать вес"), opt("gain", "набрать вес")] }),
-  rel("mealsPerDay", "Приёмов в день", "number", { min: 1, max: 10 }),
+  rel("mealsPerDay", "Приёмов в день", "number", { min: 1, max: 12 }),
   rel("budget", "Бюджет на неделю", "number", { min: 0, dimension: "money", unit: "₽" }),
-  rel("targetCalories", "Цель, ккал", "number", { min: 1200, max: 6000, dimension: "energy", unit: "ккал", guarded: true }),
-  rel("targetProtein", "Цель по белку, г", "number", { min: 0, max: 400, dimension: "mass", unit: "г", guarded: true }),
-  rel("targetFat", "Цель по жирам, г", "number", { min: 0, max: 400, dimension: "mass", unit: "г", guarded: true }),
-  rel("targetCarbs", "Цель по углеводам, г", "number", { min: 0, max: 1000, dimension: "mass", unit: "г", guarded: true }),
+  rel("targetCalories", "Цель, ккал", "number", { min: 0, dimension: "energy", unit: "ккал", guarded: true }),
+  rel("targetProtein", "Цель по белку, г", "number", { min: 0, dimension: "mass", unit: "г", guarded: true }),
+  rel("targetFat", "Цель по жирам, г", "number", { min: 0, dimension: "mass", unit: "г", guarded: true }),
+  rel("targetCarbs", "Цель по углеводам, г", "number", { min: 0, dimension: "mass", unit: "г", guarded: true }),
   rel("excluded", "Исключённые продукты", "objects", { types: ["product"] }),
+  rel("excludedTerms", "Не ест, слова", "text"),
   rel("preferences", "Предпочтения", "text"),
 
   // Системные: наборы и панели
@@ -131,7 +133,7 @@ export const BUILTIN_TYPES = Object.freeze([
   type("request", "Запрос", "Запросы", "🛒", ["status", "items", "progress", "total", "date"], { area: "shopping" }),
   type("request_item", "Позиция запроса", "Позиции запросов", "▫", ["request", "product", "quantity", "unit", "note", "bought", "isBought"], { area: "shopping", hidden: true }),
   type("purchase", "Покупка", "Покупки", "🧾", ["date", "request", "item", "product", "quantity", "price"], { area: "shopping", fact: true, layout: "entry" }),
-  type("profile", "Профиль", "Профиль", "👤", ["ageGroup", "heightCm", "weightKg", "goal", "mealsPerDay", "budget", "targetCalories", "targetProtein", "targetFat", "targetCarbs", "excluded", "preferences"], { area: "system", singleton: true }),
+  type("profile", "Профиль", "Профиль", "👤", ["ageGroup", "heightCm", "weightKg", "goal", "mealsPerDay", "budget", "targetCalories", "targetProtein", "targetFat", "targetCarbs", "excluded", "excludedTerms", "preferences"], { area: "system", singleton: true }),
   type("set", "Набор", "Наборы", "🗂", ["description", "query", "view"], { area: "system", layout: "set" }),
   type("dashboard", "Панель", "Панели", "🏠", ["description", "widgets"], { area: "system", layout: "dashboard" }),
   type("note", "Заметка", "Заметки", "📝", ["description", "tags"], { area: "custom", layout: "note" }),

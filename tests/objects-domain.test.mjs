@@ -4,14 +4,15 @@ import { makeState, TODAY as FIXTURE_TODAY } from "../scripts/ai-lab/fixture.mjs
 import { plannedRationRequestItems, readRationDay, readRationDayActual, readRationDayNutrition } from "../mobile-shell/core/ration-domain.js";
 import { readSportDay, readSportDayEnergy } from "../mobile-shell/core/sport-domain.js";
 import { memoryStorage as legacyStorage, openLocalData, prepareState, responseItemTotal } from "../mobile-shell/core/local-data.js";
-import { KBJU_GATE as LEGACY_GATE } from "../mobile-shell/core/proposals.js";
+import { KBJU_GATE as LEGACY_GATE, gateMeals } from "../mobile-shell/core/proposals.js";
+import { weekProblems as legacyWeekProblems } from "../mobile-shell/core/safety.js";
 import { record } from "../mobile-shell/core/replay.js";
 import { openObjectStore } from "../mobile-shell/objects/core/store.js";
 import { valueOf } from "../mobile-shell/objects/core/values.js";
 import { runQuery } from "../mobile-shell/objects/core/query.js";
 import {
   KBJU_GATE, dayActual, discrepancyOps, editableDayOps, markBoughtOps, markFor, markMealOps, markSessionOps,
-  newWeekOps, planDay, requestFromPlanOps, shiftDate, sportDay,
+  newWeekOps, planDay, requestFromPlanOps, shiftDate, sportDay, weekProblems,
 } from "../mobile-shell/objects/core/domain.js";
 import { LEGACY_KEY, demoLegacyState, importLegacy, legacyToObjects } from "../mobile-shell/objects/core/migrate.js";
 
@@ -203,7 +204,8 @@ test("the demo covers what parity has to prove", () => {
   assert.equal(space.objects.request_demo_1.props.status, "open");
   assert.equal(space.objects.request_demo_2.props.status, "done");
   assert.deepEqual(space.objects.profile.props.excluded, ["product_tofu"]);
-  assert.match(space.objects.profile.props.preferences, /Не ест: кинза/);
+  assert.equal(space.objects.profile.props.excludedTerms, "тофу, кинза");
+  assert.equal(space.objects.profile.props.preferences, "без острого\nРежим дня: работа 9–18");
   assert.ok(space.objects.product_kefir.archivedAt, "a deleted product is archived");
   assert.deepEqual(space.meta.importIssues, []);
 });
@@ -406,4 +408,132 @@ test("the home dashboard and its sets run", () => {
   assert.equal(runQuery(state, state.objects.set_purchases.props.query, ctx).totals["sum:price"], 120 + 90 + 420 + 150 + 75, "purchases of the last 7 days");
   const grouped = runQuery(state, state.objects.set_requests.props.query, ctx).groups;
   assert.deepEqual(grouped.map((group) => group.key), ["open", "done"]);
+});
+
+// A week plan of seven identical days, one meal of `grams` of oats each.
+function weekOps(prefix, from, grams, { dayArea = "ration", weekArea = "ration" } = {}) {
+  const ops = [];
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const id = (type) => `${prefix}_${type}_${index}`;
+    ops.push(
+      { op: "create", type: "portion", id: id("p"), name: "Овсяные хлопья", props: { product: "product_oats", amount: grams, unit: "г" } },
+      { op: "create", type: "meal", id: id("m"), name: "Завтрак", props: { time: "08:00", items: [id("p")], slot: id("m") } },
+      { op: "create", type: "day_plan", id: id("d"), name: `День ${index + 1}`, props: { cycleIndex: index, meals: [id("m")], ...(dayArea ? { area: dayArea } : {}) } },
+    );
+    return id("d");
+  });
+  ops.push({ op: "create", type: "week_plan", id: `${prefix}_w`, name: "Неделя", props: { area: weekArea, effectiveFrom: from, anchor: from, weekdayBinding: false, days } });
+  return ops;
+}
+
+test("rule: the КБЖУ gate of the assistant takes the area from the week plan, and a day without an area is refused", () => {
+  const store = openStore(legacyToObjects(demoLegacyState(TODAY), { today: TODAY, now: NOW }));
+  const from = shiftDate(TODAY, 30);
+  // The review scenario: one thin meal, no area on the day, the area on the week.
+  const hidden = store.apply(weekOps("hid", from, 27, { dayArea: null }), { actor: "ai" });
+  assert.equal(hidden.ok, false, "a thin day without an area does not slip through");
+  assert.match(hidden.reason, /нет раздела/);
+  assert.equal(store.state().objects.hid_w, undefined, "a refused batch writes nothing");
+
+  const mismatched = store.apply(weekOps("mis", from, 27, { dayArea: "sport" }), { actor: "ai" });
+  assert.match(mismatched.reason, /ниже безопасного минимума/, "a day listed in a ration week is a ration day");
+
+  const thin = store.apply(weekOps("thin", from, 27), { actor: "ai" });
+  assert.match(thin.reason, /ниже безопасного минимума/, "a week the assistant creates is gated through its days");
+  assert.equal(store.apply(weekOps("thin", from, 27)).ok, true, "a person may");
+
+  // An existing future week: the assistant swaps one of its days for a thin one.
+  const week = store.state().objects.thin_w;
+  const swap = store.apply([
+    { op: "create", type: "portion", id: "sw_p", name: "Овсяные хлопья", props: { product: "product_oats", amount: 5, unit: "г" } },
+    { op: "create", type: "meal", id: "sw_m", name: "Завтрак", props: { time: "08:00", items: ["sw_p"], slot: "sw_m" } },
+    { op: "create", type: "day_plan", id: "sw_d", name: "Тонкий", props: { area: "ration", cycleIndex: 0, meals: ["sw_m"] } },
+    { op: "update", id: week.id, props: { days: ["sw_d", ...week.props.days.slice(1)] } },
+  ], { actor: "ai" });
+  assert.match(swap.reason, /ниже безопасного минимума/, "a week plan updated by the assistant is gated through its days");
+});
+
+test("rule: excluded products match the words of the Profile in product names, like the current app", () => {
+  const legacy = demoLegacyState(TODAY);
+  const space = legacyToObjects(legacy, { today: TODAY, now: NOW });
+  assert.equal(space.objects.profile.props.excludedTerms, "тофу, кинза", "the words are kept as the person wrote them");
+  assert.deepEqual(space.objects.profile.props.excluded, ["product_tofu"]);
+  const store = openStore(space);
+  const date = shiftDate(TODAY, 4);
+  assert.equal(store.apply(editableDayOps(store.state(), "ration", date).ops).ok, true);
+  const meal = store.state().objects[planDay(store.state(), "ration", date).items[1]];
+  const add = (name, id) => [
+    { op: "create", type: "product", id: `${id}_prod`, name, props: { unit: "г", kcal100: 60, protein100: 5, fat100: 2, carbs100: 5 } },
+    { op: "create", type: "portion", id: `${id}_por`, name, props: { product: `${id}_prod`, amount: 50, unit: "г" } },
+    { op: "update", id: meal.id, props: { items: [...meal.props.items, `${id}_por`] } },
+  ];
+  const legacyFlags = (name) => gateMeals(legacy, [{ items: [{ id: "i", productId: "", name }] }]).problems.some((problem) => /исключённый/.test(problem));
+  const cases = [["Тофу копчёный", "smoked", true], ["Кинза свежая", "herb", true], ["  КИНЗА   свежая", "spaced", true], ["Груша", "pear", false]];
+  for (const [name, id, flagged] of cases) {
+    assert.equal(legacyFlags(name), flagged, `${name}: the current app`);
+    const result = store.apply(add(name, id), { actor: "ai" });
+    assert.equal(/исключённый продукт/.test(result.reason || ""), flagged, `${name}: ${result.reason}`);
+    assert.equal(result.ok, !flagged, `${name}: ${result.reason}`);
+  }
+});
+
+test("import: values the current app accepts are kept, the rest is listed", () => {
+  const demo = demoLegacyState(TODAY);
+  Object.assign(demo.ration.profile, { weightKg: 18, heightCm: 300, mealsPerDay: 12, targetCalories: 1100 });
+  const space = legacyToObjects(demo, { today: TODAY, now: NOW });
+  assert.deepEqual(space.meta.importIssues, []);
+  assert.deepEqual(["weightKg", "heightCm", "mealsPerDay", "targetCalories"].map((key) => space.objects.profile.props[key]), [18, 300, 12, 1100]);
+  assert.equal(sportDay(space, shiftDate(TODAY, -1), { today: TODAY }).weightKnown, true, "burned energy is known for 18 kg");
+  const store = openStore(space);
+  assert.equal(store.apply({ op: "update", id: "profile", props: { targetCalories: 1100 } }).ok, true, "a person sets a low target");
+  assert.match(store.apply({ op: "update", id: "profile", props: { targetCalories: 1500 } }, { actor: "ai" }).reason, /меняет только человек/, "the assistant never does");
+
+  demo.ration.versions[0].cycle.days[0].meals[0].time = "8:00";
+  const listed = legacyToObjects(demo, { today: TODAY, now: NOW }).meta.importIssues;
+  assert.ok(listed.length >= 1 && listed.every((issue) => /Время.*8:00/.test(issue)), listed.join("; "));
+  const storage = memoryStorage({ [LEGACY_KEY]: JSON.stringify(demo) });
+  const result = importLegacy(openObjectStore({ storage, today: () => TODAY }), storage);
+  assert.deepEqual(result.issues, listed, "the import hands the list to the screen");
+});
+
+test("parity: the weekly loss gate against core/safety.js", () => {
+  const profiles = [
+    {},
+    { weightKg: 50, heightCm: 190 },
+    { weightKg: 50, heightCm: 190, ageGroup: "Пожилой" },
+    { weightKg: 90, heightCm: 165 },
+    { weightKg: 60, heightCm: 0 },
+    { ageGroup: "Ребёнок" },
+  ];
+  const withoutPlan = (legacy) => ({ ...legacy, ration: { ...legacy.ration, versions: [], specialDays: {} } });
+  const dateSets = [[TODAY], [shiftDate(TODAY, 2)], datesFrom(shiftDate(TODAY, -3), 12), [shiftDate(TODAY, 30)]];
+  let blocked = 0;
+  let passed = 0;
+  for (const base of [demoLegacyState(TODAY), withoutPlan(demoLegacyState(TODAY))]) {
+    for (const profile of profiles) {
+      const legacy = prepareState({ ...base, ration: { ...base.ration, profile: { ...base.ration.profile, ageGroup: "Взрослый", weightKg: 80, heightCm: 180, ...profile } } });
+      const space = legacyToObjects(legacy, { today: TODAY, now: NOW });
+      for (const dates of dateSets) {
+        const expected = legacyWeekProblems(legacy, dates, TODAY);
+        assert.deepEqual(weekProblems(space, dates, TODAY), expected, JSON.stringify({ profile, dates: dates.length }));
+        if (expected.length) blocked += 1; else passed += 1;
+      }
+    }
+  }
+  assert.ok(blocked >= 4 && passed >= 4, `both outcomes are compared (${blocked} blocked, ${passed} passed)`);
+});
+
+test("rule: the assistant cannot make a week that loses weight too fast, though every day passes", () => {
+  const store = openStore(legacyToObjects(demoLegacyState(TODAY), { today: TODAY, now: NOW }));
+  assert.equal(store.apply({ op: "update", id: "profile", props: { weightKg: 50, heightCm: 190, targetCalories: null, targetProtein: null } }).ok, true);
+  assert.equal(store.apply(weekOps("slow", shiftDate(TODAY, 8), 600), { actor: "ai" }).ok, true, "enough food passes");
+  // 342 g of oats are 1252 kcal: over the day gate's 1200, under what the week allows.
+  const from = shiftDate(TODAY, 15);
+  const fast = store.apply(weekOps("fast", from, 342), { actor: "ai" });
+  assert.equal(fast.ok, false);
+  assert.match(fast.reason, /неделя 20\d\d-\d\d-\d\d–20\d\d-\d\d-\d\d: еда .* ккал.*больше 1% веса/);
+  assert.doesNotMatch(fast.reason, /ниже безопасного минимума/, "every day passes the day gate");
+  assert.equal(store.apply(weekOps("fast", from, 342)).ok, true, "a person may choose it");
+  const lighter = store.apply({ op: "update", id: "profile", props: { weightKg: 40 } }, { actor: "ai" });
+  assert.match(lighter.reason, /больше 1% веса/, "a change of the weight is checked against the plan in force");
 });

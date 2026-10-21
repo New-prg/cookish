@@ -37,6 +37,11 @@ const mod = (n, m) => ((n % m) + m) % m;
 // Monday is 0; 1970-01-01, day number 0, was a Thursday.
 const weekdayOf = (date) => mod(dayNumber(date) + 3, 7);
 
+// normalizeProductName of the legacy Рацион: names and words compare in this form.
+export const normalizeName = (name) => String(name || "").trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " ");
+// The words of the Profile («не ест»), kept as the person wrote them: a comma or a line apart.
+export const termsOf = (text) => String(text || "").split(/[,\n]/).map(normalizeName).filter(Boolean);
+
 export function cycleDayName(weekdayBinding, anchor, index) {
   return weekdayBinding && DATE.test(anchor || "") ? WEEKDAYS[weekdayOf(shiftDate(anchor, index))] : `День ${index + 1}`;
 }
@@ -158,7 +163,7 @@ function nutritionOf(state, productId, amount, unit) {
 }
 
 // Defaults of a product's unit, as rationMeasure in the legacy Рацион.
-function measureOf(product) {
+export function measureOf(product) {
   const unit = product?.props.unit;
   if (unit === "шт.") return { unit: "шт.", portion: 1, pack: 1 };
   if (unit === "л" || unit === "мл") return { unit: "мл", portion: 250, pack: 1000 };
@@ -476,7 +481,8 @@ registerRule(({ prev, next, touched, actor, today }) => {
 });
 
 // Rule 2. A batch of the assistant leaves every ration day it touched, from
-// today on, inside the КБЖУ gate of the legacy gateMeals.
+// today on, inside the КБЖУ gate of the legacy gateMeals, and every week it
+// touched inside the weekly loss gate of the legacy weekProblems.
 function dayIdsOf(state, obj) {
   const daysOfMeal = (mealId) => backlinks(state, "day_plan", "meals", mealId);
   const mealsOfPortion = (portionId) => backlinks(state, "meal", "items", portionId);
@@ -484,19 +490,23 @@ function dayIdsOf(state, obj) {
     case "day_plan": return [obj.id];
     case "week_plan": return Array.isArray(obj.props.days) ? obj.props.days : [];
     case "meal": return daysOfMeal(obj.id);
+    case "session": return backlinks(state, "day_plan", "sessions", obj.id);
     case "portion": return mealsOfPortion(obj.id).flatMap(daysOfMeal);
     case "product": return backlinks(state, "portion", "product", obj.id).flatMap(mealsOfPortion).flatMap(daysOfMeal);
   }
   return [];
 }
 
+const weeksOf = (state, day) => backlinks(state, "week_plan", "days", day.id).map((id) => state.objects[id]);
+
+// A day is a ration day when it says so or when a week plan of the Рацион
+// lists it: planDay takes the area from the week, so the week decides.
+const isRationDay = (state, day) => day.props.area === "ration" || weeksOf(state, day).some((week) => week.props.area === "ration");
+
 function inForce(state, day, today) {
   if (day.props.date) return day.props.date >= today;
   const current = activeWeek(state, "ration", today);
-  return backlinks(state, "week_plan", "days", day.id).some((id) => {
-    const week = state.objects[id];
-    return week.props.area === "ration" && (week.props.effectiveFrom > today || week.id === current?.id);
-  });
+  return weeksOf(state, day).some((week) => week.props.area === "ration" && (week.props.effectiveFrom > today || week.id === current?.id));
 }
 
 export function gateDay(state, dayId, ctx = {}) {
@@ -514,9 +524,12 @@ export function gateDay(state, dayId, ctx = {}) {
   const protein = Number(profile.targetProtein) || 0;
   if (protein && totals.protein < protein * KBJU_GATE.minProteinShare) problems.push(`белок ${Math.round(totals.protein)} г меньше 75% цели ${protein} г`);
   const excluded = new Set(Array.isArray(profile.excluded) ? profile.excluded : []);
+  const terms = termsOf(profile.excludedTerms);
   for (const portion of meals.flatMap((meal) => live(state, meal.props.items))) {
     const product = state.objects[portion.props.product];
-    if (product && excluded.has(product.id)) problems.push(`исключённый продукт «${product.name}»`);
+    // As the legacy gateMeals: a word of the Profile inside the product name.
+    const name = normalizeName(product?.name || portion.name);
+    if ((product && excluded.has(product.id)) || terms.some((term) => name.includes(term))) problems.push(`исключённый продукт «${product?.name || portion.name}»`);
     // Pieces without a weight are not counted at all, so they are not flagged.
     const uncounted = portion.props.unit === "шт." && !(Number(product?.props.pieceWeight) > 0);
     if (!uncounted && (!product || product.props.kcal100 == null)) problems.push(`у продукта «${product?.name || portion.name}» нет КБЖУ`);
@@ -524,24 +537,106 @@ export function gateDay(state, dayId, ctx = {}) {
   return { ok: problems.length === 0, totals, problems: [...new Set(problems)] };
 }
 
+// The weekly loss gate of mobile-shell/core/safety.js: the same constants and
+// arithmetic. A plan that passes the day gate every day can still lose weight
+// faster than 1% of the body weight a week; workouts count in the balance.
+const WEEK_GATE = Object.freeze({ activityFactor: 1.3, kcalPerKg: 7700, maxWeeklyLossShare: 0.01 });
+const AGE_OF_GROUP = Object.freeze({ adult: 35, senior: 70 });
+
+// Mifflin–St Jeor at the age of the group, the sex unknown, times everyday
+// activity; null without weight, height or an adult age group.
+function baseEnergy(profile) {
+  const weight = Number(profile.weightKg);
+  const height = Number(profile.heightCm);
+  const age = AGE_OF_GROUP[String(profile.ageGroup || "")];
+  if (!(weight > 0) || !(height > 0) || !age) return null;
+  return (10 * weight + 6.25 * height - 5 * age - 78) * WEEK_GATE.activityFactor;
+}
+
+// The weeks that hold a changed date, from today on: each of them may lose at
+// most 1% of body weight. One problem, for the worst week.
+export function weekProblems(state, dates, today) {
+  const profile = profileOf(state)?.props || {};
+  const base = baseEnergy(profile);
+  if (!base || !dates?.length) return [];
+  const starts = new Set();
+  dates.filter((date) => date >= today).forEach((date) => {
+    for (let back = 6; back >= 0; back -= 1) {
+      const start = shiftDate(date, -back);
+      if (start >= today) starts.add(start);
+    }
+  });
+  const cache = new Map();
+  const balance = (date) => {
+    if (!cache.has(date)) cache.set(date, { intake: dayActual(state, date, { today }).planned.kcal, sport: Number(sportDay(state, date).planned) || 0 });
+    return cache.get(date);
+  };
+  let worst = null;
+  [...starts].forEach((start) => {
+    const days = Array.from({ length: 7 }, (_, index) => shiftDate(start, index));
+    const intake = days.reduce((total, date) => total + balance(date).intake, 0);
+    const sport = days.reduce((total, date) => total + balance(date).sport, 0);
+    const deficit = 7 * base + sport - intake;
+    if (!worst || deficit > worst.deficit) worst = { from: days[0], to: days[6], deficit, intake, sport };
+  });
+  const weight = Number(profile.weightKg);
+  const limit = weight * WEEK_GATE.maxWeeklyLossShare;
+  const pace = worst ? worst.deficit / WEEK_GATE.kcalPerKg : 0;
+  if (!worst || pace <= limit) return [];
+  const round = (value) => Math.round(value * 10) / 10;
+  return [`неделя ${worst.from}–${worst.to}: еда ${Math.round(worst.intake)} ккал${worst.sport ? `, тренировки ${Math.round(worst.sport)} ккал` : ""} при расходе около ${Math.round(7 * base)} ккал без тренировок — это −${round(pace)} кг в неделю, больше 1% веса (${round(limit)} кг). Добавь еды или убери нагрузку`];
+}
+
+// How far ahead the dates a cycle day or a week plan shows are followed.
+const FOLLOW_DAYS = 28;
+
+// The dates from today on that a week plan shows.
+function weekDates(week, today) {
+  const from = week.props.effectiveFrom;
+  if (!DATE.test(from || "")) return [];
+  return Array.from({ length: FOLLOW_DAYS }, (_, index) => shiftDate(from > today ? from : today, index));
+}
+
+// The dates from today on that a day plan shows now.
+function dayDates(state, day, today) {
+  if (day.props.date) return day.props.date >= today ? [day.props.date] : [];
+  return weeksOf(state, day).flatMap((week) => weekDates(week, today).filter((date) => planDay(state, week.props.area, date).dayId === day.id));
+}
+
 registerRule(({ prev, next, touched, actor, today }) => {
   if (actor !== "ai") return [];
   const days = new Set();
+  const dates = new Set();
   for (const id of touched) {
     const obj = next.objects[id] || prev.objects[id];
     dayIdsOf(next, obj).forEach((dayId) => days.add(dayId));
+    if (obj.type === "week_plan") weekDates(obj, today).forEach((date) => dates.add(date));
+    const gone = !next.objects[id] || next.objects[id].archivedAt;
     // An Особый день taken away hands its date back to the cycle.
-    if (obj.type === "day_plan" && obj.props.area === "ration" && obj.props.date >= today && (!next.objects[id] || next.objects[id].archivedAt)) {
-      const fallback = planDay(next, "ration", obj.props.date).dayId;
-      if (fallback) days.add(fallback);
+    if (obj.type === "day_plan" && obj.props.date >= today && gone) {
+      dates.add(obj.props.date);
+      const fallback = AREAS[obj.props.area] ? planDay(next, obj.props.area, obj.props.date).dayId : null;
+      if (obj.props.area === "ration" && fallback) days.add(fallback);
+    }
+    // The weight, height and age group set the allowance of every week ahead.
+    if (obj.type === "profile") {
+      const keys = ["weightKg", "heightCm", "ageGroup"];
+      if (keys.some((key) => prev.objects[id]?.props[key] !== obj.props[key])) weekDates({ props: { effectiveFrom: today } }, today).forEach((date) => dates.add(date));
     }
   }
   const problems = [];
   for (const dayId of days) {
     const day = next.objects[dayId];
-    if (!day || day.archivedAt || day.props.area !== "ration" || !inForce(next, day, today)) continue;
+    if (!day || day.archivedAt) continue;
+    dayDates(next, day, today).forEach((date) => dates.add(date));
     const label = day.props.date || day.name;
+    if (!AREAS[day.props.area]) {
+      problems.push({ block: true, message: `${label}: у дня плана нет раздела (Рацион или Спорт), проверить его нельзя` });
+      continue;
+    }
+    if (!isRationDay(next, day) || !inForce(next, day, today)) continue;
     for (const problem of gateDay(next, dayId, { today }).problems) problems.push({ block: true, message: `${label}: ${problem}` });
   }
+  for (const message of weekProblems(next, [...dates], today)) problems.push({ block: true, message });
   return problems;
 });

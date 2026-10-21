@@ -68,7 +68,7 @@ test("values are checked against relations: unknown, computed, wrong type and ra
   assert.match(store.update("p1", { props: { calories: 5 } }).reason, /нет связи «calories»/);
   assert.match(store.update("p1", { props: { kcal: 5 } }).reason, /считается сама/);
   assert.match(store.update("p1", { props: { product: "breakfast" } }).reason, /нужен объект типа Продукт/);
-  assert.match(store.create("profile", { name: "П", props: { targetCalories: 600 } }).reason, /не меньше 1200/);
+  assert.match(store.create("profile", { name: "П", props: { targetCalories: -5 } }).reason, /не меньше 0/);
   assert.match(store.update("p1", { props: { unit: "ведро" } }).reason, /нет варианта/);
   assert.equal(store.state().objects.p1.props.amount, 80, "a rejected batch writes nothing");
 });

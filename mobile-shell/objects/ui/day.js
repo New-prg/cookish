@@ -1,7 +1,7 @@
 // Рацион and Спорт of one date: the plan with its marks, discrepancies and
 // totals, and editing the plan of that date. The home widgets reuse the
 // same bodies in a compact form.
-import { dayActual, discrepancyOps, editableDayOps, markFor, markMealOps, markSessionOps, planDay, sportDay } from "../core/domain.js";
+import { dayActual, discrepancyOps, editableDayOps, markFor, markMealOps, markSessionOps, measureOf, planDay, sportDay } from "../core/domain.js";
 import { profileOf } from "../core/values.js";
 import { act, hrefFor, local, nameOf, rerender, store } from "./runtime.js";
 import { fill, empty, field, h, icon, num, openSheet, pageHeader, progressBar, relativeDay, segmented, shiftDate, toast } from "./dom.js";
@@ -111,24 +111,36 @@ function addPortion(meal) {
 function discrepancySheet(date, meal, portions) {
   openSheet(`Расхождение: ${nameOf(meal)}`, (close) => {
     const state = store.state();
-    const d = { kind: "replaced", product: portions[0]?.props?.product || null, replacedBy: null, amount: "", unit: portions[0]?.props?.unit || "г" };
+    const d = { kind: "replaced", product: portions[0]?.props?.product || null, replacedBy: null, amount: "" };
     const body = h("div", { class: "form" });
     const kinds = state.relations.discrepancyKind.options;
+    // The unit follows the product: the portion's own for a product of the meal,
+    // the default of its kind for one added from outside.
+    const unitOf = () => {
+      const portion = portions.find((p) => p.props?.product === d.product);
+      return d.kind === "added" || !portion ? measureOf(state.objects[d.product]).unit : portion.props?.unit || "г";
+    };
+    const pickKind = (id) => {
+      // «Добавлено» starts with no product: it is one outside the meal.
+      if ((id === "added") !== (d.kind === "added")) d.product = id === "added" ? null : portions[0]?.props?.product || null;
+      d.kind = id;
+      build();
+    };
     const pickButton = (key, title, types) => h("button", { class: "chip chip-add", onclick: () => pickObject({ title, types, onPick: (id) => { d[key] = id; build(); } }) }, d[key] ? nameOf(state.objects[d[key]]) : "Выбрать");
     const build = () => {
       const amount = h("input", { class: "input", type: "text", inputmode: "decimal", value: d.amount, "aria-label": "Количество", oninput: (e) => { d.amount = e.target.value; } });
       fill(body,
-        h("div", { class: "field" }, h("span", { class: "field-label", text: "Что изменилось" }), segmented(kinds, d.kind, (id) => { d.kind = id; build(); }, { label: "Что изменилось" })),
+        h("div", { class: "field" }, h("span", { class: "field-label", text: "Что изменилось" }), segmented(kinds, d.kind, pickKind, { label: "Что изменилось" })),
         h("div", { class: "field" }, h("span", { class: "field-label", text: d.kind === "added" ? "Что добавили" : "Продукт" }),
           d.kind === "added" ? pickButton("product", "Продукт", ["product"]) : segmented(portions.map((p) => ({ id: p.props?.product, name: nameOf(state.objects[p.props?.product]) || nameOf(p) })), d.product, (id) => { d.product = id; build(); }, { label: "Продукт" })),
         d.kind === "replaced" ? h("div", { class: "field" }, h("span", { class: "field-label", text: "Чем заменили" }), pickButton("replacedBy", "Чем заменили", ["product"])) : null,
-        d.kind === "excluded" ? null : field("Сколько", h("div", { class: "with-unit" }, amount, h("span", { class: "unit", text: d.unit }))),
+        d.kind === "excluded" ? null : field("Сколько", h("div", { class: "with-unit" }, amount, h("span", { class: "unit", text: unitOf() }))),
         h("button", { class: "btn btn-primary", onclick: () => {
           if (!d.product) { toast("Выберите продукт", { error: true }); return; }
           if (d.kind === "replaced" && !d.replacedBy) { toast("Выберите, чем заменили", { error: true }); return; }
           const value = parseNumber(String(d.amount).trim());
           if (value === undefined) { toast("Количество: нужно число", { error: true }); return; }
-          const ops = discrepancyOps(store.state(), date, meal.id, { kind: d.kind, product: d.product, replacedBy: d.replacedBy, amount: value, unit: d.unit });
+          const ops = discrepancyOps(store.state(), date, meal.id, { kind: d.kind, product: d.product, replacedBy: d.replacedBy, amount: value, unit: unitOf() });
           if (act(ops, { summary: `${nameOf(meal)}: расхождение` }).ok) close();
         } }, "Записать"),
       );
@@ -144,6 +156,8 @@ export function rationScreen(date) {
   const c = { today };
   const mode = local(`ration:${date}`, () => ({ editing: false }));
   const plan = planDay(state, "ration", date);
+  // Editing belongs to an Особый день: when undo takes it away, the cycle day is locked again.
+  if (plan.source !== "special") mode.editing = false;
   const startEdit = () => {
     if (plan.source !== "special") {
       const { ops } = editableDayOps(store.state(), "ration", date);

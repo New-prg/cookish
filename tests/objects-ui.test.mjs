@@ -4,6 +4,18 @@ import { back, baseUrl, eatenKcal, openApp, rationWidget, shot, tapNav, text, us
 
 useUi();
 
+// Screens re-render a task after the click that changed the store, so a read
+// that follows a click waits for the value it expects.
+async function until(read, ok, what, timeout = 10000) {
+  const end = Date.now() + timeout;
+  for (;;) {
+    const value = await read().catch(() => undefined);
+    if (value !== undefined && ok(value)) return value;
+    if (Date.now() > end) assert.fail(`${what}: never became right, last ${JSON.stringify(value)}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 test("a person starts from the example, marks a meal, builds a water tracker and buys from a request", async () => {
   const { context, page, errors } = await openApp();
   await page.getByRole("button", { name: "Начать с примера" }).waitFor();
@@ -19,13 +31,13 @@ test("a person starts from the example, marks a meal, builds a water tracker and
   await page.waitForFunction((kcal) => document.querySelector('[data-widget="ration-today"] .metric-value')?.textContent.replace(/\s/g, "") !== String(kcal), before);
   const eaten = await eatenKcal(page);
   assert.ok(eaten > before, `marking ${mealName} eaten adds its kcal: ${before} → ${eaten}`);
-  assert.equal(await meal.getByRole("button", { name: "съедено", exact: true }).getAttribute("aria-pressed"), "true");
+  await until(() => meal.getByRole("button", { name: "съедено", exact: true }).getAttribute("aria-pressed"), (value) => value === "true", "the meal is pressed");
   assert.match(await text(page.locator(".toast")), new RegExp(`${mealName}: съедено`));
 
   await page.locator(".toast").getByRole("button", { name: "Отменить" }).click();
   await page.waitForFunction((kcal) => document.querySelector('[data-widget="ration-today"] .metric-value')?.textContent.replace(/\s/g, "") === String(kcal), before);
-  assert.equal(await meal.getByRole("button", { name: "съедено", exact: true }).getAttribute("aria-pressed"), "false", "undo clears the mark");
-  assert.equal(await text(page.locator(".toast")), "Отменено");
+  await until(() => meal.getByRole("button", { name: "съедено", exact: true }).getAttribute("aria-pressed"), (value) => value === "false", "undo clears the mark");
+  await waitText(page.locator(".toast"), /^Отменено$/);
 
   await page.getByRole("button", { name: "Создать" }).click();
   await shot(page, "create-sheet-light");
@@ -54,7 +66,7 @@ test("a person starts from the example, marks a meal, builds a water tracker and
     await back(page);
   }
   await page.locator(".hero", { hasText: "2 объекта" }).waitFor();
-  assert.match(await text(page.locator(".totals")), /Выпито: 550 мл/);
+  await waitText(page.locator(".totals"), /Выпито: 550 мл/);
   await shot(page, "type-water-light");
   await page.getByRole("tab", { name: "Таблица" }).click();
   await shot(page, "set-table-light");
@@ -75,7 +87,7 @@ test("a person starts from the example, marks a meal, builds a water tracker and
   await page.getByRole("button", { name: "Готово" }).click();
   const water = page.locator('[data-widget="set"]', { hasText: "Вода сегодня" });
   await waitText(water.locator(".metric-value"), /^550$/);
-  assert.match(await text(water.locator(".metric-of")), /из 2 000 мл/);
+  await waitText(water.locator(".metric-of"), /из 2 000 мл/);
   await water.scrollIntoViewIfNeeded();
   await shot(page, "home-widgets-light");
 
@@ -91,11 +103,11 @@ test("a person starts from the example, marks a meal, builds a water tracker and
   await item.click();
   await sheet.getByLabel("Сумма").fill("120");
   await shot(page, "buy-sheet-light");
-  await sheet.getByRole("button", { name: "Купил" }).click();
+  await sheet.getByRole("button", { name: "Купил", exact: true }).click();
   await page.locator(".totals-card .metric-value", { hasText: `${boughtBefore + 1} из ${total}` }).waitFor();
-  assert.equal(await spent(), spentBefore + 120, "the purchase adds its sum to the request");
-  assert.equal(await page.locator(`[data-item="${itemName}"] .check`).getAttribute("aria-label"), "куплено");
-  assert.match(await text(page.locator(".block", { hasText: "Покупки" })), new RegExp(`${itemName}.*120 ₽`));
+  await until(spent, (value) => value === spentBefore + 120, "the purchase adds its sum to the request");
+  await until(() => page.locator(`[data-item="${itemName}"] .check`).getAttribute("aria-label"), (value) => value === "куплено", "the item is bought");
+  await waitText(page.locator(".block", { hasText: "Покупки" }), new RegExp(`${itemName}.*120 ₽`));
 
   await page.goto(`${baseUrl}#/ration/${await page.evaluate(() => new Date().toLocaleDateString("sv-SE"))}`);
   await page.locator("article.meal").first().waitFor();
@@ -139,7 +151,7 @@ test("an empty space starts with an empty home and keeps a plan change undoable"
   await page.locator(".toast", { hasText: "Название «Гречка»" }).waitFor();
   await page.locator(".toast").getByRole("button", { name: "Отменить" }).click();
   await page.locator(".toast", { hasText: "Отменено" }).waitFor();
-  assert.equal(await page.getByLabel("Название").inputValue(), "", "undo of a journaled change restores the name");
+  await until(() => page.getByLabel("Название").inputValue(), (value) => value === "", "undo of a journaled change restores the name");
   assert.deepEqual(errors, []);
   await context.close();
 });
@@ -212,7 +224,7 @@ test("the Сборщик builds a tracker from words: refine, apply, undo, and a
   assert.match(await text(widget), /из 2 500 мл/);
   await page.locator(".toast").getByRole("button", { name: "Отменить" }).click();
   await page.locator(".toast", { hasText: "Отменено" }).waitFor();
-  assert.equal(await widget.count(), 0, "undo removes the widget");
+  await until(() => widget.count(), (count) => count === 0, "undo removes the widget");
   assert.equal(await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem("cookish.objects.v1")).customTypes || {}).length), 0, "and the type");
 
   await openBuilder();
@@ -242,7 +254,7 @@ test("day views edit today's plan, record a discrepancy and mark sport; sets swi
   await shot(page, "ration-edit-light");
   await page.getByRole("button", { name: "Готово" }).click();
   await waitText(page.locator("#screen"), /У этого дня свой план/);
-  assert.notEqual(await text(page.locator("article.meal").first().locator(".meal-kcal")), kcalBefore, "a new amount changes the meal kcal");
+  await until(() => text(page.locator("article.meal").first().locator(".meal-kcal")), (value) => value !== kcalBefore, "a new amount changes the meal kcal");
 
   const mealName = await page.locator("article.meal.state-unmarked").first().getAttribute("data-meal");
   const meal = page.locator(`article.meal[data-meal="${mealName}"]`);
@@ -252,7 +264,7 @@ test("day views edit today's plan, record a discrepancy and mark sport; sets swi
   await sheet.getByRole("button", { name: "Записать" }).click();
   await meal.locator(".discrepancies").waitFor();
   assert.match(await text(meal.locator(".discrepancies")), /не съедено: /);
-  assert.equal(await meal.getByRole("button", { name: "изменено", exact: true }).getAttribute("aria-pressed"), "true", "a discrepancy marks the meal changed");
+  await until(() => meal.getByRole("button", { name: "изменено", exact: true }).getAttribute("aria-pressed"), (value) => value === "true", "a discrepancy marks the meal changed");
 
   await page.goto(`${baseUrl}#/sport/${today}`);
   const session = page.locator("article.meal").first();
@@ -273,7 +285,7 @@ test("day views edit today's plan, record a discrepancy and mark sport; sets swi
   await page.goto(`${baseUrl}#/library`);
   await page.getByRole("link", { name: /Запросы Запросы/ }).click();
   await page.locator(".kanban").waitFor();
-  assert.match(await text(page.locator(".kanban")), /открыт.*закрыт/);
+  await waitText(page.locator(".kanban"), /открыт.*закрыт/);
   await shot(page, "set-kanban-light");
   await page.getByRole("tab", { name: "Галерея" }).click();
   await page.locator(".gallery").first().waitFor();
@@ -289,8 +301,7 @@ test("day views edit today's plan, record a discrepancy and mark sport; sets swi
   await shot(page, "filter-sheet-light");
   await sheet.getByRole("button", { name: "Применить" }).click();
   await page.locator(".fchip", { hasText: "Ккал на 100 ≥ 300" }).waitFor();
-  const dense = await page.locator(".table tbody tr").count();
-  assert.ok(dense > 0 && dense < allProducts, `the filter keeps products of 300 kcal and more: ${dense} of ${allProducts}`);
+  const dense = await until(() => page.locator(".table tbody tr").count(), (count) => count > 0 && count < allProducts, "the filter keeps products of 300 kcal and more");
   await page.getByRole("tab", { name: "Чек-лист" }).click();
   const check = page.locator('[role="checkbox"]').first();
   const was = await check.getAttribute("aria-checked");
@@ -304,6 +315,101 @@ test("day views edit today's plan, record a discrepancy and mark sport; sets swi
   await page.getByText("Ссылаются сюда").waitFor();
   await shot(page, "product-light");
 
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+// A small state of the current app: a breakfast whose first portion counts
+// pieces, a meal time the object model refuses, and a Profile with the edges
+// the current app accepts.
+const legacyFixture = {
+  schemaVersion: 14,
+  user: null,
+  onboardingCompleted: true,
+  products: [
+    { id: "p_egg", name: "Яйцо", unit: "шт.", category: "Другое", nutrition: { calories: 157, protein: 12.7, fat: 11.5, carbs: 0.7 } },
+    { id: "p_yog", name: "Йогурт", unit: "г", category: "Молочное", nutrition: { calories: 66, protein: 5, fat: 2, carbs: 4 } },
+  ],
+  requests: [],
+  sport: { versions: [], specialDays: {}, log: {} },
+  ration: {
+    versions: [{
+      id: "v1", owner: "local", effectiveFrom: "2020-01-01", createdAt: "2020-01-01T08:00:00.000Z",
+      cycle: { anchor: "2020-01-01", weekdayBinding: false, days: [{ id: "d1", meals: [{ id: "m1", name: "Завтрак", time: "8:00", items: [{ id: "i1", productId: "p_egg", name: "Яйцо", portionSize: 2, measureUnit: "шт." }] }] }] },
+    }],
+    specialDays: {},
+    history: {},
+    profile: { ageGroup: "Взрослый", goal: "Поддержание веса", heightCm: 175, weightKg: 18, mealsPerDay: 12, targetCalories: 1100 },
+  },
+};
+
+test("an import lists what did not fit; an added product gets its own unit", async () => {
+  const { context, page, errors } = await openApp();
+  await page.evaluate((legacy) => localStorage.setItem("cookish.android.data.v1", JSON.stringify(legacy)), legacyFixture);
+  await page.reload();
+  await page.getByRole("button", { name: "Перенести мои данные из Cookish" }).click();
+  const issues = page.getByRole("dialog", { name: /не подошл/ });
+  const listed = await waitText(issues, /не подошл/);
+  assert.match(listed, /Время.*8:00/, "the refused value is named");
+  assert.doesNotMatch(listed, /Вес|Цель|Приёмов/, "weight 18, target 1100 and 12 meals a day are kept");
+  await shot(page, "import-issues-light");
+  await issues.getByRole("button", { name: "Понятно" }).click();
+  await page.locator('[data-widget="ration-today"]').waitFor();
+  assert.equal(await page.getByRole("dialog").count(), 0);
+
+  const today = await page.evaluate(() => new Date().toLocaleDateString("sv-SE"));
+  await page.goto(`${baseUrl}#/ration/${today}`);
+  await page.locator("article.meal").first().getByRole("button", { name: "Расхождение" }).click();
+  const sheet = page.getByRole("dialog", { name: /Расхождение/ });
+  await sheet.getByRole("button", { name: "добавлено", exact: true }).click();
+  const unit = sheet.locator(".with-unit .unit");
+  const pick = async (name) => {
+    await sheet.locator(".chip-add").click();
+    await page.getByRole("dialog", { name: "Продукт" }).getByRole("button", { name: new RegExp(name) }).click();
+  };
+  await pick("Йогурт");
+  await waitText(unit, /^г$/);
+  await pick("Яйцо");
+  await waitText(unit, /^шт\.$/);
+  await pick("Йогурт");
+  await waitText(unit, /^г$/);
+  await sheet.getByLabel("Количество").fill("150");
+  await sheet.getByRole("button", { name: "Записать" }).click();
+  await waitText(page.locator("article.meal .discrepancies"), /добавлено: Йогурт, 150 г/);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test("the edit mode of a day ends with the Особый день that undo takes away", async () => {
+  const { context, page, errors } = await openApp();
+  await page.getByRole("button", { name: "Начать с примера" }).click();
+  await rationWidget(page).waitFor();
+  const today = await page.evaluate(() => new Date().toLocaleDateString("sv-SE"));
+  await page.goto(`${baseUrl}#/ration/${today}`);
+  const edit = page.getByRole("button", { name: "Изменить план этого дня" });
+  await edit.click();
+  await page.locator(".input-amount").first().waitFor();
+  await page.locator(".toast").getByRole("button", { name: "Отменить" }).click();
+  await until(() => page.getByRole("button", { name: "Изменить план этого дня" }).count(), (count) => count === 1, "the cycle day is offered for editing again");
+  assert.equal(await page.locator(".input-amount").count(), 0, "no edit inputs over the locked cycle day");
+  await edit.click();
+  await page.locator(".input-amount").first().waitFor();
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test("a malformed address or an impossible date falls back instead of breaking the screen", async () => {
+  const { context, page, errors } = await openApp();
+  await page.getByRole("button", { name: "Начать с примера" }).click();
+  await rationWidget(page).waitFor();
+  for (const hash of ["#/ration/2026-13-45", "#/sport/2026-02-30", "#/ration/not-a-date"]) {
+    await page.goto(`${baseUrl}${hash}`);
+    await waitText(page.locator(".date-nav-title"), /^Сегодня$/);
+  }
+  for (const hash of ["#/object/%E0%A4%A", "#/set/%", "#/%zz"]) {
+    await page.goto(`${baseUrl}${hash}`);
+    await rationWidget(page).waitFor();
+  }
   assert.deepEqual(errors, []);
   await context.close();
 });

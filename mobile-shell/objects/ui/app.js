@@ -1,16 +1,18 @@
 // Entry of objects.html: routes, the bottom navigation, the first run and
 // the render loop over the one store.
 import { ensureHome, store } from "./runtime.js";
-import { fill, h, icon, toast } from "./dom.js";
+import { fill, h, icon, openSheet, toast } from "./dom.js";
 import { homeScreen } from "./home.js";
 import { createSheet, libraryScreen, newTypeScreen, searchScreen } from "./library.js";
 import { setScreen } from "./setview.js";
 import { objectScreen } from "./object.js";
 import { rationScreen, sportScreen } from "./day.js";
 import { requestScreen } from "./request.js";
+import { profileScreen } from "./profile.js";
 
 const LEGACY_KEY = "cookish.android.data.v1";
-const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "");
+// A calendar date: 2026-13-45 has the shape but is not a day.
+const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "") && Number.isFinite(Date.parse(`${s}T00:00:00Z`)) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s;
 
 const ROUTES = {
   "": { tab: "home", render: homeScreen },
@@ -21,13 +23,19 @@ const ROUTES = {
   set: { tab: "library", render: (arg) => setScreen("set", arg) },
   object: { tab: null, render: objectScreen },
   request: { tab: null, render: requestScreen },
+  profile: { tab: null, render: profileScreen },
   ration: { tab: "home", render: (arg) => rationScreen(isDate(arg) ? arg : store.today()) },
   sport: { tab: "home", render: (arg) => sportScreen(isDate(arg) ? arg : store.today()) },
 };
 
+// A route that does not parse (a broken % escape, an unknown name) is home.
 function parseRoute() {
   const [name = "", ...rest] = location.hash.replace(/^#\/?/, "").split("/");
-  return { name: ROUTES[name] ? name : "", arg: decodeURIComponent(rest.join("/")) };
+  try {
+    return { name: Object.hasOwn(ROUTES, name) ? name : "", arg: decodeURIComponent(rest.join("/")) };
+  } catch {
+    return { name: "", arg: "" };
+  }
 }
 
 const screen = document.getElementById("screen");
@@ -41,12 +49,21 @@ function render() {
   const key = `${route.name}/${route.arg}`;
   if (shownRoute && shownRoute !== key) scrolls.set(shownRoute, window.scrollY);
   const first = !Object.keys(state.objects).length;
-  const nodes = first ? firstRun() : ROUTES[route.name].render(route.arg);
-  fill(screen, nodes);
+  fill(screen, first ? firstRun() : screenOf(route));
   nav.hidden = first;
   if (!first) renderNav(ROUTES[route.name].tab);
   if (shownRoute !== key) window.scrollTo(0, scrolls.get(key) || 0);
   shownRoute = key;
+}
+
+// One screen that throws must not leave the page blank.
+function screenOf(route) {
+  try {
+    return ROUTES[route.name].render(route.arg);
+  } catch (error) {
+    console.error(error);
+    return [h("p", { class: "empty", text: "Этот экран не открылся" }), h("a", { class: "btn btn-quiet", href: "#/" }, "На главную")];
+  }
 }
 
 function renderNav(tab) {
@@ -57,6 +74,17 @@ function renderNav(tab) {
     h("button", { class: "nav-plus", "aria-label": "Создать", onclick: createSheet }, icon("plus", 28)),
     item("search", "#/search", "Поиск", "search"),
   );
+}
+
+// What the import left out, so the person can enter it again.
+function importIssuesSheet(issues) {
+  const n = issues.length;
+  const word = n % 10 === 1 && n % 100 !== 11 ? "значение не подошло" : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? "значения не подошли" : "значений не подошли";
+  openSheet(`Перенесено, ${n} ${word}`, (close) => h("div", { class: "form" },
+    h("p", { class: "hint", text: "Остальное перенесено. Эти значения в новом виде хранить нельзя, их можно ввести заново." }),
+    h("ul", { class: "discrepancies" }, issues.map((issue) => h("li", { text: issue }))),
+    h("button", { class: "btn btn-primary", onclick: close }, "Понятно"),
+  ));
 }
 
 function firstRun() {
@@ -73,6 +101,7 @@ function firstRun() {
     if (result && result.ok === false) { toast(result.reason || "Не получилось", { error: true }); return; }
     ensureHome();
     location.hash = "#/";
+    if (result?.issues?.length) importIssuesSheet(result.issues);
   };
   return h("section", { class: "first-run" },
     h("h1", { class: "page-title", text: "Cookish" }),

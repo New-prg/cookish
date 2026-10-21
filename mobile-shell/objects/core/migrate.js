@@ -3,7 +3,7 @@
 // Особые дни, История питания and Учёт тренировок as facts, Запросы with
 // their Покупки, and the Профиль. The legacy key is only read.
 import { checkValue, emptyObjectState, localDateKey } from "./store.js";
-import { cycleDayName, planDay, shiftDate } from "./domain.js";
+import { cycleDayName, normalizeName, planDay, shiftDate } from "./domain.js";
 
 export const LEGACY_KEY = "cookish.android.data.v1";
 
@@ -249,15 +249,13 @@ export function legacyToObjects(legacy, { today = localDateKey(), now = new Date
   }
 
   const profile = source.ration?.profile && typeof source.ration.profile === "object" ? source.ration.profile : {};
-  const terms = list(profile.excludedProducts).map((term) => String(term).trim().toLocaleLowerCase("ru-RU")).filter(Boolean);
+  // The words stay as written: the day gate matches them against product names
+  // like the legacy gateMeals, also for products that appear later. The links
+  // are the products they match now.
+  const terms = list(profile.excludedProducts).map((term) => String(term).trim()).filter(Boolean);
   const live = [...products.values()].filter((product) => !product.deletedAt);
-  const matches = (term) => live.filter((product) => String(product.name || "").toLocaleLowerCase("ru-RU").includes(term));
-  const unmatched = terms.filter((term) => !matches(term).length);
-  const preferences = [
-    profile.preferences,
-    profile.schedule ? `Режим дня: ${profile.schedule}` : "",
-    unmatched.length ? `Не ест: ${unmatched.join(", ")}` : "",
-  ].filter(Boolean).join("\n");
+  const matches = (term) => live.filter((product) => normalizeName(product.name).includes(normalizeName(term)));
+  const preferences = [profile.preferences, profile.schedule ? `Режим дня: ${profile.schedule}` : ""].filter(Boolean).join("\n");
   put("profile", "Профиль", {
     ageGroup: AGE_GROUPS[profile.ageGroup],
     heightCm: finite(profile.heightCm),
@@ -270,6 +268,7 @@ export function legacyToObjects(legacy, { today = localDateKey(), now = new Date
     targetFat: finite(profile.targetFat),
     targetCarbs: finite(profile.targetCarbs),
     excluded: [...new Set(terms.flatMap((term) => matches(term).map((product) => product.id)))],
+    excludedTerms: terms.join(", "),
     preferences: preferences || undefined,
   }, { id: claim("profile", "profile"), updatedAt: stamp(profile.updatedAt) });
 
