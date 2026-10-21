@@ -18,7 +18,7 @@ const rel = (key, name, format, extra = {}) => Object.freeze({ key, name, format
 
 const MEAL_STATES = [opt("unmarked", "не отмечено", "grey"), opt("eaten", "съедено", "green"), opt("changed", "изменено", "amber"), opt("skipped", "не съедено", "red")];
 const SESSION_STATES = [opt("unmarked", "не отмечено", "grey"), opt("done", "выполнено", "green"), opt("changed", "изменено", "amber"), opt("skipped", "пропущено", "red")];
-const UNITS = [opt("г", "г"), opt("мл", "мл"), opt("кг", "кг"), opt("л", "л"), opt("шт.", "шт.")];
+const UNITS = [opt("г", "г"), opt("мл", "мл"), opt("кг", "кг"), opt("л", "л"), opt("шт.", "шт."), opt("уп.", "уп.")];
 const SPORT_KINDS = [opt("strength", "Силовая"), opt("run", "Бег"), opt("swim", "Плавание"), opt("bike", "Велосипед"), opt("walk", "Ходьба"), opt("yoga", "Йога"), opt("other", "Другое")];
 const INTENSITIES = [opt("low", "низкая"), opt("medium", "средняя"), opt("high", "высокая")];
 
