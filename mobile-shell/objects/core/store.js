@@ -236,6 +236,15 @@ export function openObjectStore({ storage = null, key = STORAGE_KEY, clock = () 
             if (prev) draft.objects[id] = { ...prev, updatedAt: now, updatedBy: actor };
             else delete draft.objects[id];
           }
+          // An object made by this change may have gained marks or purchases
+          // since; removing it would leave them pointing at nothing.
+          const removed = new Set(Object.entries(set.before).filter(([, prev]) => !prev).map(([id]) => id));
+          const holder = removed.size ? Object.values(draft.objects).find((obj) => linkedIds(draft, obj).some((id) => removed.has(id))) : null;
+          if (holder) {
+            const target = state.objects[linkedIds(draft, holder).find((id) => removed.has(id))];
+            fail(`на «${target?.name || target?.id}» ссылается «${holder.name || holder.id}», откатить нельзя`);
+            break;
+          }
           for (const [k, prev] of Object.entries(set.schema?.relations || {})) { schemaBefore.relations[k] = state.relations[k] || null; if (prev) draft.relations[k] = prev; else delete draft.relations[k]; }
           for (const [k, prev] of Object.entries(set.schema?.types || {})) { schemaBefore.types[k] = state.types[k] || null; if (prev) draft.types[k] = prev; else delete draft.types[k]; }
           break;
@@ -262,15 +271,19 @@ export function openObjectStore({ storage = null, key = STORAGE_KEY, clock = () 
     }
     if (problems.length) return { ok: false, reason: problems.join("; "), problems };
 
-    const journaled = touched.filter((id) => !draft.types[(draft.objects[id] || before.get(id)).type]?.fact);
+    // A batch of facts alone is not journaled. A batch that also changes the
+    // plan keeps its facts in the change set, so a revert undoes the whole
+    // batch: a request reopened together with its purchases gone.
+    const facts = touched.filter((id) => draft.types[(draft.objects[id] || before.get(id)).type]?.fact);
     const schemaChanged = Object.keys(schemaBefore.types).length || Object.keys(schemaBefore.relations).length;
     let changeSetId = null;
-    if ((journaled.length || schemaChanged) && actor !== "import") {
+    if ((touched.length > facts.length || schemaChanged) && actor !== "import") {
       changeSetId = newId("change");
       const set = {
         id: changeSetId, at: now, actor, summary: String(summary || describe(list, draft)).slice(0, 200),
-        before: Object.fromEntries(journaled.map((id) => [id, before.get(id)])),
-        after: Object.fromEntries(journaled.map((id) => [id, draft.objects[id] || null])),
+        before: Object.fromEntries(touched.map((id) => [id, before.get(id)])),
+        after: Object.fromEntries(touched.map((id) => [id, draft.objects[id] || null])),
+        ...(facts.length ? { facts } : {}),
         ...(schemaChanged ? { schema: schemaBefore } : {}),
         ...(list.some((o) => o.op === "revert") ? { revertOf: list.find((o) => o.op === "revert").changeSetId } : {}),
       };
@@ -309,6 +322,14 @@ export function openObjectStore({ storage = null, key = STORAGE_KEY, clock = () 
 
 function cleanProps(props) {
   return Object.fromEntries(Object.entries(props || {}).filter(([, v]) => v !== null && v !== undefined));
+}
+
+function linkedIds(state, obj) {
+  return Object.entries(obj.props || {}).flatMap(([key, value]) => {
+    const format = state.relations[key]?.format;
+    if (format !== "object" && format !== "objects") return [];
+    return Array.isArray(value) ? value : [value];
+  });
 }
 
 function stripMeta(obj) {

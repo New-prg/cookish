@@ -9,9 +9,9 @@ import { localNow, toast } from "./dom.js";
 export const store = openObjectStore({ storage: window.localStorage });
 export const ctx = () => ({ today: store.today() });
 
-// Every write of the page. Plan changes come back with a change set that the
-// journal can revert; facts are not journaled, so their undo is built here
-// from the state before the write.
+// Every write of the page. A batch that touches the plan comes back with a
+// change set whose revert undoes all of it, facts included; a batch of facts
+// alone is not journaled, so its undo is built here from the state before.
 export function act(ops, { summary = "", quiet = false } = {}) {
   const list = Array.isArray(ops) ? ops : [ops];
   const before = store.state();
@@ -21,10 +21,7 @@ export function act(ops, { summary = "", quiet = false } = {}) {
     return result;
   }
   const touched = new Set([...result.ids, ...list.filter((op) => op.op !== "create" && op.id).map((op) => op.id)]);
-  const undo = [
-    ...(result.changeSetId ? [{ op: "revert", changeSetId: result.changeSetId }] : []),
-    ...factUndoOps(before, store.state(), touched),
-  ];
+  const undo = result.changeSetId ? [{ op: "revert", changeSetId: result.changeSetId }] : factUndoOps(before, store.state(), touched);
   if (!quiet && undo.length) {
     toast(summary || "Сохранено", {
       undo: () => {

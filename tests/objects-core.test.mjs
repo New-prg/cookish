@@ -87,6 +87,30 @@ test("plan changes are journaled and can be reverted; facts are not journaled", 
   assert.match(store.revert(again.changeSetId).reason, /поменяли ещё раз/);
 });
 
+test("a revert undoes the whole batch, facts included, and never leaves a fact pointing at nothing", () => {
+  const store = open();
+  seedFood(store);
+  const request = store.apply([
+    { op: "create", type: "request", id: "req", name: "Магазин", props: { status: "open", items: ["ri"] } },
+    { op: "create", type: "request_item", id: "ri", name: "Овсянка", props: { request: "req", product: "oats", quantity: 1, unit: "шт." } },
+  ]);
+  assert.equal(request.ok, true, request.reason);
+  const bought = store.apply([
+    { op: "create", type: "purchase", id: "buy", name: "Овсянка", props: { date: TODAY, request: "req", item: "ri", product: "oats", quantity: 1, price: 90 } },
+    { op: "update", id: "req", props: { status: "done" } },
+  ]);
+  assert.ok(bought.changeSetId, "closing the request is journaled");
+  assert.equal(store.revert(bought.changeSetId).ok, true);
+  assert.equal(store.state().objects.req.props.status, "open");
+  assert.equal(store.state().objects.buy, undefined, "the purchase of the same batch goes with it");
+
+  store.create("purchase", { id: "buy2", name: "Овсянка", props: { date: TODAY, request: "req", item: "ri", product: "oats", quantity: 1, price: 95 } });
+  const refused = store.revert(request.changeSetId);
+  assert.equal(refused.ok, false);
+  assert.match(refused.reason, /ссылается «Овсянка», откатить нельзя/);
+  assert.ok(store.state().objects.req, "the request stays");
+});
+
 test("a person-made tracker: relation, fact type, entries, set totals and a daily series", () => {
   const store = open();
   const schema = store.apply([
