@@ -122,7 +122,8 @@ class ChartElement extends VizElement {
 
     const card = this.closest("c-card");
     const slot = card && !this.getTitle() && card.getTitle() && card.querySelectorAll("c-bars, c-line, c-heatmap").length <= 1 ? card.toolsSlot?.() : null;
-    const head = h("div", { class: "viz-head" }, this.titleNode(), slot ? null : toggle);
+    const heading = this.heading(S);
+    const head = h("div", { class: "viz-head" }, heading ? h("div", { class: "viz-title", text: heading }) : null, slot ? null : toggle);
     if (slot) slot.replaceChildren(toggle);
     const legendNode = S.series.length > 1
       ? h("div", { class: "viz-legend", role: "list" }, S.series.map((ser) => h("span", { class: "viz-legend-item", role: "listitem" }, h("span", { class: `viz-key ${legend === "line" ? "is-line" : ""} ${slotClass(ser.color)}` }), h("span", { text: ser.label }))))
@@ -131,6 +132,12 @@ class ChartElement extends VizElement {
     this.replaceChildren(root);
     apply();
     return { root, plot };
+  }
+
+  // «Белки, г»: what the chart shows and in which unit. A chart with a title of its own keeps it.
+  heading(S) {
+    const title = this.getTitle();
+    return S.unit ? [title || S.label, S.unit].filter(Boolean).join(", ") : title;
   }
 
   summary(S) {
@@ -392,7 +399,8 @@ export class SparkElement extends ChartElement {
     const values = S.series[0].values;
     const real = values.map((v, i) => (v == null ? null : [i, v])).filter(Boolean);
     const root = h("div", { class: "viz-spark" });
-    this.replaceChildren(root);
+    const heading = this.classList.contains("viz-stat-spark") ? null : this.heading(S);
+    this.replaceChildren(...[heading ? h("div", { class: "viz-title", text: heading }) : null, root].filter(Boolean));
     root.setAttribute("role", "img");
     root.setAttribute("aria-label", `${this.nameText() || "Динамика"}: от ${fmtValue(Math.min(...real.map((p) => p[1])), S.unit)} до ${fmtValue(Math.max(...real.map((p) => p[1])), S.unit)}`);
     if (!width) return;

@@ -206,7 +206,7 @@ test("propose_space takes a bundle: one proposal with change rows; applying and 
     say("Собрала."),
   ], "сделай учёт чая");
   assert.equal(results[0].ok, true, JSON.stringify(results[0]));
-  assert.deepEqual(results[0].preview.rows.map((row) => row[0]), ["Трек", "Новая карточка"]);
+  assert.deepEqual(results[0].preview.rows.map((row) => row[0]), ["Трек", "Новый экран", "Новая карточка", "Новая карточка", "Новая карточка"], "the card on home stays, the track's own screen with its history comes with it");
   assert.equal(results[1].ok, false, "a calorie goal under 1200 is refused");
   assert.match(results[1].problems.join(" "), /ниже 1200 ккал/);
   assert.equal(results[2].ok, false, "the op language is gone: a bundle is required");

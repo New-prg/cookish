@@ -5,7 +5,9 @@ import { resolveRange } from "../mobile-shell/objects/core/query.js";
 import { spanHours } from "../mobile-shell/objects/core/functions.js";
 import { openObjectStore } from "../mobile-shell/objects/core/store.js";
 import { valueOf } from "../mobile-shell/objects/core/values.js";
-import { ELEMENT_KEYS, LIMITS, componentsForMarkup } from "../mobile-shell/objects/kit/catalogue.js";
+import {
+  BY_WORDS, ELEMENTS, ELEMENT_KEYS, FIELD_TYPES, FNS, FOLLOWS, LIMITS, RANGES, SOURCES, WHERE_KEYS, WHERE_OPS, componentsForMarkup, rangeProblem, splitCondition, wherePairs,
+} from "../mobile-shell/objects/kit/catalogue.js";
 import { applyBundle, checkBundle } from "../mobile-shell/objects/kit/pipeline.js";
 import { exportBundle, previewImport } from "../mobile-shell/objects/kit/share.js";
 import { normalizeBundle } from "../mobile-shell/objects/kit/normalize.js";
@@ -408,7 +410,7 @@ const INVALID = [
   ["an unknown attribute of a field", track([num("ml", { colour: "red" })]), "L1", "unknown-key", "tracks.mood.fields.ml.colour", /Допустимо: key, name, type/],
   ["a kind that does not exist", track([num("ml")], { kind: "planner" }), "L1", "bad-value", "tracks.mood.kind", /Допустимо: log, habit, list, catalog, follow/],
   ["a typo that reads as a new track", { v: 2, name: "Тест", tracks: [{ key: "watr", fields: [{ key: "ml", goal: 3000 }] }] }, "L1", "missing-attr", "tracks.watr.name", /Трека «watr» нет.*water, sleep/],
-  ["a follow track without follows", { v: 2, name: "Тест", tracks: [{ key: "feel", name: "Самочувствие", kind: "follow" }] }, "L1", "missing-attr", "tracks.feel.follows", /ration или sport/],
+  ["a follow track without follows", { v: 2, name: "Тест", tracks: [{ key: "feel", name: "Самочувствие", kind: "follow" }] }, "L1", "missing-attr", "tracks.feel.follows", /follows: ration, sport, shopping/],
   ["a chart of a track that does not exist", home([{ el: "stat", of: "watr", value: "ml", range: "@today" }]), "L1", "unknown-key", "screens.home.cards.t1.body[0].of", /Ключи треков.*water/],
   ["an average of a time field", home([{ el: "stat", of: "sleep", value: "lay", fn: "avg", range: "@last7d" }]), "L1", "fn-not-numeric", "screens.home.cards.t1.body[0].fn", /числовое поле \(hours\)/],
   ["a calc that reads a field the track does not have", track([num("a"), { key: "total", name: "Итого", type: "calc", calc: "a + b" }]), "L1", "bad-calc", "tracks.mood.fields.total.calc", /Поля трека: a/],
@@ -544,7 +546,7 @@ test("expandDefaults gives a bare track the cards of its kind and the manual can
   const bare = (kind, extra = {}) => expandDefaults(spec, { v: 2, name: "Б", tracks: [{ key: "t1", name: "Трек", kind, ...extra }] }, ctx);
   const cards = (bundle) => bundle.screens.flatMap((s) => s.cards.map((c) => `${s.key}:${c.body.map((e) => e.el).join("+")}`));
   assert.deepEqual(cards(bare("log", { fields: [{ key: "ml", name: "Мл", type: "number", unit: "мл", goal: 2000 }] })), ["home:meter+form", "t1:bars", "t1:list"]);
-  assert.deepEqual(cards(bare("habit", { items: [{ name: "Зарядка" }] })), ["home:marks", "t1:streak", "t1:heatmap"]);
+  assert.deepEqual(cards(bare("habit", { items: [{ name: "Зарядка" }] })), ["home:marks", "t1:streak", "t1:bars"]);
   assert.deepEqual(cards(bare("list", { fields: [{ key: "price", name: "Сумма", type: "number", unit: "₽" }] })), ["home:stat", "t1:marks", "t1:stat"]);
   assert.deepEqual(cards(bare("catalog", { fields: [{ key: "note", name: "Заметка", type: "text" }] })), ["t1:list"]);
   assert.deepEqual(cards(bare("follow", { follows: "sport", fields: [{ key: "lvl", name: "Уровень", type: "scale" }] })), ["home:marks", "t1:line", "t1:table"]);
@@ -630,7 +632,11 @@ test("the catalogue feeds the markup validator with every new tag", () => {
   assert.equal(components["c-meter"].kit.needsGoal, true);
   assert.deepEqual(components["c-marks"].attrs.add, { type: "bool" });
   assert.deepEqual(components["c-bars"].attrs.range.type, "range");
-  assert.deepEqual(components["c-bars"].attrs.by, { type: "enum", values: ["day", "week", "month"] });
+  assert.deepEqual(components["c-line"].attrs.by, { type: "enum", values: ["day", "week", "month"] });
+  assert.deepEqual(components["c-bars"].attrs.by, { type: "text", max: 40 }, "bars take a time step or a value to group by");
+  assert.deepEqual(components["c-list"].attrs.edit, { type: "bool" });
+  assert.deepEqual(components["c-table"].attrs.search, { type: "bool" });
+  assert.deepEqual(components["c-marks"].attrs.date, { type: "enum", values: ["@today", "@yesterday"] });
   assert.equal(components["c-embed"].attrs.what.values.length, 3);
 });
 
@@ -752,13 +758,15 @@ test("L3 checks the markup of a card L1 let through and names the screen, the ca
   const bundle = (body) => ({ v: 2, name: "Условие", screens: [{ key: "home", cards: [{ key: "water_today", title: "Вода сегодня", body }] }] });
   const fine = { el: "stat", of: "water", value: "ml", fn: "sum", range: "@last7d" };
   assert.equal(checkBundle(bundle([fine]), store.state(), ctx).ok, true);
-  const result = checkBundle(bundle([fine, { ...fine, where: "ml=a<b" }]), store.state(), ctx);
+  const long = { note: "я".repeat(41) };
+  build(store, { v: 2, name: "Заметка", tracks: [{ key: "water", fields: [{ key: "note", name: "Заметка", type: "text" }] }] });
+  const result = checkBundle(bundle([fine, { ...fine, where: long }]), store.state(), ctx);
   assert.equal(result.layer, "L3", "validateBundle accepts the value, the markup validator does not");
   assert.deepEqual(result.ops, []);
   assert.equal(result.problems[0].path, "screens.home.cards.water_today.body[1].where");
   assert.equal(result.problems[0].rule, "bad-value");
   assert.match(result.problems[0].message, /where/);
-  const created = checkBundle({ v: 2, name: "Новая", screens: [{ key: "water", cards: [{ key: "water_new", title: "Новая", body: [{ ...fine, where: "ml=a<b" }] }] }] }, store.state(), ctx);
+  const created = checkBundle({ v: 2, name: "Новая", screens: [{ key: "water", cards: [{ key: "water_new", title: "Новая", body: [{ ...fine, where: long }] }] }] }, store.state(), ctx);
   assert.equal(created.problems[0].path, "screens.water.cards.water_new.body[0].where", "a created card is checked as well");
 });
 
@@ -986,4 +994,202 @@ test("the markup surface writes order as a comma list", () => {
   const store = openSpace();
   build(store, WATER);
   assert.equal(checkBundle(parsed.bundle, store.state(), ctx).ok, true);
+});
+
+// =====================================================================================================
+// Round 2: the vocabulary of the kit grows, and each word has a refusal that names the fix.
+// =====================================================================================================
+const R2 = {
+  v: 2, name: "Для проверок",
+  tracks: [
+    { key: "pantry", name: "Кладовая", kind: "log", fields: [{ key: "product", name: "Продукт", type: "text" }, { key: "expires", name: "Годен до", type: "date" }, { key: "left", name: "Осталось", type: "number", min: 0, max: 100 }, { key: "shelf", name: "Полка", type: "choice", options: ["верх", "низ"] }] },
+    { key: "wish", name: "Хотелки", kind: "list", fields: [{ key: "price", name: "Цена", type: "number", unit: "₽", planned: true }], items: [{ key: "lamp", name: "Лампа", plan: { price: 2500 } }] },
+    { key: "books", name: "Книги", kind: "catalog", fields: [{ key: "genre", name: "Жанр", type: "choice", options: ["роман", "наука"] }, { key: "pages", name: "Страниц", type: "number" }], items: [{ key: "war", name: "Война и мир", plan: { genre: "роман", pages: 1300 } }] },
+  ],
+};
+const R2_MORE = {
+  v: 2, name: "Ещё для проверок",
+  tracks: [
+    { key: "chores", name: "Дела", kind: "habit", items: [{ key: "trash", name: "Мусор" }] },
+    { key: "spend", name: "Траты", kind: "log", fields: [{ key: "sum", name: "Сумма", type: "number", unit: "₽", goal: 20000, goalType: "max", goalPer: "month" }, { key: "glass", name: "Стакан", type: "number", unit: "мл", goal: 2000 }] },
+  ],
+};
+function space2() {
+  const store = space();
+  build(store, R2);
+  build(store, R2_MORE);
+  return store;
+}
+const el = (extra) => home([{ of: "pantry", ...extra }]);
+const at = (n = 0) => `screens.home.cards.t1.body[${n}]`;
+
+const INVALID_R2 = [
+  ["a period past the limit of days", home([{ el: "stat", of: "pantry", fn: "count", range: "@last400d" }]), "bad-value", `${at()}.range`, /N должно быть от 1 до 365.*@lastNd, @lastNw, @lastNm.*@all/],
+  ["a period past the limit of months", home([{ el: "stat", of: "pantry", fn: "count", range: "@last13m" }]), "bad-value", `${at()}.range`, /от 1 до 12 \(месяцев\)/],
+  ["a period nobody defined", home([{ el: "stat", of: "pantry", fn: "count", range: "@last7x" }]), "bad-value", `${at()}.range`, /Допустимо: @today, @yesterday, @lastNd/],
+  ["a delta on a line", home([{ el: "line", of: "spend", value: "sum", fn: "delta", range: "@last30d" }]), "bad-value", `${at()}.fn`, /delta.*stat и meter.*last или first/],
+  ["a less-than on a choice", home([{ el: "stat", of: "pantry", fn: "count", range: "@last7d", where: { shelf: "<верх" } }]), "bad-value", `${at()}.where.shelf`, /годятся = и !=/],
+  ["a state that is not one", home([{ el: "stat", of: "chores", value: "done", range: "@last7d", where: { state: "finished" } }]), "bad-value", `${at()}.where.state`, /state: done, changed, skipped, open/],
+  ["a date that does not read", home([{ el: "stat", of: "pantry", fn: "count", range: "@last7d", where: { expires: "<=вчера" } }]), "bad-value", `${at()}.where.expires`, /не читается.*today, \+7d, -30d/],
+  ["a number that is not one", home([{ el: "stat", of: "pantry", fn: "count", range: "@last7d", where: { left: ">много" } }]), "bad-value", `${at()}.where.left`, /нужно число/],
+  ["a field the track does not have in where", home([{ el: "stat", of: "pantry", fn: "count", range: "@last7d", where: { colour: "red" } }]), "unknown-key", `${at()}.where.colour`, /Ключи: product, expires, left, shelf, date/],
+  ["an item of a track that has none in where", home([{ el: "stat", of: "pantry", fn: "count", range: "@last7d", where: { item: "lamp" } }]), "unknown-key", `${at()}.where.item`, /Ключи: product/],
+  ["rows of items on a log", home([{ el: "stat", of: "pantry", rows: "items", fn: "count", range: "@all" }]), "kind-attr", `${at()}.rows`, /habit, list и catalog.*kind=log/],
+  ["a virtual value over items", home([{ el: "stat", of: "wish", rows: "items", value: "done", range: "@all" }]), "unknown-key", `${at()}.value`, /value — поле пункта: price.*where \{"state": "done"\}/],
+  ["bars over a catalog without a value to group by", home([{ el: "bars", of: "books", value: "pages", fn: "sum", range: "@all" }]), "kind-element", `${at()}.el`, /нет дат.*list и table.*stat.*bars с rows: "items" и by/],
+  ["a line over a catalog", home([{ el: "line", of: "books", value: "pages", fn: "sum", range: "@last30d" }]), "kind-element", `${at()}.el`, /Строки справочника показывают list и table/],
+  ["a heatmap over a catalog", home([{ el: "heatmap", of: "books", value: "pages", range: "@last12w" }]), "kind-element", `${at()}.el`, /rows: "items"/],
+  ["bars of items on a time step", home([{ el: "bars", of: "wish", rows: "items", value: "price", fn: "sum", by: "week", range: "@all" }]), "bad-value", `${at()}.by`, /нет оси времени/],
+  ["a compare over items", home([{ el: "stat", of: "wish", rows: "items", value: "price", fn: "sum", range: "@all", compare: true }]), "bad-value", `${at()}.compare`, /нет периодов/],
+  ["a course meter on a list", home([{ el: "meter", of: "wish", value: "done", goal: "due", range: "@all" }]), "kind-attr", `${at()}.goal`, /расписание есть у habit.*kind=list/],
+  ["a course meter that counts something else", home([{ el: "meter", of: "chores", value: "rate", goal: "due", range: "@all" }]), "bad-value", `${at()}.value`, /value: "done"/],
+  ["a course meter without value", home([{ el: "meter", of: "chores", goal: "due", range: "@all" }]), "missing-attr", `${at()}.value`, /value: "done"/],
+  ["bars by a field that cannot group", home([{ el: "bars", of: "pantry", value: "left", fn: "sum", by: "expires", range: "@last30d" }]), "unknown-key", `${at()}.by`, /by «expires» не подходит.*product, shelf.*day, week, month/],
+  ["bars by slot of a log", home([{ el: "bars", of: "pantry", value: "left", fn: "sum", by: "slot", range: "@last30d" }]), "unknown-key", `${at()}.by`, /такие by: product, shelf/],
+  ["bars by slot of shopping", home([{ el: "bars", of: "shopping", value: "spent", fn: "sum", by: "slot", range: "@last30d" }]), "unknown-key", `${at()}.by`, /только by: slot|нет приёмов|время/],
+  ["bars over all the time by day", home([{ el: "bars", of: "spend", value: "sum", fn: "sum", range: "@all" }]), "too-many-points", `${at()}.by`, /by: "week" или by: "month"/],
+  ["a heatmap over all the time", home([{ el: "heatmap", of: "spend", value: "sum", fn: "sum", range: "@all" }]), "range-too-long", `${at()}.range`, /@last12w или @last90d/],
+  ["all the time of a classic source", home([{ el: "stat", of: "shopping", value: "spent", fn: "sum", range: "@all" }]), "bad-value", `${at()}.range`, /нет собственного начала/],
+  ["a compare over all the time", home([{ el: "stat", of: "spend", value: "sum", fn: "sum", range: "@all", compare: true }]), "bad-value", `${at()}.compare`, /прошлого периода нет/],
+  ["pace over a goal per day", home([{ el: "meter", of: "spend", value: "glass", pace: "left" }]), "no-goal", `${at()}.pace`, /goalPer: "week" или "month".*sum/],
+  ["pace over a classic source", home([{ el: "stat", of: "shopping", value: "spent", fn: "sum", range: "@thisMonth", pace: "left" }]), "bad-value", `${at()}.pace`, /классический раздел/],
+  ["pace with an average", home([{ el: "meter", of: "spend", value: "sum", fn: "avg", pace: "left" }]), "bad-value", `${at()}.fn`, /считается суммой/],
+  ["marks of a day that cannot be opened", home([{ el: "marks", of: "chores", date: "@tomorrow" }]), "bad-value", `${at()}.date`, /Допустимо: @today, @yesterday/],
+  ["edit on a chart", home([{ el: "bars", of: "spend", value: "sum", fn: "sum", range: "@last7d", edit: true }]), "unknown-attr", `${at()}.edit`, /Допустимо: of, value, fn, range, by/],
+  ["a name on the home screen", { v: 2, name: "Тест", screens: [{ key: "home", name: "Главная", cards: [{ key: "t1", title: "Тест", body: [{ el: "p", text: "Привет" }] }] }] }, "home-name", "screens.home.name", /Уберите name у home/],
+  ["a field that asks at skipped on a track without that button", { v: 2, name: "Тест", tracks: [{ key: "why", name: "Почему", kind: "follow", follows: "ration", fields: [{ key: "reason", name: "Причина", type: "choice", options: ["не успел", "не хотел"], on: ["skipped"] }] }] }, "bad-value", "tracks.why.states", /Добавьте в states skipped: \["done","skipped"\]/],
+  ["a planned time that is not a time", { v: 2, name: "Тест", tracks: [{ key: "fasts", name: "Окно", kind: "habit", fields: [{ key: "opens", name: "С", type: "time", planned: true }], items: [{ key: "window", name: "Окно", plan: { opens: "9:00" } }] }] }, "bad-value", "tracks.fasts.items.window.plan.opens", /ЧЧ:ММ/],
+  ["a planned scale past its top", { v: 2, name: "Тест", tracks: [{ key: "fasts", name: "Окно", kind: "habit", fields: [{ key: "energy", name: "Бодрость", type: "scale", planned: true }], items: [{ key: "window", name: "Окно", plan: { energy: 9 } }] }] }, "bad-value", "tracks.fasts.items.window.plan.energy", /не больше 5/],
+];
+
+for (const [name, bundle, rule, path, message] of INVALID_R2) {
+  test(`round 2, refused at L1: ${name}`, () => {
+    const result = checkBundle(bundle, space2().state(), ctx);
+    assert.equal(result.ok, false, "a valid bundle where a refusal is due");
+    assert.equal(result.layer, "L1");
+    assert.deepEqual(result.ops, []);
+    const hit = result.problems.find((p) => p.rule === rule && p.path === path);
+    assert.ok(hit, `${rule} at ${path} among ${JSON.stringify(result.problems.map((p) => [p.rule, p.path]))}`);
+    assert.match(hit.message, message);
+    assert.ok(result.problems.length <= 6);
+    assert.match(hit.message, /[а-яё]/i, "the message is Russian");
+  });
+}
+
+test("round 2: every new word passes in the right place and the bundle goes through all layers", () => {
+  const store = space2();
+  build(store, {
+    v: 2, name: "Новые треки",
+    tracks: [
+      { key: "fasts", name: "Окно", kind: "habit", states: ["done", "changed", "skipped"], fields: [{ key: "opens", name: "С", type: "time", planned: true }, { key: "energy", name: "Бодрость", type: "scale", planned: true }], items: [{ key: "window", name: "Окно", plan: { opens: "12:00", energy: 3 } }] },
+      { key: "bought", name: "Где куплено", kind: "follow", follows: "shopping", fields: [{ key: "shop", name: "Магазин", type: "choice", options: ["Рынок", "Онлайн"] }] },
+      { key: "why", name: "Почему", kind: "follow", follows: "ration", states: ["done", "skipped"], fields: [{ key: "reason", name: "Причина", type: "choice", options: ["не успел", "не хотел"], on: ["skipped"] }] },
+    ],
+  });
+  const everything = {
+    v: 2, name: "Всё новое",
+    screens: [{
+      key: "all", name: "Всё",
+      cards: [
+        { key: "a_delta", title: "Изменение", body: [{ el: "stat", of: "spend", value: "sum", fn: "delta", range: "@all" }, { el: "stat", of: "spend", value: "sum", fn: "last", range: "@last45d" }] },
+        { key: "a_where", title: "Скоро", body: [{ el: "table", of: "pantry", columns: ["product", "expires"], range: "@last6m", where: { expires: "<=+7d", left: ">=1" }, edit: true, search: true }] },
+        { key: "a_state", title: "Не сделано", body: [{ el: "list", of: "chores", range: "@last7d", where: { state: "!=done", item: "trash" } }, { el: "marks", of: "chores", date: "@yesterday" }] },
+        { key: "a_items", title: "Пункты", body: [{ el: "stat", of: "wish", rows: "items", value: "price", fn: "sum", range: "@all", where: { state: "open" } }, { el: "table", of: "wish", rows: "items", columns: ["name", "price", "state"], edit: true }] },
+        { key: "a_catalog", title: "Книги", body: [{ el: "stat", of: "books", fn: "count", range: "@all" }, { el: "bars", of: "books", value: "pages", fn: "sum", by: "genre", range: "@all" }] },
+        { key: "a_course", title: "Курс", body: [{ el: "meter", of: "chores", value: "done", goal: "due", range: "@all" }] },
+        { key: "a_axes", title: "Разрезы", body: [{ el: "bars", of: "pantry", value: "left", fn: "sum", by: "shelf", range: "@last30d" }, { el: "bars", of: "chores", fn: "count", by: "state", range: "@last30d" }, { el: "bars", of: "ration", value: "skipped", fn: "sum", by: "slot", range: "@last30d" }, { el: "bars", of: "spend", value: "sum", fn: "sum", by: "month", range: "@all" }] },
+        { key: "a_pace", title: "Темп", body: [{ el: "meter", of: "spend", value: "sum", pace: "left" }, { el: "stat", of: "spend", value: "sum", fn: "sum", range: "@thisMonth", pace: "left" }] },
+        { key: "a_sources", title: "Источники", body: [{ el: "stat", of: "ration", value: "meals", fn: "sum", range: "@last7d" }, { el: "stat", of: "sport", value: "sessions_planned", fn: "sum", range: "@last7d" }] },
+      ],
+    }],
+  };
+  const checked = checkBundle(everything, store.state(), ctx);
+  assert.equal(checked.ok, true, JSON.stringify(checked.problems));
+  assert.equal(applyBundle(store, checked).ok, true);
+  assert.deepEqual(checkBundle(everything, store.state(), ctx).ops, [], "and applied again it is the same space");
+  const spec = readSpec(store.state());
+  assert.deepEqual(spec.tracks.fasts.fields.map((f) => [f.key, f.planned]), [["opens", true], ["energy", true]]);
+  assert.equal(spec.tracks.bought.follows, "shopping");
+  assert.deepEqual(spec.tracks.why.fields[0].on, ["skipped"]);
+  assert.deepEqual(spec.cards.a_state.body[0].where, { state: "!=done", item: "trash" }, "the operators travel through the store as written");
+});
+
+test("round 2: the same bundle applied twice changes nothing the second time", () => {
+  const store = space2();
+  const bundle = {
+    v: 2, name: "Окно питания",
+    tracks: [{ key: "fasts", name: "Окно", kind: "habit", fields: [{ key: "opens", name: "С", type: "time", planned: true }, { key: "energy", name: "Бодрость", type: "scale", planned: true }], items: [{ key: "window", name: "Окно", plan: { opens: "12:00", energy: 3 } }] }, { key: "bought", name: "Где куплено", kind: "follow", follows: "shopping", fields: [{ key: "shop", name: "Магазин", type: "choice", options: ["Рынок", "Онлайн"] }] }],
+    screens: [{ key: "fasts", name: "Окно", cards: [{ key: "fasts_marks", title: "Окно", body: [{ el: "marks", of: "fasts", date: "@yesterday" }] }, { key: "fasts_where", title: "Хотелки", body: [{ el: "table", of: "wish", rows: "items", where: { price: ">=1000" }, columns: ["name", "price"], edit: true, search: true }] }] }],
+  };
+  build(store, bundle);
+  const again = checkBundle(bundle, store.state(), ctx);
+  assert.equal(again.ok, true, JSON.stringify(again.problems));
+  assert.deepEqual(again.ops, []);
+});
+
+test("round 2: the range grammar is one function for the catalogue, the validator and the resolver", () => {
+  const range = (token) => resolveRange(token, TODAY);
+  assert.deepEqual(range("@last45d"), { from: "2026-09-10", to: TODAY });
+  assert.deepEqual(range("@last365d"), { from: "2025-10-25", to: TODAY });
+  assert.deepEqual(range("@last1d"), { from: TODAY, to: TODAY });
+  assert.deepEqual(range("@last52w"), { from: "2025-10-27", to: TODAY }, "52 weeks: from the Monday 51 weeks back");
+  assert.deepEqual(range("@last3m"), { from: "2026-08-01", to: TODAY });
+  assert.deepEqual(range("@last12m"), { from: "2025-11-01", to: TODAY });
+  assert.deepEqual(resolveRange("@all", TODAY, { since: "2026-09-15" }), { from: "2026-09-15", to: TODAY });
+  assert.deepEqual(resolveRange("@all", TODAY), { from: TODAY, to: TODAY }, "without a first day, @all is today");
+  assert.throws(() => range("@last0d"), /неизвестный период/);
+  for (const ok of ["@today", "@yesterday", "@thisWeek", "@thisMonth", "@all", "@last1d", "@last365d", "@last52w", "@last12m", "@last45d", "@last3m"]) assert.equal(rangeProblem(ok), null, ok);
+  for (const bad of ["@last0d", "@last366d", "@last53w", "@last13m", "@lastd", "@last7x", "@tomorrow", "last7d", "@ALL", 7, null]) assert.notEqual(rangeProblem(bad), null, String(bad));
+  assert.match(rangeProblem("@last366d"), /от 1 до 365 \(дней\)/);
+  assert.deepEqual(RANGES.map((r) => r.token), ["@today", "@yesterday", "@lastNd", "@lastNw", "@lastNm", "@thisWeek", "@thisMonth", "@all"]);
+  assert.ok(RANGES.every((r) => r.doc && r.examples.every((example) => example === r.token || rangeProblem(example) === null)));
+});
+
+test("round 2: the normalizer reads the new words with one meaning", () => {
+  const normalized = (body) => normalizeBundle({ v: 2, name: "x", screens: [{ key: "home", cards: [{ key: "c1", title: "t", body }] }] });
+  const out = normalized([
+    { el: "stat", of: "pantry", fn: "Delta", range: "за всё время", where: "expires<=+7d,left>=1" },
+    { el: "bars", of: "pantry", by: "По неделям", range: "last 45 days" },
+    { el: "bars", of: "pantry", by: "Shelf", rows: "item", range: "@all" },
+    { el: "marks", of: "chores", date: "вчера" },
+    { el: "meter", of: "spend", value: "sum", pace: "Remaining", goal: "due" },
+    { el: "list", of: "pantry", edit: "yes", search: "да" },
+  ]);
+  const [stat, byWeek, byShelf, marks, meter, list] = out.bundle.screens[0].cards[0].body;
+  assert.deepEqual([stat.fn, stat.range, stat.where], ["delta", "@all", { expires: "<=+7d", left: ">=1" }]);
+  assert.deepEqual([byWeek.by, byWeek.range], ["week", "@last45d"]);
+  assert.deepEqual([byShelf.by, byShelf.rows], ["shelf", "items"]);
+  assert.equal(marks.date, "@yesterday");
+  assert.deepEqual([meter.pace, meter.goal], ["left", "due"]);
+  assert.deepEqual([list.edit, list.search], [true, true]);
+  assert.ok(out.changes.every((c) => /[а-яё]/i.test(c)));
+  const follows = normalizeBundle({ v: 2, name: "x", tracks: [{ key: "t1", name: "Т", kind: "Follow", follows: "Покупки" }] });
+  assert.equal(follows.bundle.tracks[0].follows, "shopping");
+  assert.equal(wherePairs("state!=done,expires<=+7d,date>=-30d,left>1,a=b").date, ">=-30d");
+  assert.deepEqual(wherePairs("exercise=bench"), { exercise: "bench" });
+  assert.equal(wherePairs("novalue"), null);
+  assert.deepEqual(splitCondition("<=+7d"), { op: "<=", value: "+7d" });
+  assert.deepEqual(splitCondition("done"), { op: "=", value: "done" });
+  assert.deepEqual(splitCondition(5), { op: "=", value: 5 });
+});
+
+test("round 2: every attribute and value the catalogue knows has a one-line Russian doc and the manual's example", () => {
+  for (const [key, spec] of Object.entries(ELEMENTS)) {
+    assert.ok(/[а-яё]/i.test(spec.doc) && !spec.doc.includes("\n"), `${key} doc`);
+    for (const [name, attr] of Object.entries(spec.attrs)) {
+      assert.ok(/[а-яё]/i.test(attr.doc) && !attr.doc.includes("\n"), `${key}.${name} doc is a Russian line`);
+      assert.notEqual(attr.example, undefined, `${key}.${name} has an example`);
+    }
+  }
+  for (const [name, doc] of Object.entries({ ...FNS, ...WHERE_OPS, ...WHERE_KEYS, ...BY_WORDS })) assert.ok(/[а-яё]/i.test(doc) && !doc.includes("\n"), `${name} doc`);
+  for (const key of ["edit", "search"]) assert.deepEqual([ELEMENTS.list.attrs[key].type, ELEMENTS.table.attrs[key].type], ["bool", "bool"]);
+  assert.deepEqual(ELEMENTS.marks.attrs.date.values, ["@today", "@yesterday"]);
+  assert.deepEqual(ELEMENTS.meter.attrs.goal.values, ["due"]);
+  assert.deepEqual(Object.keys(FNS), ["sum", "avg", "min", "max", "count", "last", "first", "delta"]);
+  assert.deepEqual(Object.keys(FOLLOWS), ["ration", "sport", "shopping"]);
+  for (const el of ["stat", "table", "list", "bars"]) assert.deepEqual(ELEMENTS[el].attrs.rows.values, ["items"], el);
+  for (const el of ["stat", "meter"]) assert.deepEqual(ELEMENTS[el].attrs.pace.values, ["left"], el);
+  for (const type of ["time", "scale"]) assert.ok(FIELD_TYPES[type].attrs.includes("planned"), type);
+  assert.deepEqual(SOURCES.ration.values.map((v) => v.key).slice(-2), ["meals", "meals_planned"]);
+  assert.deepEqual(SOURCES.sport.values.map((v) => v.key).slice(-2), ["sessions", "sessions_planned"]);
 });

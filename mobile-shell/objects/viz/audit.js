@@ -2,11 +2,12 @@
 // the markup validator: thrown errors, sideways overflow, small tap targets, a
 // chart without data that hides its empty state, touching axis labels, text in a
 // series color, a status shown by color alone, and for the input elements of the
-// kit (buttons, fields, marks) a control without a label. Same spirit as the layout audit
+// kit (buttons, fields, marks, and the search box and edit buttons of a list or table) a control without a label. Same spirit as the layout audit
 // in tests/objects-ui-helpers.mjs. Returns a list of Russian sentences; an empty
 // list means the render passed.
 const VIZ = "c-card, c-stat, c-meter, c-bars, c-line, c-spark, c-heatmap, c-table, c-list, c-empty, c-quick, c-form, c-marks, c-streak, c-embed";
 const INPUTS = "c-quick, c-form, c-marks, c-streak";
+const WITH_CONTROLS = `${INPUTS}, c-list, c-table`;
 const CONTROLS = "button, input:not([type=hidden]), select, textarea";
 const INSIDE = VIZ.split(",").map((tag) => `${tag.trim()} *`).join(",");
 const CHARTS = new Set(["c-stat", "c-meter", "c-bars", "c-line", "c-spark", "c-heatmap", "c-table", "c-list"]);
@@ -100,7 +101,7 @@ export function auditRendered(root = document.body) {
     rects.set(el, rect);
   }
 
-  for (const root of scope.querySelectorAll(INPUTS)) {
+  for (const root of scope.querySelectorAll(WITH_CONTROLS)) {
     for (const control of root.querySelectorAll(CONTROLS)) {
       if (visible(control) && !controlName(control)) problems.push(`${label(root)}: у элемента управления <${control.localName}> нет подписи, экранный диктор не скажет, что это.`);
     }

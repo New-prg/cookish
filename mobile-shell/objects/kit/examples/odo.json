@@ -1,0 +1,26 @@
+{
+  "id": "odo",
+  "request": "Записываю показания одометра раз в неделю. Хочу видеть последнее показание и сколько проехал за месяц",
+  "reply": "Собрал «Одометр»: форма на главной, на экране последнее показание и сколько проехано в этом месяце.",
+  "tags": ["log", "delta", "last", "month", "stat", "form", "number"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Одометр",
+    "tracks": [
+      {
+        "key": "odo", "name": "Одометр", "kind": "log", "icon": "🚗",
+        "fields": [{ "key": "reading", "name": "Показание", "type": "number", "unit": "км", "min": 0, "max": 999999 }]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "odo_add", "title": "Показание", "body": [{ "el": "form", "of": "odo" }] }
+      ] },
+      { "key": "odo", "name": "Одометр", "icon": "🚗", "cards": [
+        { "key": "odo_last", "title": "Последнее показание", "body": [{ "el": "stat", "of": "odo", "value": "reading", "fn": "last", "range": "@all" }] },
+        { "key": "odo_month", "title": "Проехал за месяц", "body": [{ "el": "stat", "of": "odo", "value": "reading", "fn": "delta", "range": "@thisMonth" }] }
+      ] }
+    ]
+  }
+}

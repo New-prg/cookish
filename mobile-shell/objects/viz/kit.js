@@ -9,7 +9,7 @@
 import { VizElement, emptyBox, glyph, h } from "./el.js";
 import { BarsElement, HeatmapElement, LineElement, SparkElement } from "./charts.js";
 import { injectStyles } from "./styles.js";
-import { fmtNum, fmtValue } from "./util.js";
+import { fmtNum, fmtValue, isOn } from "./util.js";
 import { getDataSource, onDataSource, setDataSource } from "./source.js";
 
 export { setDataSource, getDataSource, onDataSource };
@@ -49,6 +49,9 @@ class CardElement extends VizElement {
   }
 }
 
+// data.pace.text: what is left per remaining day of the goal's period.
+const paceLine = (pace) => (pace?.text ? h("p", { class: "viz-pace", text: pace.text }) : null);
+
 // -- stat --------------------------------------------------------------------------
 // data: { value, unit?, note?, previous?, periodLabel?, good?, spark?: [numbers] } or a number
 class StatElement extends VizElement {
@@ -60,7 +63,7 @@ class StatElement extends VizElement {
     const line = h("p", { class: "viz-stat-line" },
       h("span", { class: "metric-value", text: fmtNum(d.value) }),
       h("span", { class: "metric-of", text: [unit, d.note].filter(Boolean).join(" ") }));
-    const left = h("div", { class: "viz-stat-main" }, line, this.delta(d, unit));
+    const left = h("div", { class: "viz-stat-main" }, line, this.delta(d, unit), paceLine(d.pace));
     const spark = Array.isArray(d.spark) && d.spark.filter((v) => v != null).length >= 3 ? h("c-spark", { class: "viz-stat-spark", "data-title": `${this.getTitle() || "Динамика"}` }) : null;
     this.replaceChildren(h("div", { class: "viz-stat" }, this.titleNode(), h("div", { class: "viz-stat-row" }, left, spark)));
     if (spark) spark.data = d.spark;
@@ -86,7 +89,9 @@ class MeterElement extends VizElement {
 
   draw(d) {
     const unit = this.getAttribute("unit") ?? d.unit ?? "";
-    const goal = this.hasAttribute("goal") ? Number(this.getAttribute("goal")) : Number(d.goal) || 0;
+    // goal="due" names where the goal comes from; the number is in the data.
+    const attrGoal = Number(this.getAttribute("goal"));
+    const goal = this.hasAttribute("goal") && Number.isFinite(attrGoal) ? attrGoal : Number(d.goal) || 0;
     const limit = (this.getAttribute("goal-type") || d.goalType) === "max";
     const value = d.value ?? (d.segments || []).reduce((a, seg) => a + seg.value, 0);
     const share = goal > 0 ? value / goal : 0;
@@ -104,7 +109,7 @@ class MeterElement extends VizElement {
     const legend = d.segments?.length > 1
       ? h("div", { class: "viz-legend", role: "list" }, d.segments.map((seg) => h("span", { class: "viz-legend-item", role: "listitem" }, h("span", { class: `viz-key s${Math.min(seg.color ?? 0, 6)}` }), h("span", { text: `${seg.label} ${fmtNum(seg.value)}` }))))
       : null;
-    this.replaceChildren(h("div", { class: "viz-meter" }, this.titleNode(), line, track, legend, this.foot(share, goal, value, unit, limit)));
+    this.replaceChildren(h("div", { class: "viz-meter" }, this.titleNode(), line, track, legend, this.foot(share, goal, value, unit, limit), paceLine(d.pace)));
   }
 
   foot(share, goal, value, unit, limit) {
@@ -120,39 +125,102 @@ class MeterElement extends VizElement {
 }
 
 // -- table and list -----------------------------------------------------------------
-// data: { columns: [{ key, label, numeric }], rows: [{ id, href?, icon?, title, sub?, cells: [{ text, numeric }] }], total? }
-class TableElement extends VizElement {
+// data: { mode?, columns: [{ key, label, numeric }], rows: [{ id, href?, icon?, title, sub?, state?, stateLabel?, search?, cells: [{ text, numeric }] }], total?, limit?, query?, remember? }
+// Attributes: edit="yes" makes a row with an id a button that reports kit-edit { id, track, title };
+// search="yes" puts a text filter above the rows (data.limit then caps what is shown after the filter).
+// Rows of items (rows="items", or data.mode "items") show their state as a badge: a mark and a word.
+// data.query and data.remember keep the filter across redraws.
+const ITEM_STATES = { open: ["open", "открыто"], done: ["check", "сделано"], changed: ["check", "изменено"], skipped: ["skip", "пропущено"], pending: ["open", "ждёт"] };
+const searchable = (text) => String(text ?? "").toLocaleLowerCase("ru-RU").replace(/ё/g, "е");
+const rowWords = (row) => [row.title, row.sub, ...(row.cells || []).map((c) => c.text), row.search].filter(Boolean).join(" ");
+const rowName = (row) => [...new Set([row.title, ...(row.cells || []).map((c) => c.text)])].filter(Boolean).join(", ").slice(0, 90);
+
+function stateBadge(row) {
+  const [icon, word] = ITEM_STATES[row.state] || ["open", row.state];
+  return h("span", { class: `viz-badge is-${row.state}` }, glyph(icon, 14), h("span", { text: (row.stateLabel || word).toLocaleLowerCase("ru-RU") }));
+}
+
+class RowsElement extends VizElement {
   isEmpty(data) { return !data?.rows?.length; }
 
+  flag(name) { return isOn(this.getAttribute(name)); }
+
   draw(d) {
-    // Rows that all carry the same name (tracker entries) get no name column.
+    const content = h("div", { class: "viz-rows-content" });
+    const paint = () => this.fillRows(content, d);
+    this._query ??= d.query ?? "";
+    this.replaceChildren(h("div", { class: "viz-rows" }, this.titleNode(), this.flag("search") ? this.searchBox(d, paint) : null, content));
+    paint();
+  }
+
+  searchBox(d, paint) {
+    const input = h("input", { type: "search", class: "kit-input viz-search", autocomplete: "off", placeholder: "Поиск", "aria-label": `Поиск: ${this.nameText() || "по строкам"}` });
+    input.value = this._query;
+    input.addEventListener("input", () => {
+      this._query = input.value;
+      d.remember?.(input.value);
+      paint();
+    });
+    return input;
+  }
+
+  // The rows that pass the filter, cut to the limit; "more" counts the rest.
+  fillRows(content, d) {
+    const query = searchable(this._query).trim();
+    const hits = query ? d.rows.filter((row) => searchable(rowWords(row)).includes(query)) : d.rows;
+    const shown = d.limit ? hits.slice(0, d.limit) : hits;
+    const count = query ? hits.length : Math.max(d.total ?? 0, hits.length);
+    if (!shown.length) {
+      content.replaceChildren(emptyBox(`Ничего не найдено по запросу «${this._query.trim()}»`));
+      return;
+    }
+    content.replaceChildren(...this.body(d, shown, count - shown.length).filter(Boolean));
+  }
+
+  edit(row) {
+    this.dispatchEvent(new CustomEvent("kit-edit", { bubbles: true, detail: { id: row.id, track: this.getAttribute("of"), title: row.title } }));
+  }
+
+  editable(row) { return this.flag("edit") && row.id != null; }
+}
+
+class TableElement extends RowsElement {
+  body(d, rows, more) {
+    // Rows that all carry the same name (tracker entries) get no name column; a filter does not change that.
     const named = d.rows.length < 2 || new Set(d.rows.map((r) => r.title)).size > 1 || d.rows.some((r) => r.href);
+    const columns = d.columns || [];
+    const status = (this.getAttribute("rows") === "items" || d.mode === "items") && rows.some((r) => r.state) && !columns.some((c) => c.key === "state");
+    const first = (row, content) => (this.editable(row)
+      ? h("button", { type: "button", class: "viz-edit", "aria-label": `Изменить: ${rowName(row)}`, onclick: () => this.edit(row) }, h("span", { class: "viz-edit-text", text: content }), glyph("edit", 14))
+      : content);
     const wrap = h("div", { class: "viz-table-wrap", tabindex: "0", role: "region", "aria-label": this.nameText() || "Таблица" },
       h("table", { class: "viz-table" },
         h("caption", { class: "viz-sr", text: this.nameText() || "Таблица" }),
-        h("thead", null, h("tr", null, named ? h("th", { scope: "col", text: "Название" }) : null, (d.columns || []).map((c) => h("th", { scope: "col", class: c.numeric ? "num" : "", text: c.label })))),
-        h("tbody", null, d.rows.map((row) => h("tr", null,
-          named ? h("th", { scope: "row" }, row.href ? h("a", { class: "viz-link", href: row.href, text: row.title }) : h("span", { text: row.title })) : null,
-          (row.cells || []).map((cell, i) => (i === 0 && !named ? h("th", { scope: "row", class: "", text: cell.text }) : h("td", { class: cell.numeric ? "num" : "", text: cell.text }))))))));
-    const more = d.total > d.rows.length ? h("p", { class: "viz-more", text: `Показано ${d.rows.length} из ${d.total}` }) : null;
-    this.replaceChildren(h("div", { class: "viz-rows" }, this.titleNode(), wrap, more));
+        h("thead", null, h("tr", null, named ? h("th", { scope: "col", text: "Название" }) : null, columns.map((c) => h("th", { scope: "col", class: c.numeric ? "num" : "", text: c.label })), status ? h("th", { scope: "col", text: "Статус" }) : null)),
+        h("tbody", null, rows.map((row) => h("tr", null,
+          named ? h("th", { scope: "row" }, row.href ? h("a", { class: "viz-link", href: row.href, text: row.title }) : first(row, row.title)) : null,
+          (row.cells || []).map((cell, i) => (i === 0 && !named ? h("th", { scope: "row" }, first(row, cell.text)) : h("td", { class: cell.numeric ? "num" : "", text: cell.text }))),
+          status ? h("td", null, row.state ? stateBadge(row) : null) : null)))));
+    return [wrap, more > 0 ? h("p", { class: "viz-more", text: `Показано ${rows.length} из ${rows.length + more}` }) : null];
   }
 }
 
-class ListElement extends VizElement {
-  isEmpty(data) { return !data?.rows?.length; }
-
-  draw(d) {
-    const rows = d.rows.map((row) => {
+class ListElement extends RowsElement {
+  body(d, rows, more) {
+    const items = this.getAttribute("rows") === "items" || d.mode === "items";
+    const lines = rows.map((row) => {
       const sub = row.sub ?? (row.cells || []).map((c) => c.text).filter(Boolean).join(" · ");
+      const editing = this.editable(row);
       const body = [
         h("span", { class: "viz-row-icon", "aria-hidden": "true", text: row.icon || "" }),
         h("span", { class: "viz-row-main" }, h("span", { class: "viz-row-title", text: row.title }), sub ? h("span", { class: "viz-row-sub", text: sub }) : null),
+        items && row.state ? stateBadge(row) : null,
+        editing ? glyph("edit", 16) : null,
       ];
+      if (editing) return h("button", { type: "button", class: "viz-row is-edit", "aria-label": `Изменить: ${rowName(row)}`, onclick: () => this.edit(row) }, body);
       return row.href ? h("a", { class: "viz-row", href: row.href }, body) : h("div", { class: "viz-row" }, body);
     });
-    const more = d.total > d.rows.length ? h("p", { class: "viz-more", text: `и ещё ${d.total - d.rows.length}` }) : null;
-    this.replaceChildren(h("div", { class: "viz-rows" }, this.titleNode(), h("div", { class: "viz-list" }, rows), more));
+    return [h("div", { class: "viz-list" }, lines), more > 0 ? h("p", { class: "viz-more", text: `и ещё ${more}` }) : null];
   }
 }
 

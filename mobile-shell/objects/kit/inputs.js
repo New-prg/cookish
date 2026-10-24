@@ -25,17 +25,21 @@
 //   c-form    { track, name, kind, date, maxDate, fields: [field + default], lastEntry }
 //   c-marks   { track, name, kind, date, canMark, states: [{ id, label }], add, addEvery, empty,
 //               rows: [{ key, itemId, slot, name, at, time, state, via, markId, planned, values, ask }],
-//               progress: { done, of } }
+//               progress: { done, of },
+//               pager?: { today, min, at(date) → data, remember(date) } }
 //   c-add     { track, name, kind, date, fields }
 //   c-streak  { current, best, last30: { ok, of }, unit }
 //   c-embed   { what, state, ctx }  (built by kit/screen.js, not by bind.js)
 //
 // A field is { key, name, type, unit, min, max, options: [{ id, name }], labels, required, hint }.
 // The caller of a c-marks may add { compact: true } to drop the row names (a control
-// that stands under a meal already has the meal's name above it).
+// that stands under a meal already has the meal's name above it) and { askState } to
+// name the state whose fields the row asks (the state of the meal it stands under).
+// With a pager the element shows «‹ день ›» and asks pager.at(date) for the data of
+// the day the person steps to.
 import { VizElement, glyph, h } from "../viz/el.js";
 import { injectStyles } from "../viz/styles.js";
-import { fmtNum, fmtValue, plural } from "../viz/util.js";
+import { dateLabel, fmtNum, fmtValue, plural, shiftDate, WEEKDAYS, weekdayIndex } from "../viz/util.js";
 
 const STATE_NAMES = { done: "сделано", changed: "изменено", skipped: "пропущено" };
 const AT_WORDS = { morning: "утром", noon: "днём", evening: "вечером", night: "на ночь" };
@@ -69,10 +73,10 @@ class InputElement extends VizElement {
 // -- controls -------------------------------------------------------------------------
 const optionsOf = (field) => (field.options || []).map((o) => (typeof o === "string" ? { id: o, name: o } : o));
 
-function button(text, { quiet = false, primary = false, pressed = null, onclick, type = "button", label = null } = {}) {
+export function button(text, { quiet = false, primary = false, danger = false, pressed = null, onclick, type = "button", label = null, disabled = false } = {}) {
   return h("button", {
-    type, class: `kit-btn${quiet ? " is-quiet" : ""}${primary ? " is-primary" : ""}`,
-    "aria-pressed": pressed == null ? null : String(pressed), "aria-label": label, onclick,
+    type, class: `kit-btn${quiet ? " is-quiet" : ""}${primary ? " is-primary" : ""}${danger ? " is-danger" : ""}`,
+    "aria-pressed": pressed == null ? null : String(pressed), "aria-label": label, disabled, onclick,
   }, text);
 }
 
@@ -166,7 +170,8 @@ function fieldControl(field, initial, labelId, today) {
 }
 
 // A set of fields with one read(): { node, read() → { values } | { error } }.
-function fieldSet(fields, initial, today) {
+// read({ clearing: true }) reports an emptied optional field as null, for an edit.
+export function fieldSet(fields, initial, today) {
   const parts = [];
   const nodes = fields.map((field) => {
     const labelId = uid("kit-label");
@@ -180,13 +185,14 @@ function fieldSet(fields, initial, today) {
   });
   return {
     node: h("div", { class: "kit-fields" }, nodes),
-    read() {
+    read({ clearing = false } = {}) {
       const values = {};
       for (const { field, control } of parts) {
         const out = control.read();
         if (out.error) return { error: out.error };
         if (out.value === undefined) {
           if (field.required) return { error: `${field.name || field.key}: заполните поле` };
+          if (clearing) values[field.key] = null;
           continue;
         }
         values[field.key] = out.value;
@@ -196,8 +202,8 @@ function fieldSet(fields, initial, today) {
   };
 }
 
-const errorLine = () => h("p", { class: "kit-error", role: "alert", hidden: true });
-function showError(line, message) {
+export const errorLine = () => h("p", { class: "kit-error", role: "alert", hidden: true });
+export function showError(line, message) {
   line.textContent = message || "";
   line.hidden = !message;
 }
@@ -259,7 +265,7 @@ class FormElement extends InputElement {
 class MarksElement extends InputElement {
   get emptyText() { return this._resolved?.empty || "Сегодня отмечать нечего"; }
 
-  isEmpty(d) { return d == null || (!d.rows?.length && !d.add); }
+  isEmpty(d) { return d == null || (!d.rows?.length && !d.add && !d.pager); }
 
   cleanup() { this._ask = null; }
 
@@ -269,10 +275,27 @@ class MarksElement extends InputElement {
     const done = d.progress && d.progress.of > 0 ? h("p", { class: "kit-hint", text: `Отмечено ${d.progress.done} из ${d.progress.of}` }) : null;
     // replaceChildren turns a null into the text «null»
     this.replaceChildren(...[
+      d.pager && !d.compact ? this.pager(d) : null,
       rows.length ? h("ul", { class: "kit-marks" }, rows.map((row) => this.row(d, row, readOnly))) : h("p", { class: "kit-hint", text: this.emptyText }),
       d.compact ? null : done,
       d.add && !readOnly ? this.adder(d) : null,
     ].filter(Boolean));
+  }
+
+  // «‹ Вчера ›»: a step back or forth by one day, up to seven days back.
+  pager(d) {
+    const { today, min } = d.pager;
+    const name = (date) => (date === today ? "Сегодня" : date === shiftDate(today, -1) ? "Вчера" : `${WEEKDAYS[weekdayIndex(date)]}, ${dateLabel(date)}`);
+    const go = (date) => {
+      d.pager.remember?.(date);
+      this.data = d.pager.at(date);
+    };
+    const before = shiftDate(d.date, -1);
+    const after = shiftDate(d.date, 1);
+    return h("div", { class: "kit-pager", role: "group", "aria-label": "День отметок" },
+      button(glyph("prev", 20), { label: `Раньше: ${name(before)}`, disabled: d.date <= min, onclick: () => go(before) }),
+      h("span", { class: "kit-pager-day", "aria-live": "polite", text: name(d.date) }),
+      button(glyph("next", 20), { label: d.date >= today ? "Позже" : `Позже: ${name(after)}`, disabled: d.date >= today, onclick: () => go(after) }));
   }
 
   label(d, state) { return d.states?.find((s) => s.id === state)?.label || STATE_NAMES[state] || state; }
@@ -282,7 +305,8 @@ class MarksElement extends InputElement {
     const marked = Boolean(row.markId);
     const states = d.states?.length ? d.states.map((s) => s.id) : ["done"];
     const asks = (state) => row.ask?.[state] || [];
-    const inline = (d.inline ?? d.kind === "follow") && asks(states[0]).length > 0;
+    const askState = d.askState ?? states[0];
+    const inline = (d.inline ?? d.kind === "follow") && asks(askState).length > 0;
     const who = row.name || d.name;
     const send = (state, values) => this.act({ do: "mark", track: d.track, ...target, state, ...(values && Object.keys(values).length ? { values } : {}), date: d.date, summary: `${who}: ${this.label(d, state)}` });
     const initial = { ...row.planned, ...row.values };
@@ -300,7 +324,7 @@ class MarksElement extends InputElement {
       return li;
     }
     if (inline) {
-      const state = states[0];
+      const state = askState;
       const set = fieldSet(asks(state), initial, d.maxDate || d.date);
       const error = errorLine();
       const form = h("form", { class: "kit-form", novalidate: true },

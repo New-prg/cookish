@@ -9,6 +9,8 @@ You judge whether an app that Claude Haiku 5.5 built from a kit of primitives fi
 - Do not credit the builder's prose. «Я добавил график» is not evidence. A chart bound to the right data is.
 - Checks are written as capabilities. Any design that delivers the capability passes. Do not demand a particular primitive, id or layout.
 - Judge only what the request and the check ask. Extra, harmless polish does not earn a pass and does not fail a check.
+- A goal, limit or budget is changed by a later request to the assistant, not by an editor on the screen. A value stored as data (the goal of a field, a stored value) that the screens use passes the check that asks for it; the missing on-screen editor is not a `partial`. A number typed into the markup text, or one that no stored record or field backs, still fails.
+- The packet states what each element does on its own («Само по себе»), what the lab entered as the person for a two-week history, and what the screens showed with and without that history. Read the built-in behaviour there instead of guessing it from the markup, and do not credit or fault an app for what the packet says its elements do or do not do. If the packet says the lab could not enter data (ОТКАЗЫ ВВОДА), the input is broken: do not let the filled screens hide that. If it says a track has no input element on any screen, a person could not have entered that data.
 
 ## Per-check scoring
 
@@ -28,7 +30,7 @@ When the request implies the person enters or marks data, the check about entry 
 
 Choose one:
 
-- `fit`: every check passes, or at most one is `partial` and none of those is an entry or progress check.
+- `fit`: every check passes, or at most one is `partial` and none of those is an entry or progress check. So one `partial` on a check that is neither entry nor progress, with every other check `pass`, is `fit`; do not lower it to `partial`. Two `partial` checks, or one on an entry or progress check, are not `fit`.
 - `partial`: no check is `fail` on a core capability, but there are several `partial` checks or one fail on a minor check. The app is usable but incomplete.
 - `miss`: a core capability is `fail`, the app is empty or broken, the app is unrelated to the request, the markup does not render, or the data model cannot hold what the request needs.
 - `wrong-refusal`: the item is not a refusal item, and the builder refused, or built something so narrowed that the request is not served, without a real reason. Also use it when the builder refuses a request that a safe version could serve.

@@ -4,6 +4,8 @@
 // the markup validator and the model manual all read this file, so a word
 // exists in exactly one place. Data first; the few functions are derivations.
 
+import { RANGE_LIMITS, RANGE_WORDS, parseLastRange } from "../core/query.js";
+
 export const BUNDLE_VERSION = 2;
 
 export const LIMITS = Object.freeze({
@@ -80,6 +82,7 @@ export const AVOID = Object.freeze({
 export const FOLLOWS = Object.freeze({
   ration: "приёмы пищи Рациона",
   sport: "тренировки Спорта",
+  shopping: "покупки из Запросов: поле спрашивают, когда позиция куплена",
 });
 
 // -- field types ---------------------------------------------------------------
@@ -87,12 +90,12 @@ export const FOLLOWS = Object.freeze({
 // min and max; `attrs` lists the field attributes the type accepts.
 export const FIELD_TYPES = Object.freeze({
   number: { format: "number", numeric: true, doc: "число, можно с единицей и целью", attrs: ["unit", "min", "max", "step", "goal", "goalType", "goalPer", "planned", "on", "required", "hint"], example: { key: "ml", name: "Выпито", type: "number", unit: "мл", min: 1, max: 5000, goal: 2000 } },
-  scale: { format: "number", numeric: true, doc: "оценка по шкале от min до max (по умолчанию 1–5), подписи labels по шагам", attrs: ["min", "max", "labels", "on", "required", "hint"], defaults: { min: 1, max: 5 }, example: { key: "level", name: "Насколько сыт", type: "scale", min: 1, max: 5, hint: "1 — голоден, 5 — объелся" } },
+  scale: { format: "number", numeric: true, doc: "оценка по шкале от min до max (по умолчанию 1–5), подписи labels по шагам", attrs: ["min", "max", "labels", "planned", "on", "required", "hint"], defaults: { min: 1, max: 5 }, example: { key: "level", name: "Насколько сыт", type: "scale", min: 1, max: 5, hint: "1 — голоден, 5 — объелся" } },
   text: { format: "text", numeric: false, doc: "короткий текст", attrs: ["on", "required", "hint"], example: { key: "note", name: "Заметка", type: "text" } },
   choice: { format: "select", numeric: false, doc: "один вариант из списка options (2–12)", attrs: ["options", "on", "required", "hint"], example: { key: "mood", name: "Настроение", type: "choice", options: ["хорошее", "обычное", "плохое"] } },
   yesno: { format: "checkbox", numeric: false, doc: "да или нет", attrs: ["on", "required", "hint"], example: { key: "slept_well", name: "Выспался", type: "yesno" } },
   date: { format: "date", numeric: false, doc: "дата", attrs: ["on", "required", "hint"], example: { key: "since", name: "С какого дня", type: "date" } },
-  time: { format: "time", numeric: false, doc: "время суток ЧЧ:ММ", attrs: ["on", "required", "hint"], example: { key: "lay", name: "Лёг", type: "time", required: true } },
+  time: { format: "time", numeric: false, doc: "время суток ЧЧ:ММ", attrs: ["planned", "on", "required", "hint"], example: { key: "lay", name: "Лёг", type: "time", required: true } },
   calc: { format: "formula", numeric: true, doc: "считается сама по другим полям трека, записать её нельзя", attrs: ["calc", "unit", "goal", "goalType", "goalPer", "hint"], example: { key: "volume", name: "Тоннаж", type: "calc", calc: "sets * reps * weight", unit: "кг" } },
   link: { format: "object", numeric: false, doc: "ссылка на строку справочника (to — ключ трека kind=catalog) или на продукт (to=\"product\")", attrs: ["to", "on", "required", "hint"], example: { key: "exercise", name: "Упражнение", type: "link", to: "exercises", required: true } },
 });
@@ -157,20 +160,33 @@ export const TIME_OF_DAY = /^([01]\d|2[0-3]):[0-5]\d$/;
 export const isAt = (value) => typeof value === "string" && (value in AT.words || TIME_OF_DAY.test(value));
 
 // -- ranges, functions, virtual values ----------------------------------------
+// One grammar: the words below and @lastNd, @lastNw, @lastNm. `token` is how the
+// manual prints a form, `examples` are tokens a model can copy as they are.
 export const RANGES = Object.freeze([
-  { token: "@today", doc: "сегодня" },
-  { token: "@yesterday", doc: "вчера" },
-  { token: "@last7d", doc: "последние 7 дней" },
-  { token: "@last14d", doc: "последние 14 дней" },
-  { token: "@last30d", doc: "последние 30 дней" },
-  { token: "@last90d", doc: "последние 90 дней" },
-  { token: "@last8w", doc: "последние 8 недель" },
-  { token: "@last12w", doc: "последние 12 недель" },
-  { token: "@last6m", doc: "последние 6 месяцев" },
-  { token: "@thisWeek", doc: "эта неделя, с понедельника" },
-  { token: "@thisMonth", doc: "этот месяц" },
+  { token: "@today", examples: ["@today"], doc: "сегодня" },
+  { token: "@yesterday", examples: ["@yesterday"], doc: "вчера" },
+  { token: "@lastNd", examples: ["@last7d", "@last30d", "@last90d"], doc: `последние N дней, N от 1 до ${RANGE_LIMITS.d}` },
+  { token: "@lastNw", examples: ["@last8w", "@last12w"], doc: `последние N недель, с понедельника, N от 1 до ${RANGE_LIMITS.w}` },
+  { token: "@lastNm", examples: ["@last3m", "@last6m"], doc: `последние N месяцев, с первого числа, N от 1 до ${RANGE_LIMITS.m}` },
+  { token: "@thisWeek", examples: ["@thisWeek"], doc: "эта неделя, с понедельника" },
+  { token: "@thisMonth", examples: ["@thisMonth"], doc: "этот месяц" },
+  { token: "@all", examples: ["@all"], doc: "всё время: от первой записи или создания трека до сегодня; у bars и line с @all нужен by: week или month" },
 ]);
-export const RANGE_TOKENS = Object.freeze(RANGES.map((r) => r.token));
+export const RANGE_EXAMPLES = Object.freeze(RANGES.flatMap((r) => r.examples));
+export const RANGE_HELP = `Допустимо: ${RANGES.map((r) => r.token).join(", ")}; например ${RANGE_EXAMPLES.join(", ")}.`;
+export const LAST_UNITS = Object.freeze({ d: "дней", w: "недель", m: "месяцев" });
+
+// null when the token is in the grammar, else the Russian reason with the legal forms.
+export function rangeProblem(token) {
+  if (typeof token !== "string") return `период пишется строкой. ${RANGE_HELP}`;
+  if (RANGE_WORDS.includes(token)) return null;
+  const last = parseLastRange(token);
+  if (!last) return `период ${JSON.stringify(token)} не подходит. ${RANGE_HELP}`;
+  const max = RANGE_LIMITS[last.unit];
+  if (last.n < 1 || last.n > max) return `в периоде ${token} N должно быть от 1 до ${max} (${LAST_UNITS[last.unit]}). ${RANGE_HELP}`;
+  return null;
+}
+export const isRange = (token) => rangeProblem(token) === null;
 
 export const FNS = Object.freeze({
   sum: "сумма за день, затем за период",
@@ -178,9 +194,52 @@ export const FNS = Object.freeze({
   min: "наименьшее: дневной итог для мл, ккал, ₽, мин, иначе наименьшая запись",
   max: "наибольшее: дневной итог для мл, ккал, ₽, мин, иначе наибольшая запись",
   count: "число записей (value не нужен)",
+  last: "значение последней записи периода",
+  first: "значение первой записи периода",
+  delta: "последняя запись минус первая (только stat и meter)",
 });
 export const FN_KEYS = Object.freeze(Object.keys(FNS));
 export const BY = Object.freeze({ day: "по дням", week: "по неделям", month: "по месяцам" });
+// Besides a time step, bars take `by` as a field key or one of these words: one bar per value.
+export const BY_WORDS = Object.freeze({ item: "по пунктам", state: "по отметкам", slot: "по приёмам или тренировкам" });
+export const BY_FIELD_TYPES = Object.freeze(["choice", "text", "yesno", "link"]);
+export const CATEGORY_FIELD_TYPES = Object.freeze(["choice", "link", "text"]);
+
+// where: a value may start with an operator. `state` also reads done for a changed mark.
+export const WHERE_OPS = Object.freeze({ "=": "равно (по умолчанию)", "!=": "не равно", "<": "меньше", "<=": "не больше", ">": "больше", ">=": "не меньше" });
+export const WHERE_KEYS = Object.freeze({
+  state: "отметка: done (включая changed), changed, skipped, open (ещё не отмечено)",
+  item: "ключ пункта habit, list или catalog",
+  date: "дата записи",
+});
+export const WHERE_STATES = Object.freeze(["done", "changed", "skipped", "open"]);
+const CONDITION = /^(!=|<=|>=|=|<|>)\s*([\s\S]*)$/;
+// "<=+7d" → { op: "<=", value: "+7d" }; a plain value is "=".
+export function splitCondition(raw) {
+  if (typeof raw !== "string") return { op: "=", value: raw };
+  const m = CONDITION.exec(raw.trim());
+  return m ? { op: m[1], value: m[2].trim() } : { op: "=", value: raw };
+}
+// where written as text, "state!=done,expires<=+7d" → { state: "!=done", expires: "<=+7d" }; null when a part has no key.
+export function wherePairs(text) {
+  const out = {};
+  for (const part of String(text ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    const m = /^([A-Za-z][A-Za-z0-9_]*)\s*(!=|<=|>=|=|<|>)\s*([\s\S]+)$/.exec(part);
+    if (!m) return null;
+    out[m[1]] = m[2] === "=" ? m[3].trim() : `${m[2]}${m[3].trim()}`;
+  }
+  return out;
+}
+const RELATIVE_DAY = /^@?(?:(today|yesterday|tomorrow)|([+-]\d+)d)$/;
+// today, yesterday, tomorrow, +7d, -30d, a date: the calendar day it means, null if it is none.
+export function dayToken(value, today) {
+  const text = String(value ?? "").trim();
+  if (isDate(text)) return text;
+  const m = RELATIVE_DAY.exec(text);
+  if (!m) return null;
+  const shift = m[1] ? { today: 0, yesterday: -1, tomorrow: 1 }[m[1]] : Number(m[2]);
+  return new Date(Date.parse(`${today}T00:00:00Z`) + shift * 86400000).toISOString().slice(0, 10);
+}
 
 // Functions a calc field may call; the formula language has more, the kit keeps to these.
 export const CALC_FUNCTIONS = Object.freeze(["if", "coalesce", "round", "floor", "ceil", "abs", "min", "max", "days", "addDays", "weekday", "spanHours"]);
@@ -188,15 +247,19 @@ export const CALC_FUNCTIONS = Object.freeze(["if", "coalesce", "round", "floor",
 const money = (key, name) => ({ key, name, unit: "₽" });
 export const SOURCES = Object.freeze({
   ration: {
-    name: "Рацион", icon: "🍽", doc: "съеденное по отметкам в Рационе (читается, не записывается)",
+    name: "Рацион", icon: "🍽", slots: true, doc: "съеденное по отметкам в Рационе (читается, не записывается); by: slot — по приёмам",
     values: [
       { key: "kcal", name: "Ккал", unit: "ккал" }, { key: "protein", name: "Белки", unit: "г" }, { key: "fat", name: "Жиры", unit: "г" }, { key: "carbs", name: "Углеводы", unit: "г" },
       { key: "kcal_planned", name: "Ккал по плану", unit: "ккал" }, { key: "protein_planned", name: "Белки по плану", unit: "г" }, { key: "skipped", name: "Пропущено приёмов", unit: "шт." },
+      { key: "meals", name: "Съедено приёмов", unit: "шт." }, { key: "meals_planned", name: "Приёмов по плану", unit: "шт." },
     ],
   },
   sport: {
-    name: "Спорт", icon: "🏃", doc: "тренировки и активности из Спорта (читается, не записывается)",
-    values: [{ key: "burned", name: "Сожжено", unit: "ккал" }, { key: "burned_planned", name: "Сожжено по плану", unit: "ккал" }, { key: "minutes", name: "Минут", unit: "мин" }],
+    name: "Спорт", icon: "🏃", slots: true, doc: "тренировки и активности из Спорта (читается, не записывается); by: slot — по тренировкам",
+    values: [
+      { key: "burned", name: "Сожжено", unit: "ккал" }, { key: "burned_planned", name: "Сожжено по плану", unit: "ккал" }, { key: "minutes", name: "Минут", unit: "мин" },
+      { key: "sessions", name: "Тренировок сделано", unit: "шт." }, { key: "sessions_planned", name: "Тренировок по плану", unit: "шт." },
+    ],
   },
   shopping: {
     name: "Покупки", icon: "🛒", doc: "покупки из Запросов (читается, не записывается)",
@@ -249,7 +312,7 @@ export const TRACK_ATTRS = Object.freeze({
   grace: A("int", "сколько пропущенных дней серия переживает, 0–3", { kinds: ["habit"], min: 0, max: 3, example: 1 }),
   times: A("int", "сколько отметок в период нужно для «выполнено», 1–7 (вместе с per)", { kinds: ["habit"], min: 1, max: 7, example: 3 }),
   per: A("enum", "период для times: day или week", { kinds: ["habit"], values: ["day", "week"], example: "week" }),
-  follows: A("enum", "к чему привязан трек follow: ration или sport", { kinds: ["follow"], values: Object.keys(FOLLOWS), requiredFor: "follow", example: "ration" }),
+  follows: A("enum", "к чему привязан трек follow: ration (приёмы), sport (тренировки) или shopping (купленные позиции)", { kinds: ["follow"], values: Object.keys(FOLLOWS), requiredFor: "follow", example: "ration" }),
   fields: A("list", "поля трека, до 10", { max: LIMITS.fields }),
   items: A("list", "пункты: расписание habit и list, строки catalog; до 30", { kinds: ["habit", "list", "catalog"], max: LIMITS.items }),
 });
@@ -269,8 +332,8 @@ export const FIELD_ATTRS = Object.freeze({
   goal: A("number", "цель, объявляется один раз на поле; 0 снимает цель", { example: 2000 }),
   goalType: A("enum", "min — цель достичь, max — лимит", { values: Object.keys(GOAL_TYPES), example: "min" }),
   goalPer: A("enum", "за какой период цель", { values: Object.keys(GOAL_PERS), example: "day" }),
-  planned: A("bool", "пункты несут плановое значение, отметка «изменил» его заменяет", { example: true }),
-  on: A("list", "при каких отметках спрашивать поле: done, changed", { values: ["done", "changed"], example: ["done"] }),
+  planned: A("bool", "пункты несут плановое значение (число, scale, время), отметка «изменил» его заменяет", { example: true }),
+  on: A("list", "при каких отметках спрашивать поле: done, changed, skipped (для skipped нужна кнопка skipped в states)", { values: STATES, example: ["done"] }),
   required: A("bool", "поле обязательно при записи", { example: true }),
   hint: A("text", "подсказка под полем, без чисел о человеке", { max: LIMITS.hint, example: "1 — голоден, 5 — объелся" }),
 });
@@ -309,10 +372,15 @@ export const REMOVAL_KINDS = Object.freeze({
 const OF = A("track", "ключ трека или классического источника ration, sport, shopping", { required: true, example: "water" });
 const VALUE = A("value", "ключ поля трека или виртуальная величина (done, rate, open, count…)", { example: "ml" });
 const FN = A("enum", "как свести значения: sum, avg, min, max, count; avg, min и max у воды, ккал, денег и минут считаются по дневным итогам, avg у веса и шкал по дневным средним", { values: FN_KEYS, example: "sum" });
-const RANGE = A("enum", "период из списка", { values: RANGE_TOKENS, example: "@last7d" });
-const WHERE = A("pairs", "фильтр записей {\"поле\":\"значение\"}, до 2 условий; ссылку можно назвать ключом или именем строки", { max: LIMITS.where, example: { exercise: "bench" } });
-const BY_ATTR = A("enum", "шаг по времени: day, week, month", { values: Object.keys(BY), example: "week" });
-const CATEGORY = A("field", "поле choice или link, по которому разбить на ряды", { example: "mood" });
+const RANGE = A("range", "период из списка range", { example: "@last7d" });
+const WHERE = A("pairs", "фильтр записей {\"поле\":\"значение\"}, до 2 условий; значение может начинаться со знака !=, <, <=, >, >= и называть день как today, +7d, -30d; ключи: поля трека, state (done, changed, skipped, open), item, date; ссылку можно назвать ключом или именем строки", { max: LIMITS.where, example: { expires: "<=+7d" } });
+const BY_TIME = A("enum", "шаг по времени: day, week, month", { values: Object.keys(BY), example: "week" });
+const BY_BARS = A("by", "по времени day, week, month или по значению: поле choice, text, yesno, link либо item, state, slot", { example: "week" });
+const CATEGORY = A("field", "поле choice, link или text, по которому разбить на ряды", { example: "mood" });
+const ROWS = A("enum", "items — считать пункты (строки справочника, пункты habit и list), а не записи; у справочника всегда так", { values: ["items"], kinds: ["habit", "list", "catalog"], example: "items" });
+const PACE = A("enum", "left — сколько ещё можно или нужно в день до конца недели или месяца цели; нужно поле с goalPer week или month", { values: ["left"], example: "left" });
+const EDIT = A("bool", "строка открывается на правку: «Сохранить» и «Удалить»", { example: true });
+const SEARCH = A("bool", "над списком строка поиска", { example: true });
 const COLUMNS_ATTR = A("fields", "столбцы: ключи полей и date, item, state, slot, name; до 5", { max: LIMITS.columns, example: ["date", "ml"] });
 const LIMIT = A("int", "сколько строк показать, 1–50", { min: 1, max: LIMITS.rows, example: 5 });
 
@@ -321,26 +389,26 @@ const LIMIT = A("int", "сколько строк показать, 1–50", { m
 export const ELEMENTS = Object.freeze({
   stat: {
     tag: "c-stat", bound: true, display: true, kinds: ["log", "habit", "list", "catalog", "follow"], sources: true, needsValue: true, needsRange: true,
-    doc: "Одно число за период.",
-    attrs: { of: OF, value: VALUE, fn: FN, range: RANGE, where: WHERE, compare: A("bool", "сравнить с прошлым периодом", { example: true }), spark: A("bool", "добавить мини-график", { example: true }), good: A("enum", "какое направление хорошее: up, down, none", { values: ["up", "down", "none"], example: "up" }) },
+    doc: "Одно число за период; с rows: items считает пункты, а не записи.",
+    attrs: { of: OF, value: VALUE, fn: FN, range: RANGE, where: WHERE, rows: ROWS, pace: PACE, compare: A("bool", "сравнить с прошлым периодом", { example: true }), spark: A("bool", "добавить мини-график", { example: true }), good: A("enum", "какое направление хорошее: up, down, none", { values: ["up", "down", "none"], example: "up" }) },
     example: { el: "stat", of: "water", value: "ml", fn: "sum", range: "@last7d", compare: true, good: "up" },
   },
   meter: {
     tag: "c-meter", bound: true, display: true, kinds: ["log", "habit", "list", "follow"], sources: true, needsValue: true, needsRange: false, needsGoal: true,
-    doc: "Значение против цели поля; период по умолчанию берётся из goalPer поля.",
-    attrs: { of: OF, value: VALUE, fn: FN, range: RANGE, where: WHERE, category: CATEGORY },
+    doc: "Значение против цели поля; период по умолчанию берётся из goalPer поля. У привычки goal: due берёт цель из расписания: «3 из 14».",
+    attrs: { of: OF, value: VALUE, fn: FN, range: RANGE, where: WHERE, category: CATEGORY, pace: PACE, goal: A("enum", "due — цель из расписания привычки: «3 из 14»; value done, период @all для курса с until", { values: ["due"], kinds: ["habit"], example: "due" }) },
     example: { el: "meter", of: "water", value: "ml" },
   },
   bars: {
-    tag: "c-bars", bound: true, display: true, kinds: ["log", "habit", "list", "follow"], sources: true, needsValue: true, needsRange: true,
-    doc: "Столбцы по дням, неделям или месяцам; цель поля рисуется линией.",
-    attrs: { of: OF, value: VALUE, fn: FN, range: RANGE, by: BY_ATTR, category: CATEGORY, stack: A("enum", "stacked — друг на друге, grouped — рядом", { values: ["stacked", "grouped"], example: "stacked" }), where: WHERE },
+    tag: "c-bars", bound: true, display: true, kinds: ["log", "habit", "list", "catalog", "follow"], sources: true, needsValue: true, needsRange: true,
+    doc: "Столбцы по дням, неделям или месяцам; цель поля рисуется линией. С by по полю, item, state или slot — столбец на каждое значение.",
+    attrs: { of: OF, value: VALUE, fn: FN, range: RANGE, by: BY_BARS, category: CATEGORY, stack: A("enum", "stacked — друг на друге, grouped — рядом", { values: ["stacked", "grouped"], example: "stacked" }), where: WHERE, rows: ROWS },
     example: { el: "bars", of: "water", value: "ml", fn: "sum", range: "@last7d" },
   },
   line: {
     tag: "c-line", bound: true, display: true, kinds: ["log", "habit", "list", "follow"], sources: true, needsValue: true, needsRange: true,
     doc: "Линия во времени.",
-    attrs: { of: OF, value: VALUE, fn: FN, range: RANGE, by: BY_ATTR, category: CATEGORY, area: A("bool", "залить площадь под линией", { example: true }), where: WHERE },
+    attrs: { of: OF, value: VALUE, fn: FN, range: RANGE, by: BY_TIME, category: CATEGORY, area: A("bool", "залить площадь под линией", { example: true }), where: WHERE },
     example: { el: "line", of: "weight", value: "kg", fn: "avg", range: "@last30d" },
   },
   spark: {
@@ -357,14 +425,14 @@ export const ELEMENTS = Object.freeze({
   },
   table: {
     tag: "c-table", bound: true, display: true, rows: true, kinds: ["log", "habit", "list", "catalog", "follow"], sources: false, needsRange: true, rangeUnlessCatalog: true,
-    doc: "Таблица записей; у справочника — строк справочника.",
-    attrs: { of: OF, columns: COLUMNS_ATTR, limit: LIMIT, sort: A("field", "поле для сортировки", { example: "date" }), order: A("enum", "asc или desc", { values: ["asc", "desc"], example: "desc" }), range: RANGE, where: WHERE },
+    doc: "Таблица записей; у справочника и с rows: items — пунктов с плановыми значениями и состоянием.",
+    attrs: { of: OF, columns: COLUMNS_ATTR, limit: LIMIT, sort: A("field", "поле для сортировки", { example: "date" }), order: A("enum", "asc или desc", { values: ["asc", "desc"], example: "desc" }), range: RANGE, where: WHERE, rows: ROWS, edit: EDIT, search: SEARCH },
     example: { el: "table", of: "bench", columns: ["date", "sets", "reps", "weight"], limit: 6, range: "@last90d" },
   },
   list: {
     tag: "c-list", bound: true, display: true, rows: true, kinds: ["log", "habit", "list", "catalog", "follow"], sources: false, needsRange: true, rangeUnlessCatalog: true,
-    doc: "Строки записей; у справочника — строк справочника.",
-    attrs: { of: OF, columns: COLUMNS_ATTR, limit: LIMIT, sort: A("field", "поле для сортировки", { example: "date" }), order: A("enum", "asc или desc", { values: ["asc", "desc"], example: "desc" }), range: RANGE, where: WHERE, add: A("bool", "форма под списком: название и поля трека, чтобы человек добавлял строки сам; только у справочника и списка", { example: true }) },
+    doc: "Строки записей; у справочника и с rows: items — пунктов с плановыми значениями и состоянием.",
+    attrs: { of: OF, columns: COLUMNS_ATTR, limit: LIMIT, sort: A("field", "поле для сортировки", { example: "date" }), order: A("enum", "asc или desc", { values: ["asc", "desc"], example: "desc" }), range: RANGE, where: WHERE, rows: ROWS, edit: EDIT, search: SEARCH, add: A("bool", "форма под списком: название и поля трека, чтобы человек добавлял строки сам; только у справочника и списка", { example: true }) },
     example: { el: "list", of: "water", columns: ["date", "ml"], limit: 5, range: "@last30d" },
   },
   p: {
@@ -394,12 +462,12 @@ export const ELEMENTS = Object.freeze({
   marks: {
     tag: "c-marks", bound: false, input: true, kinds: ["habit", "list", "follow"], sources: false,
     doc: "Что отметить: сегодняшние пункты привычки, открытые пункты списка, приёмы дня для follow.",
-    attrs: { of: OF, add: A("bool", "разрешить добавлять пункты на месте (для list)", { example: true }) },
+    attrs: { of: OF, add: A("bool", "разрешить добавлять пункты на месте (для list)", { example: true }), date: A("enum", "день, с которого открываются отметки: @today или @yesterday", { values: ["@today", "@yesterday"], example: "@today" }) },
     example: { el: "marks", of: "vitamins" },
   },
   streak: {
     tag: "c-streak", bound: false, input: false, kinds: ["habit", "log", "list", "follow"], sources: false, needsHabitOrGoal: true,
-    doc: "Серия: текущая, лучшая и доля за 30 дней вместе; срыв не обнуляет всё.",
+    doc: "Серия: текущая (при grace 0 срыв начинает её заново), лучшая и доля за 30 дней; срыв стирает только текущую.",
     attrs: { of: OF },
     example: { el: "streak", of: "vitamins" },
   },
@@ -429,6 +497,8 @@ function markupType(attr) {
     case "text": return { type: "text", max: attr.max ?? LIMITS.text };
     case "fields": return { type: "keys" };
     case "pairs": return { type: "text", max: 80 };
+    case "range": return { type: "range" };
+    case "by": return { type: "text", max: 40 };
     case "track": case "value": case "field": return { type: "key" };
     default: return { type: "text", max: LIMITS.text };
   }
@@ -439,9 +509,7 @@ export function componentsForMarkup() {
   for (const [key, el] of Object.entries(ELEMENTS)) {
     const attrs = {};
     for (const [name, attr] of Object.entries(el.attrs)) {
-      attrs[name === "goalType" ? "goal-type" : name] = attr.type === "enum" && attr.values.every((v) => RANGE_TOKENS.includes(v))
-        ? { type: "range" }
-        : markupType(attr);
+      attrs[name === "goalType" ? "goal-type" : name] = markupType(attr);
     }
     out[el.tag] = {
       doc: el.doc,

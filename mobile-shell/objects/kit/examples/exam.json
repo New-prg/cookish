@@ -1,0 +1,22 @@
+{
+  "id": "exam",
+  "request": "Готовлюсь к экзамену ещё две недели: каждый вечер занятие. Хочу отмечать и видеть, сколько занятий сделано из всех",
+  "reply": "Собрал «Экзамен»: вечернее занятие на две недели, рядом с отметкой шкала показывает, сколько занятий сделано из всех.",
+  "tags": ["habit", "course", "until", "schedule", "marks", "meter"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Экзамен",
+    "tracks": [
+      {
+        "key": "exam", "name": "Экзамен", "kind": "habit", "icon": "🎓",
+        "items": [{ "name": "Занятие", "every": "day", "at": "evening", "until": "2026-11-06" }]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "exam_today", "title": "Занятие", "body": [{ "el": "marks", "of": "exam" }, { "el": "meter", "of": "exam", "value": "done", "goal": "due", "range": "@all" }] }
+      ] }
+    ]
+  }
+}

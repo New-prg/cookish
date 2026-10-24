@@ -1,0 +1,26 @@
+{
+  "id": "plants",
+  "request": "Поливаю цветы по вторникам и пятницам. Хочу видеть, сколько раз полил на этой неделе и сколько раз пропустил",
+  "reply": "Собрал «Цветы»: отметки полива на главной, под ними сколько раз полито и пропущено на этой неделе. День полива без отметки считается пропуском.",
+  "tags": ["habit", "schedule", "weekdays", "counter", "missed", "week", "stat", "marks"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Цветы",
+    "tracks": [
+      {
+        "key": "plants", "name": "Цветы", "kind": "habit", "icon": "🪴", "unmarked": "missed",
+        "items": [{ "name": "Полить цветы", "every": "tue,fri" }]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "plants_today", "title": "Полив", "body": [{ "el": "marks", "of": "plants" }] },
+        { "key": "plants_week", "title": "Полив на этой неделе", "body": [
+          { "el": "stat", "of": "plants", "value": "done", "range": "@thisWeek" },
+          { "el": "stat", "of": "plants", "value": "skipped", "range": "@thisWeek" }
+        ] }
+      ] }
+    ]
+  }
+}

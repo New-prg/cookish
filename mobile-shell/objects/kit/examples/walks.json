@@ -1,0 +1,29 @@
+{
+  "id": "walks",
+  "request": "Записываю прогулки с собакой: сколько минут и куда ходили, в парк, на набережную или во двор. Хочу видеть за месяц, куда хожу чаще",
+  "reply": "Собрал «Прогулки»: на главной форма с местом и минутами, на экране столбцы по местам за этот месяц и сумма минут.",
+  "tags": ["log", "choice", "frequency", "month", "form", "bars", "stat"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Прогулки",
+    "tracks": [
+      {
+        "key": "walks", "name": "Прогулки", "kind": "log", "icon": "🐕",
+        "fields": [
+          { "key": "place", "name": "Куда", "type": "choice", "options": ["парк", "набережная", "двор"], "required": true },
+          { "key": "mins", "name": "Минут", "type": "number", "unit": "мин", "min": 1, "max": 300 }
+        ]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "walks_add", "title": "Прогулка", "body": [{ "el": "form", "of": "walks", "fields": ["place", "mins"] }] }
+      ] },
+      { "key": "walks", "name": "Прогулки", "icon": "🐕", "cards": [
+        { "key": "walks_places", "title": "Куда ходим чаще", "caption": "Сколько прогулок в этом месяце", "body": [{ "el": "bars", "of": "walks", "by": "place", "fn": "count", "range": "@thisMonth" }] },
+        { "key": "walks_month", "title": "Минут за месяц", "body": [{ "el": "stat", "of": "walks", "value": "mins", "fn": "sum", "range": "@thisMonth" }] }
+      ] }
+    ]
+  }
+}

@@ -168,7 +168,7 @@ export function printSpec(spec, { summary = false, app = null, items = "all" } =
       })),
       sources: SOURCE_KEYS.map((key) => ({ key, name: SOURCES[key].name, values: SOURCES[key].values.map((v) => v.key) })),
       screens: live(spec.screens).sort((a, b) => a.order - b.order)
-        .map((s) => ({ key: s.key, name: s.name, cards: cards.filter((c) => c.screen === s.key).sort((a, b) => a.order - b.order).map((c) => ({ key: c.key, title: c.title, shows: showsOf(c.body) })) }))
+        .map((s) => ({ key: s.key, ...(s.key === "home" ? {} : { name: s.name }), cards: cards.filter((c) => c.screen === s.key).sort((a, b) => a.order - b.order).map((c) => ({ key: c.key, title: c.title, shows: showsOf(c.body) })) }))
         .filter((s) => s.cards.length || s.key !== "home"),
     };
   }
@@ -187,7 +187,7 @@ export function printSpec(spec, { summary = false, app = null, items = "all" } =
       .map((s) => ({ s, list: cards.filter((c) => c.screen === s.key).sort((a, b) => a.order - b.order) }))
       .filter(({ s, list }) => list.length || (s.key !== "home" && (!app || s.app === app)))
       .map(({ s, list }) => compact({
-        key: s.key, name: s.name, icon: s.icon,
+        key: s.key, name: s.key === "home" ? undefined : s.name, icon: s.key === "home" ? undefined : s.icon,
         cards: list.map((c) => compact({ key: c.key, title: c.title, caption: c.caption, size: c.size, body: c.body })),
       })),
   };

@@ -4,11 +4,14 @@
 // (ГГГГ-ММ-ДД) and are computed in UTC, so a key never shifts with the device
 // time zone. Weeks start on Monday. The single-file gallery strips the import
 // below; nothing it draws resolves a range.
-import { resolveRange } from "../core/query.js";
+import { RANGE_LIMITS, resolveRange } from "../core/query.js";
 
 const DAY = 86400000;
 const stamp = (key) => Date.parse(`${key}T00:00:00Z`);
 const keyOf = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+// A yes/no attribute of a markup element: edit="yes", search="true".
+export const isOn = (value) => value === true || ["yes", "true", "да", "1"].includes(String(value ?? "").trim().toLowerCase());
 
 export const isDateKey = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(stamp(value));
 export const shiftDate = (key, n) => keyOf(stamp(key) + n * DAY);
@@ -29,14 +32,14 @@ export const MONTHS_OF = ["января", "февраля", "марта", "ап�
 export const MONTHS_LONG = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
 
 // -- ranges ---------------------------------------------------------------------
-export const RANGE_PATTERN = /^@(today|yesterday|thisWeek|thisMonth|last(\d{1,3})(d|w|m))$/;
+export const RANGE_PATTERN = /^@(today|yesterday|all|thisWeek|thisMonth|last(\d{1,3})(d|w|m))$/;
 
 export function rangeProblem(token) {
   const m = RANGE_PATTERN.exec(token || "");
-  if (!m) return "период: @today, @yesterday, @last7d, @last30d, @last12w, @last6m, @thisWeek или @thisMonth";
+  if (!m) return "период: @today, @yesterday, @last7d, @last30d, @last12w, @last6m, @thisWeek, @thisMonth или @all";
   if (m[2]) {
     const n = Number(m[2]);
-    const max = { d: 366, w: 53, m: 24 }[m[3]];
+    const max = RANGE_LIMITS[m[3]];
     if (n < 1 || n > max) return `период @last${m[2]}${m[3]}: число от 1 до ${max}`;
   }
   return null;
@@ -51,6 +54,7 @@ export { resolveRange };
 // The range right before: same length, so a stat can say «+12 % к прошлой неделе».
 // A period still running is compared with the same number of days of the last one.
 export function previousRange(token, today) {
+  if (token === "@all") throw new Error("за всё время сравнивать не с чем: уберите compare или возьмите конечный период");
   const cur = resolveRange(token, today);
   const m = RANGE_PATTERN.exec(token);
   const elapsed = daysBetween(cur.from, cur.to < today ? cur.to : today) + 1;
@@ -69,6 +73,7 @@ export function periodName(token) {
   if (m[1] === "yesterday") return "позавчера";
   if (m[1] === "thisWeek") return "прошлой неделе";
   if (m[1] === "thisMonth") return "прошлому месяцу";
+  if (m[1] === "all") return "прошлому периоду";
   const n = Number(m[2]);
   if (m[3] === "d") return n === 1 ? "вчера" : n === 7 ? "прошлой неделе" : `предыдущим ${n} ${plural(n, "дню", "дням", "дням")}`;
   if (m[3] === "w") return n === 1 ? "прошлой неделе" : `предыдущим ${n} ${plural(n, "неделе", "неделям", "неделям")}`;
@@ -82,6 +87,7 @@ export function rangeCaption(token) {
   if (m[1] === "yesterday") return "вчера";
   if (m[1] === "thisWeek") return "эта неделя";
   if (m[1] === "thisMonth") return "этот месяц";
+  if (m[1] === "all") return "за всё время";
   const n = Number(m[2]);
   if (m[3] === "d") return n === 1 ? "за сутки" : `за ${n} ${plural(n, "день", "дня", "дней")}`;
   if (m[3] === "w") return n === 1 ? "за неделю" : `за ${n} ${plural(n, "неделю", "недели", "недель")}`;

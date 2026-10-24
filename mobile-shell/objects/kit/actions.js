@@ -210,6 +210,50 @@ export function addItemOps(state, trackKey, input = {}, opts = {}) {
   }];
 }
 
+/**
+ * Changes an item the person made, or takes it out. patch: { name?, plan?, end?, archive? }.
+ * A plan value of null clears it. `end` stops a scheduled item after today: it is not due
+ * from tomorrow and its marks stay. `archive` takes the item out of the lists; marks that
+ * point at it stay in the history. A plan object, not a fact, so the change is journaled.
+ */
+export function itemOps(state, itemId, patch = {}, opts = {}) {
+  const obj = state.objects[itemId];
+  const track = obj && !obj.archivedAt && obj.type === "track_item" ? trackOf(state, obj.props.kit_track) : null;
+  if (!track) fail("Пункт не найден");
+  if (patch.archive) return [{ op: "archive", id: obj.id }];
+  const today = opts.today || localDateKey();
+  const all = itemsOf(state, track.key);
+  const props = {};
+  const out = { op: "update", id: obj.id };
+  if (patch.name !== undefined) {
+    const name = String(patch.name).trim();
+    if (!name || name.length > 60) fail("Название позиции: от 1 до 60 символов");
+    if (all.some((item) => !item.archived && item.id !== obj.id && item.name.toLocaleLowerCase("ru-RU") === name.toLocaleLowerCase("ru-RU"))) fail(`«${name}» уже есть в разделе «${track.name}»`);
+    if (name !== obj.name) out.name = name;
+  }
+  if (patch.plan) {
+    for (const key of Object.keys(patch.plan)) {
+      const field = fieldOf(track, key);
+      if (field && track.kind !== "catalog" && !field.planned) fail(`Поле «${field.name}» не плановое: в позиции его не задают`);
+    }
+    const given = propsOf(state, track, patch.plan);
+    const plan = { ...all.find((item) => item.id === obj.id).plan };
+    for (const [rel, value] of Object.entries(given)) {
+      const field = track.fields.find((f) => f.rel === rel);
+      if (value == null) delete plan[field.key];
+      else plan[field.key] = value;
+      if (obj.props[rel] != null) props[rel] = value;
+    }
+    props.kit_plan = Object.keys(plan).length ? plan : null;
+  }
+  if (patch.end) {
+    if (track.kind === "catalog") fail("Строка справочника не расписание: её можно только удалить");
+    props.kit_until = today;
+  }
+  if (out.name === undefined && !Object.keys(props).length) fail("Нечего менять");
+  return [{ ...out, ...(Object.keys(props).length ? { props } : {}) }];
+}
+
 // -- own entries ----------------------------------------------------------------------------
 /**
  * Edits or deletes an entry the person made. patch: { values?, date?, state? } or { remove: true }.

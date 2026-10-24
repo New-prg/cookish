@@ -12,9 +12,11 @@
 // a value is in range or a vocabulary word is allowed belongs to validateBundle.
 // So an attribute it does not know is kept as a string and reaches that layer.
 import { escapeAttr, escapeText, parseMarkup, validateMarkup } from "../viz/validate.js";
+import { splitCondition, wherePairs } from "./catalogue.js";
 
 // Attribute kinds. A list is a comma string, pairs are k=v joined by commas
-// (`npairs` turns a numeric value into a number, `spairs` keeps text).
+// (`npairs` turns a numeric value into a number, `spairs` keeps text); `where` is
+// pairs whose value may start with a comparison: state!=done is { state: "!=done" }.
 const BUNDLE = { v: "num", name: "str" };
 const TRACK = { key: "str", name: "str", icon: "str", kind: "str", states: "list", labels: "spairs", unmarked: "str", grace: "num", times: "num", per: "str", follows: "str", avoid: "bool" };
 const FIELD = { key: "str", name: "str", type: "str", unit: "str", min: "num", max: "num", step: "num", options: "list", labels: "list", calc: "str", to: "str", goal: "num", goalType: "str", goalPer: "str", planned: "bool", on: "list", required: "bool", hint: "str" };
@@ -25,8 +27,8 @@ const REMOVE = { card: "str", track: "str", screen: "str", item: "str", field: "
 
 // goal, goalType and unit are not part of an element any more: validateBundle moves a goal
 // to its field. They are read as typed values so that step sees what the model wrote.
-const CHART = { of: "str", value: "str", fn: "str", range: "str", where: "npairs", title: "str", goal: "num", goalType: "str", unit: "str" };
-const ROWS = { of: "str", columns: "list", limit: "num", sort: "str", order: "str", range: "str", where: "npairs", title: "str" };
+const CHART = { of: "str", value: "str", fn: "str", range: "str", where: "where", rows: "str", pace: "str", title: "str", goal: "num", goalType: "str", unit: "str" };
+const ROWS = { of: "str", columns: "list", limit: "num", sort: "str", order: "str", range: "str", where: "where", rows: "str", edit: "bool", search: "bool", title: "str" };
 const ELEMENTS = {
   stat: { ...CHART, compare: "bool", spark: "bool", good: "str" },
   meter: { ...CHART, category: "str" },
@@ -38,7 +40,7 @@ const ELEMENTS = {
   list: { ...ROWS, add: "bool" },
   quick: { of: "str", values: "npairs", label: "str" },
   form: { of: "str", fields: "list" },
-  marks: { of: "str", add: "bool" },
+  marks: { of: "str", add: "bool", date: "str" },
   streak: { of: "str" },
   embed: { what: "str" },
 };
@@ -67,6 +69,10 @@ function readValue(kind, raw) {
     case "list": return raw.trim() === "" ? [] : raw.split(",").map((s) => s.trim());
     case "npairs":
     case "spairs": return readPairs(kind, raw);
+    case "where": {
+      const pairs = wherePairs(raw);
+      return pairs && Object.fromEntries(Object.entries(pairs).map(([key, value]) => [key, NUMBER.test(value) ? Number(value) : value]));
+    }
     default: return raw;
   }
 }
@@ -94,8 +100,9 @@ function writeValue(kind, value) {
   if (typeof value === "string") return value;
   if (kind === "bool" && typeof value === "boolean") return value ? "yes" : "no";
   if (kind === "list" && Array.isArray(value)) return value.map(listItem).join(",");
-  if ((kind === "npairs" || kind === "spairs") && value && typeof value === "object" && !Array.isArray(value)) {
-    return Object.entries(value).map(([k, v]) => `${k}=${listItem(v)}`).join(",");
+  if ((kind === "npairs" || kind === "spairs" || kind === "where") && value && typeof value === "object" && !Array.isArray(value)) {
+    // a value that starts with a comparison is printed against the key as it is: state!=done
+    return Object.entries(value).map(([k, v]) => `${k}${kind === "where" && typeof v === "string" && splitCondition(v).op !== "=" ? "" : "="}${listItem(v)}`).join(",");
   }
   return String(value);
 }

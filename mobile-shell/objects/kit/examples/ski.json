@@ -1,0 +1,31 @@
+{
+  "id": "ski",
+  "request": "Катаюсь на лыжах по кругу: сколько кругов проехал и какой длины круг. Хочу видеть километры и цель 15 км в неделю",
+  "reply": "Собрал «Лыжи»: на главной форма выхода на лыжню, на экране «Лыжи» километры недели к цели, километры по неделям и последние выходы.",
+  "tags": ["log", "calc", "goal", "form", "meter", "bars", "table", "number"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Лыжи",
+    "tracks": [
+      {
+        "key": "ski", "name": "Лыжи", "kind": "log", "icon": "🎿",
+        "fields": [
+          { "key": "rounds", "name": "Кругов", "type": "number", "min": 1, "max": 100 },
+          { "key": "lap", "name": "Длина круга", "type": "number", "unit": "м", "min": 200, "max": 10000 },
+          { "key": "km", "name": "Пройдено", "type": "calc", "calc": "rounds * lap / 1000", "unit": "км", "goal": 15, "goalPer": "week" }
+        ]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "ski_add", "title": "Выход на лыжах", "body": [{ "el": "form", "of": "ski", "fields": ["rounds", "lap"] }] }
+      ] },
+      { "key": "ski", "name": "Лыжи", "icon": "🎿", "cards": [
+        { "key": "ski_week", "title": "Километры за неделю", "body": [{ "el": "meter", "of": "ski", "value": "km", "fn": "sum" }] },
+        { "key": "ski_trend", "title": "Километры по неделям", "body": [{ "el": "bars", "of": "ski", "value": "km", "fn": "sum", "by": "week", "range": "@last12w" }] },
+        { "key": "ski_last", "title": "Последние выходы", "body": [{ "el": "table", "of": "ski", "columns": ["date", "rounds", "lap", "km"], "limit": 6, "range": "@last30d" }] }
+      ] }
+    ]
+  }
+}

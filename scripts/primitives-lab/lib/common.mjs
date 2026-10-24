@@ -27,8 +27,10 @@ const OWNERS = { "kit/pipeline.js": "K1", "kit/manual.js": "K5", "kit/markup.js"
 
 // Imports a module of mobile-shell/objects and checks the named exports exist.
 export async function need(rel, names = []) {
-  // The selftest points LAB_KIT_DIR at a folder of fakes to test the scripts alone.
-  const file = process.env.LAB_KIT_DIR && rel.startsWith("kit/") ? path.join(process.env.LAB_KIT_DIR, rel.slice(4)) : path.join(SHELL, "objects", rel);
+  // The selftest points LAB_KIT_DIR at a folder of fakes to test the scripts alone;
+  // a module the folder does not fake is the real one.
+  const fake = process.env.LAB_KIT_DIR && rel.startsWith("kit/") ? path.join(process.env.LAB_KIT_DIR, rel.slice(4)) : null;
+  const file = fake && fs.existsSync(fake) ? fake : path.join(SHELL, "objects", rel);
   if (!fs.existsSync(file)) throw new LabError(`Нет модуля mobile-shell/objects/${rel}${OWNERS[rel] ? ` (его пишет агент ${OWNERS[rel]})` : ""}. Харнес не может работать без него.`);
   let mod;
   try {

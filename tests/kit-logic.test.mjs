@@ -164,7 +164,7 @@ test("an unmarked past occurrence follows the policy: ignore counts nothing, mis
   const range3 = range("2026-10-20", TODAY);
   assert.deepEqual(points(state, "p_ignore", range3, CTX).map((p) => [p.date, p.state, p.values.dose]), [["2026-10-20", "done", 2], ["2026-10-21", "changed", 1], ["2026-10-22", "skipped", 0]]);
   assert.equal(points(state, "p_missed", range3, CTX).length, 4);
-  assert.deepEqual(points(state, "p_assumed", range3, CTX).at(-1), { date: "2026-10-23", values: { dose: 2 }, slot: null, item: "vit_d", name: "Витамин D", state: "done", via: "policy", id: null });
+  assert.deepEqual(points(state, "p_assumed", range3, CTX).at(-1), { date: "2026-10-23", values: { dose: 2 }, slot: null, item: "vit_d", name: "Витамин D", state: "done", via: "policy", id: null, at: "morning" });
   const series = (fn) => valueSeries(state, { of: "p_ignore", value: "dose", fn, by: "day", range: range3 }, CTX).series[0].values;
   assert.deepEqual(series("sum"), [2, 1, 0, null, null], "a skipped occurrence adds zero to a sum");
   assert.deepEqual(series("avg").slice(0, 3), [2, 1, null], "and takes no part in an average");
@@ -765,4 +765,528 @@ test("a follow track on the demo plan, a catalog with a link, a list: the exampl
   assert.equal(open(), 3);
   human(bag, addItemOps(bag.state(), "gymbag", { name: "Бутылка" }, { today: TODAY }));
   assert.equal(open(), 4, "a row the person adds joins the open items");
+});
+
+// =====================================================================================================
+// Round 2: the spaces below are built the way a person gets them. A bundle goes through checkBundle and
+// applyBundle, then marks and records are written with actions.js as the person.
+// =====================================================================================================
+function applied(store, bundle) {
+  const checked = checkBundle(bundle, store.state(), CTX);
+  assert.equal(checked.ok, true, JSON.stringify(checked.problems));
+  assert.equal(applyBundle(store, checked).ok, true);
+  return checked;
+}
+function spaceOf(bundle, initial = null, ctx = CTX) {
+  const store = openSpace(initial);
+  const checked = checkBundle(bundle, store.state(), ctx);
+  assert.equal(checked.ok, true, JSON.stringify(checked.problems));
+  assert.equal(applyBundle(store, checked).ok, true);
+  return store;
+}
+function asPerson(store, ops) {
+  const result = store.apply(ops, { actor: "human" });
+  assert.equal(result.ok, true, result.reason);
+}
+const record = (store, track, values, date = TODAY) => asPerson(store, formOps(store.state(), track, values, { date, today: TODAY }));
+const mark = (store, track, target, state, date = TODAY, values) => asPerson(store, markOps(store.state(), track, { ...target, state, date, values, today: TODAY }));
+const texts = (data, column = 0) => data.rows.map((row) => row.cells[column].text);
+
+// -- ranges and the functions last, first, delta ------------------------------------------------
+const WEIGHT = {
+  v: 2, name: "Вес",
+  tracks: [{ key: "weight", name: "Вес", kind: "log", fields: [{ key: "kg", name: "Вес", type: "number", unit: "кг", min: 30, max: 300 }] }],
+  screens: [{
+    key: "weight", name: "Вес",
+    cards: [
+      { key: "w_change", title: "Изменение", body: [{ el: "stat", of: "weight", value: "kg", fn: "delta", range: "@all" }] },
+      { key: "w_now", title: "Сейчас", size: "half", body: [{ el: "stat", of: "weight", value: "kg", fn: "last", range: "@last45d" }] },
+      { key: "w_first", title: "С начала", size: "half", body: [{ el: "stat", of: "weight", value: "kg", fn: "first", range: "@last3m" }] },
+      { key: "w_weeks", title: "По неделям", body: [{ el: "line", of: "weight", value: "kg", fn: "last", by: "week", range: "@all" }] },
+    ],
+  }],
+};
+
+test("@all starts on the first record of the track, and last, first and delta read single entries in date order", () => {
+  const store = spaceOf(WEIGHT);
+  for (const [date, kg] of [["2026-10-01", 84.2], ["2026-10-08", 83.5], ["2026-10-15", 83.1], ["2026-10-15", 82.9], ["2026-10-22", 82.4]]) record(store, "weight", { kg }, date);
+  const state = store.state();
+  const stat = (fn, range) => bind(state, { el: "stat", of: "weight", value: "kg", fn, range }).value;
+  assert.deepEqual(["last", "first", "delta"].map((fn) => stat(fn, "@all")), [82.4, 84.2, -1.8]);
+  assert.equal(stat("avg", "@all"), 83.275, "avg still runs over the days: 83.1 and 82.9 of one day make 83");
+  assert.equal(stat("delta", "@last14d"), -0.7, "the first entry in the last 14 days is 83.1, the first of the two weigh-ins on the 15th");
+  assert.equal(stat("last", "@last45d"), 82.4);
+  assert.equal(stat("first", "@last3m"), 84.2);
+  const weeks = bind(state, { el: "line", of: "weight", value: "kg", fn: "last", by: "week", range: "@all" });
+  assert.deepEqual([weeks.buckets, weeks.series[0].values, weeks.range], [["2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19"], [84.2, 83.5, 82.9, 82.4], { from: "2026-10-01", to: TODAY }], "the last entry of the week, from the week of the first record");
+  assert.equal(stat("delta", "@yesterday"), null, "no entries, no change");
+});
+
+test("delta needs two entries: one weigh-in has no change to show", () => {
+  const store = spaceOf(WEIGHT);
+  record(store, "weight", { kg: 90 }, "2026-10-20");
+  assert.equal(bind(store.state(), { el: "stat", of: "weight", value: "kg", fn: "delta", range: "@all" }).value, null);
+  assert.equal(bind(store.state(), { el: "stat", of: "weight", value: "kg", fn: "last", range: "@all" }).value, 90);
+});
+
+// -- where with operators ---------------------------------------------------------------------------
+const PANTRY = {
+  v: 2, name: "Кладовая",
+  tracks: [{
+    key: "pantry", name: "Кладовая", kind: "log",
+    fields: [{ key: "product", name: "Продукт", type: "text", required: true }, { key: "expires", name: "Годен до", type: "date" }, { key: "left", name: "Осталось", type: "number", min: 0, max: 100 }],
+  }],
+  screens: [{
+    key: "pantry", name: "Кладовая",
+    cards: [{ key: "pantry_soon", title: "Скоро испортится", body: [{ el: "table", of: "pantry", columns: ["product", "expires"], where: { expires: "<=+7d", left: ">=1" }, sort: "expires", order: "asc", range: "@last6m" }] }],
+  }],
+};
+
+test("where takes an operator and a relative day: expires <= +7d, left >= 1, date >= -30d, expires < today", () => {
+  const store = spaceOf(PANTRY);
+  for (const [product, expires, left] of [["Молоко", "2026-10-26", 2], ["Йогурт", "2026-10-20", 1], ["Рис", "2026-11-30", 5], ["Яйца", "2026-10-31", 0], ["Чай", "2026-10-24", 3]]) record(store, "pantry", { product, expires, left });
+  record(store, "pantry", { product: "Мука", expires: "2026-10-27", left: 4 }, "2026-09-01");
+  const state = store.state();
+  const rows = (where) => texts(bind(state, { el: "table", of: "pantry", columns: ["product"], sort: "expires", order: "asc", range: "@last6m", where }));
+  assert.deepEqual(rows({ expires: "<=+7d", left: ">=1" }), ["Йогурт", "Чай", "Молоко", "Мука"], "two pairs: due within a week and still on the shelf");
+  assert.deepEqual(rows({ expires: "<today" }), ["Йогурт"]);
+  assert.deepEqual(rows({ expires: ">today" }), ["Молоко", "Мука", "Яйца", "Рис"]);
+  assert.deepEqual(rows({ expires: "<=today" }), ["Йогурт", "Чай"], "<= includes the day itself");
+  assert.deepEqual(rows({ left: "!=0", expires: ">=2026-10-26" }), ["Молоко", "Мука", "Рис"], "!= and a written date");
+  assert.deepEqual(rows({ date: ">=-30d" }), ["Йогурт", "Чай", "Молоко", "Яйца", "Рис"], "the record day, 30 days back");
+  assert.deepEqual(rows({ date: "<-30d" }), ["Мука"]);
+  assert.deepEqual(rows({ left: 5 }), ["Рис"], "a plain number still means equals");
+  assert.equal(rows({ product: "!=Рис" }).length, 5, "!= on text");
+  assert.equal(bind(state, { el: "stat", of: "pantry", fn: "count", range: "@last6m", where: { expires: "<=+7d" } }).value, 5, "eggs expiring on the 31st are inside the week");
+});
+
+const CHORES = {
+  v: 2, name: "Дела по дому",
+  tracks: [{ key: "chores", name: "Дела по дому", kind: "habit", states: ["done", "changed", "skipped"], items: [{ key: "flowers", name: "Полить цветы", from: "2026-10-20" }, { key: "trash", name: "Вынести мусор", from: "2026-10-20" }, { key: "floor", name: "Помыть пол", from: "2026-10-20" }] }],
+  screens: [{ key: "chores", name: "Дела по дому", cards: [{ key: "chores_skipped", title: "Пропущено", body: [{ el: "stat", of: "chores", value: "skipped", range: "@last7d", where: { item: "trash" } }] }] }],
+};
+
+test("where on state: done includes a changed mark, != done leaves the skipped and the unmarked, item names an item", () => {
+  const store = spaceOf(CHORES);
+  mark(store, "chores", { item: "flowers" }, "done", "2026-10-22");
+  mark(store, "chores", { item: "trash" }, "skipped", "2026-10-22");
+  mark(store, "chores", { item: "floor" }, "changed", "2026-10-23");
+  mark(store, "chores", { item: "flowers" }, "skipped", "2026-10-23");
+  const state = store.state();
+  const table = (where) => bind(state, { el: "table", of: "chores", columns: ["date", "item", "state"], range: "@last7d", sort: "date", order: "asc", where }).rows.map((r) => r.cells.map((c) => c.text).join(" "));
+  assert.deepEqual(table({ state: "done" }), ["22 окт Полить цветы сделано", "23 окт Помыть пол изменено"], "a changed mark is a kind of done");
+  assert.deepEqual(table({ state: "!=done" }), ["22 окт Вынести мусор пропущено", "23 окт Полить цветы пропущено"]);
+  assert.deepEqual(table({ state: "changed" }), ["23 окт Помыть пол изменено"]);
+  assert.deepEqual(table({ state: "skipped", item: "!=trash" }), ["23 окт Полить цветы пропущено"]);
+  const sum = (value, where) => bind(state, { el: "stat", of: "chores", value, fn: "sum", range: "@last7d", where }).value;
+  assert.equal(sum("skipped", { item: "trash" }), 1);
+  assert.equal(sum("done", { state: "!=done" }), 0, "the done and changed occurrences are filtered out, what is left was not done");
+  assert.equal(sum("open", { state: "open" }), 3, "open is what can still be marked: today's three items; the unmarked days before are past");
+  assert.equal(sum("due", { state: "open" }), 11, "state open reaches every occurrence nobody marked: 3 items x 5 days = 15, 4 of them marked");
+  assert.equal(sum("skipped"), 2);
+});
+
+test("a where written as markup text is read into pairs with their operators", () => {
+  const store = spaceOf(PANTRY);
+  for (const [product, expires, left] of [["Молоко", "2026-10-26", 2], ["Рис", "2026-11-30", 5]]) record(store, "pantry", { product, expires, left });
+  const text = bind(store.state(), { el: "table", of: "pantry", columns: ["product"], range: "@last6m", where: "expires<=+7d,left>=1" });
+  assert.deepEqual(texts(text), ["Молоко"]);
+});
+
+// -- items as rows ---------------------------------------------------------------------------------
+const WISHES = {
+  v: 2, name: "Хотелки",
+  tracks: [{
+    key: "wish", name: "Хотелки", kind: "list", states: ["done", "skipped"],
+    fields: [{ key: "price", name: "Цена", type: "number", unit: "₽", planned: true, min: 0, max: 1000000 }, { key: "prio", name: "Важность", type: "scale", planned: true }],
+    items: [
+      { key: "jacket", name: "Куртка", from: "2026-10-20", plan: { price: 9000, prio: 4 } }, { key: "book", name: "Книга", from: "2026-10-20", plan: { price: 500, prio: 2 } },
+      { key: "lamp", name: "Лампа", from: "2026-10-20", plan: { price: 2500, prio: 5 } }, { key: "mug", name: "Кружка", from: "2026-10-20", plan: { price: 700, prio: 1 } },
+    ],
+  }],
+  screens: [{
+    key: "wish", name: "Хотелки",
+    cards: [
+      { key: "wish_left", title: "Ещё хочется", body: [{ el: "stat", of: "wish", rows: "items", value: "price", fn: "sum", range: "@all", where: { state: "open" } }] },
+      { key: "wish_count", title: "Сколько осталось", size: "half", body: [{ el: "stat", of: "wish", rows: "items", fn: "count", range: "@all", where: { state: "open" } }] },
+      { key: "wish_rows", title: "Список", body: [{ el: "table", of: "wish", rows: "items", columns: ["name", "price", "prio", "state"], sort: "price", order: "desc", edit: true }] },
+      { key: "wish_bars", title: "Цены", body: [{ el: "bars", of: "wish", rows: "items", value: "price", fn: "sum", by: "item", range: "@all" }] },
+    ],
+  }],
+};
+
+test("items as rows: a list with planned prices is counted, summed, listed and charted by its items, with their state", () => {
+  const store = spaceOf(WISHES);
+  mark(store, "wish", { item: "book" }, "done", "2026-10-22");
+  mark(store, "wish", { item: "mug" }, "skipped", "2026-10-23");
+  const state = store.state();
+  const sum = bind(state, { el: "stat", of: "wish", rows: "items", value: "price", fn: "sum", range: "@all", where: { state: "open" } });
+  assert.deepEqual([sum.value, sum.unit], [11500, "₽"], "the jacket and the lamp are still wanted: 9000 + 2500");
+  assert.equal(bind(state, { el: "stat", of: "wish", rows: "items", fn: "count", range: "@all", where: { state: "open" } }).value, 2);
+  assert.equal(bind(state, { el: "stat", of: "wish", rows: "items", fn: "count", range: "@all" }).value, 4, "every item, whatever its state");
+  assert.equal(bind(state, { el: "stat", of: "wish", rows: "items", value: "price", fn: "avg", range: "@all" }).value, 3175, "an average over items, not over the days they were added");
+  assert.equal(bind(state, { el: "stat", of: "wish", rows: "items", value: "prio", fn: "max", range: "@all", where: { state: "done" } }).value, 2);
+  assert.equal(bind(state, { el: "stat", of: "wish", rows: "items", value: "price", fn: "sum", range: "@all", where: { price: ">=2500", state: "!=skipped" } }).value, 11500);
+
+  const table = bind(state, { el: "table", of: "wish", rows: "items", columns: ["name", "price", "prio", "state"], sort: "price", order: "desc" });
+  assert.deepEqual(table.rows.map((r) => r.cells.map((c) => c.text.replace(/\s/g, " "))), [
+    ["Куртка", "9 000 ₽", "4", "открыто"], ["Лампа", "2 500 ₽", "5", "открыто"], ["Кружка", "700 ₽", "1", "пропущено"], ["Книга", "500 ₽", "2", "сделано"],
+  ]);
+  assert.deepEqual(table.rows.map((r) => [r.id, r.kind]), [["ti_wish_jacket", "item"], ["ti_wish_lamp", "item"], ["ti_wish_mug", "item"], ["ti_wish_book", "item"]]);
+  assert.deepEqual([table.mode, table.track, table.total], ["items", "wish", 4]);
+  const open = bind(state, { el: "list", of: "wish", rows: "items", where: { state: "open" }, sort: "name", order: "asc" });
+  assert.deepEqual(open.rows.map((r) => r.title), ["Куртка", "Лампа"]);
+
+  const bars = bind(state, { el: "bars", of: "wish", rows: "items", value: "price", fn: "sum", by: "item", range: "@all" });
+  assert.deepEqual([bars.by, bars.buckets, bars.series[0].values], ["category", ["Куртка", "Лампа", "Кружка", "Книга"], [9000, 2500, 700, 500]], "one bar per item, the dearest first");
+});
+
+test("an item the person marks done leaves the open rows at once, an item added joins them", () => {
+  const store = spaceOf(WISHES);
+  const open = () => bind(store.state(), { el: "stat", of: "wish", rows: "items", fn: "count", range: "@all", where: { state: "open" } }).value;
+  assert.equal(open(), 4);
+  mark(store, "wish", { item: "lamp" }, "done");
+  assert.equal(open(), 3);
+  asPerson(store, addItemOps(store.state(), "wish", { name: "Плед", plan: { price: 3000, prio: 3 } }, { today: TODAY }));
+  assert.equal(open(), 4);
+  assert.equal(bind(store.state(), { el: "stat", of: "wish", rows: "items", value: "price", fn: "sum", range: "@all", where: { state: "open" } }).value, 13200, "jacket, book, mug and the new rug");
+});
+
+const BOOKS = {
+  v: 2, name: "Книги",
+  tracks: [{
+    key: "books", name: "Книги", kind: "catalog",
+    fields: [{ key: "genre", name: "Жанр", type: "choice", options: ["роман", "наука", "детектив"] }, { key: "pages", name: "Страниц", type: "number", min: 1, max: 5000 }],
+    items: [
+      { key: "war", name: "Война и мир", plan: { genre: "роман", pages: 1300 } }, { key: "cosmos", name: "Космос", plan: { genre: "наука", pages: 400 } },
+      { key: "gene", name: "Ген", plan: { genre: "наука", pages: 600 } }, { key: "poirot", name: "Убийство в Восточном экспрессе", plan: { genre: "детектив", pages: 300 } },
+      { key: "anna", name: "Анна Каренина", plan: { genre: "роман", pages: 900 } },
+    ],
+  }],
+  screens: [{
+    key: "books", name: "Книги",
+    cards: [
+      { key: "books_count", title: "Сколько книг", size: "half", body: [{ el: "stat", of: "books", fn: "count", range: "@all" }] },
+      { key: "books_pages", title: "Страниц всего", size: "half", body: [{ el: "stat", of: "books", value: "pages", fn: "sum", range: "@all" }] },
+      { key: "books_genres", title: "Страниц по жанрам", body: [{ el: "bars", of: "books", value: "pages", fn: "sum", by: "genre", range: "@all" }] },
+    ],
+  }],
+};
+
+test("a catalog is always its rows: stat counts and sums them, bars group them by a choice in the order of its options", () => {
+  const state = spaceOf(BOOKS).state();
+  assert.equal(bind(state, { el: "stat", of: "books", fn: "count", range: "@all" }).value, 5);
+  assert.equal(bind(state, { el: "stat", of: "books", value: "pages", fn: "sum", range: "@all" }).value, 3500);
+  assert.equal(bind(state, { el: "stat", of: "books", value: "pages", fn: "sum", range: "@all", where: { genre: "наука" } }).value, 1000);
+  assert.equal(bind(state, { el: "stat", of: "books", value: "pages", fn: "max", range: "@all", where: { pages: "<1000" } }).value, 900);
+  const bars = bind(state, { el: "bars", of: "books", value: "pages", fn: "sum", by: "genre", range: "@all" });
+  assert.deepEqual([bars.buckets, bars.series[0].values], [["роман", "наука", "детектив"], [2200, 1000, 300]], "options order, not size");
+  const counts = bind(state, { el: "bars", of: "books", fn: "count", by: "genre", range: "@all" });
+  assert.deepEqual(counts.series[0].values, [2, 2, 1]);
+  const table = bind(state, { el: "table", of: "books", columns: ["name", "genre", "pages"], where: { genre: "!=роман" } });
+  assert.deepEqual(table.rows.map((r) => [r.kind, ...r.cells.map((c) => c.text)]), [["item", "Ген", "наука", "600"], ["item", "Космос", "наука", "400"], ["item", "Убийство в Восточном экспрессе", "детектив", "300"]]);
+});
+
+// -- a course: the goal is the schedule ---------------------------------------------------------------
+const COURSE = {
+  v: 2, name: "Курс",
+  tracks: [{ key: "course", name: "Курс таблеток", kind: "habit", states: ["done", "changed", "skipped"], items: [{ key: "pill", name: "Таблетка", every: "day", from: "2026-10-18", until: "2026-10-31" }] }],
+  screens: [{
+    key: "course", name: "Курс",
+    cards: [
+      { key: "course_progress", title: "Курс", body: [{ el: "meter", of: "course", value: "done", goal: "due", range: "@all" }, { el: "marks", of: "course" }] },
+      { key: "course_week", title: "Неделя", body: [{ el: "meter", of: "course", goal: "due", value: "done", range: "@thisWeek" }] },
+    ],
+  }],
+};
+
+test("a course meter: three done out of the fourteen days the course lasts", () => {
+  const store = spaceOf(COURSE);
+  for (const date of ["2026-10-18", "2026-10-19", "2026-10-20"]) mark(store, "course", { item: "pill" }, "done", date);
+  mark(store, "course", { item: "pill" }, "skipped", "2026-10-21");
+  const state = store.state();
+  const meter = bind(state, { el: "meter", of: "course", value: "done", goal: "due", range: "@all" });
+  assert.deepEqual([meter.value, meter.goal, meter.goalType], [3, 14, "min"], "14 days from the 18th to the 31st, today and the days to come included");
+  const week = bind(state, { el: "meter", of: "course", goal: "due", value: "done", range: "@thisWeek" });
+  assert.deepEqual([week.value, week.goal], [2, 7], "the 19th and 20th of the 19th..25th");
+  mark(store, "course", { item: "pill" }, "changed", "2026-10-22");
+  assert.equal(bind(store.state(), { el: "meter", of: "course", value: "done", goal: "due", range: "@all" }).value, 4, "a changed mark counts as done");
+});
+
+test("a course without an end runs to today, and an item that ended is not due after", () => {
+  const store = spaceOf({ ...COURSE, tracks: [{ key: "course", name: "Курс таблеток", kind: "habit", items: [{ key: "pill", name: "Таблетка", every: "day", from: "2026-10-18" }, { key: "vit", name: "Витамин", every: "weekdays", from: "2026-10-19", until: "2026-10-23" }] }] });
+  mark(store, "course", { item: "pill" }, "done", "2026-10-18");
+  const meter = bind(store.state(), { el: "meter", of: "course", value: "done", goal: "due", range: "@all" });
+  assert.deepEqual([meter.value, meter.goal], [1, 7 + 5], "the pill has no end, so the course ends today: the 18th to the 24th is 7; the vitamin 19th..23rd on weekdays is 5");
+  assert.equal(bind(store.state(), { el: "meter", of: "course", value: "done", goal: "due", range: "@all", where: { item: "vit" } }).goal, 5);
+});
+
+// -- bars by a value: one bar per choice, text, item, state or slot -------------------------------------
+const SKIPS = {
+  v: 2, name: "Пропуски",
+  tracks: [{
+    key: "skips", name: "Пропуски тренировок", kind: "log",
+    fields: [
+      { key: "reason", name: "Причина", type: "choice", options: ["устал", "некогда", "заболел", "лень"] },
+      { key: "note", name: "Заметка", type: "text" },
+      { key: "forced", name: "Вынужденно", type: "yesno" },
+    ],
+  }],
+  screens: [{ key: "skips", name: "Пропуски", cards: [{ key: "skips_why", title: "Почему пропускаю", body: [{ el: "bars", of: "skips", fn: "count", by: "reason", range: "@last30d" }] }] }],
+};
+const SKIP_RECORDS = [
+  ["устал", "работа", false], ["устал", "работа", false], ["устал", "дождь", false],
+  ["некогда", "гости", false], ["некогда", "гости", false], ["некогда", "гости", false], ["некогда", "работа", false], ["некогда", "работа", true],
+  ["заболел", "", true], ["лень", "дождь", false], ["лень", "дождь", false], [null, "работа", false],
+];
+
+test("bars by a choice: a bar per option in the order of the options, the unanswered last", () => {
+  const store = spaceOf(SKIPS);
+  for (const [reason, note, forced] of SKIP_RECORDS) record(store, "skips", { ...(reason ? { reason } : {}), ...(note ? { note } : {}), forced });
+  const state = store.state();
+  const bars = bind(state, { el: "bars", of: "skips", fn: "count", by: "reason", range: "@last30d" });
+  assert.deepEqual([bars.by, bars.buckets, bars.series[0].values], ["category", ["устал", "некогда", "заболел", "лень", "Без категории"], [3, 5, 1, 2, 1]]);
+  assert.equal(bars.rows, 12);
+  const notes = bind(state, { el: "bars", of: "skips", fn: "count", by: "note", range: "@last30d" });
+  assert.deepEqual([notes.buckets, notes.series[0].values], [["работа", "гости", "дождь", "Без категории"], [5, 3, 3, 1]], "a text is ordered by its total, equal totals by name");
+  const forced = bind(state, { el: "bars", of: "skips", fn: "count", by: "forced", range: "@last30d" });
+  assert.deepEqual([forced.buckets, forced.series[0].values], [["да", "нет"], [2, 10]]);
+  const split = bind(state, { el: "bars", of: "skips", fn: "count", by: "reason", category: "forced", range: "@last30d" });
+  assert.deepEqual(split.series.map((s) => [s.label, s.values]), [["да", [null, 1, 1, null, null]], ["нет", [3, 4, null, 2, 1]]], "category still splits each bar into series, and may be a text field");
+  const byNote = bind(state, { el: "bars", of: "skips", fn: "count", by: "reason", category: "note", range: "@last30d" });
+  assert.equal(byNote.series.length, 4, "work, guests, rain and none");
+  const forcedOnly = bind(state, { el: "bars", of: "skips", fn: "count", by: "reason", range: "@last30d", where: { forced: true } });
+  assert.deepEqual([forcedOnly.buckets, forcedOnly.series[0].values], [["некогда", "заболел"], [1, 1]], "where narrows the bars; a value nobody has left gets no bar");
+});
+
+test("past twelve values the smallest bars gather under «Другое»", () => {
+  const store = spaceOf({ ...SKIPS, screens: undefined });
+  for (let i = 1; i <= 14; i += 1) record(store, "skips", { note: `причина ${String(i).padStart(2, "0")}`, forced: false });
+  record(store, "skips", { note: "причина 14", forced: false });
+  const bars = bind(store.state(), { el: "bars", of: "skips", fn: "count", by: "note", range: "@last30d" });
+  assert.equal(bars.buckets.length, 12);
+  assert.deepEqual([bars.buckets[0], bars.series[0].values[0], bars.buckets[11], bars.series[0].values[11]], ["причина 14", 2, "Другое", 3]);
+  assert.equal(bars.series[0].values.reduce((a, b) => a + b, 0), 15, "nothing is lost in the fold");
+});
+
+test("bars by item and by state over the marks of a habit", () => {
+  const store = spaceOf(CHORES);
+  mark(store, "chores", { item: "flowers" }, "done", "2026-10-22");
+  mark(store, "chores", { item: "trash" }, "skipped", "2026-10-22");
+  mark(store, "chores", { item: "floor" }, "changed", "2026-10-23");
+  mark(store, "chores", { item: "flowers" }, "skipped", "2026-10-23");
+  const state = store.state();
+  const items = bind(state, { el: "bars", of: "chores", value: "done", fn: "sum", by: "item", range: "@last7d" });
+  assert.deepEqual([items.buckets, items.series[0].values], [["Полить цветы", "Помыть пол", "Вынести мусор"], [1, 1, 0]], "done per item, changed counted");
+  const states = bind(state, { el: "bars", of: "chores", fn: "count", by: "state", range: "@last7d" });
+  assert.deepEqual([states.buckets, states.series[0].values], [["сделано", "изменено", "пропущено"], [1, 1, 2]], "a skipped mark is a bar of its own, not a missing one");
+});
+
+test("bars by slot: the meals of a follow track in the order of the day, whatever the cycle day they belong to", () => {
+  const store = spaceOf({
+    v: 2, name: "Сытость",
+    tracks: [{ key: "satiety", name: "Сытость", kind: "follow", follows: "ration", fields: [{ key: "level", name: "Насколько сыт", type: "scale", min: 1, max: 5 }] }],
+    screens: [{ key: "satiety", name: "Сытость", cards: [{ key: "satiety_slots", title: "Сытость по приёмам", body: [{ el: "bars", of: "satiety", value: "level", fn: "avg", by: "slot", range: "@last7d" }] }] }],
+  }, legacyToObjects(demoLegacyState(TODAY), { today: TODAY }));
+  const slot = (date, name) => slotsOf(store.state(), "ration", date).find((s) => s.name === name).slot;
+  for (const [date, name, level] of [["2026-10-22", "Завтрак", 4], ["2026-10-22", "Обед", 3], ["2026-10-22", "Ужин", 2], ["2026-10-23", "Завтрак", 5], ["2026-10-23", "Обед", 3]]) {
+    mark(store, "satiety", { slot: slot(date, name) }, "done", date, { level });
+  }
+  assert.notEqual(slot("2026-10-22", "Завтрак"), slot("2026-10-23", "Завтрак"), "the slot ids differ between cycle days");
+  const bars = bind(store.state(), { el: "bars", of: "satiety", value: "level", fn: "avg", by: "slot", range: "@last7d" });
+  assert.deepEqual([bars.buckets, bars.series[0].values], [["Завтрак", "Обед", "Ужин"], [4.5, 3, 2]]);
+});
+
+// -- the classic sources: meals, sessions, by slot --------------------------------------------------------
+test("ration and sport count meals and sessions, planned and done, and split a period by slot", () => {
+  const state = legacyToObjects(demoLegacyState(TODAY), { today: TODAY });
+  const day = (source, date) => sourceDay(state, source, date, CTX);
+  assert.deepEqual([day("ration", "2026-10-20").meals, day("ration", "2026-10-20").meals_planned, day("ration", "2026-10-20").skipped], [1, 4, 2], "one of four meals eaten, two skipped, one not marked");
+  assert.deepEqual([day("ration", "2026-10-25").meals, day("ration", "2026-10-25").meals_planned], [null, 4], "a day nobody marked is a gap; the plan is still known");
+  assert.deepEqual([day("sport", "2026-10-20").sessions, day("sport", "2026-10-20").sessions_planned], [2, 2]);
+  assert.deepEqual([day("sport", "2026-10-19").sessions, day("sport", "2026-10-19").sessions_planned], [1, null], "an activity outside the plan is a session that was not planned");
+  assert.deepEqual([day("sport", "2026-10-14").sessions, day("sport", "2026-10-14").sessions_planned], [0, 2], "both planned sessions skipped");
+  assert.deepEqual([day("sport", "2026-10-22").sessions, day("sport", "2026-10-22").sessions_planned], [null, null]);
+
+  const week = range("2026-10-10", TODAY);
+  const total = (source, value) => valueTotal(state, { of: source, value, fn: "sum", range: week }, CTX).value;
+  assert.deepEqual([total("ration", "meals"), total("ration", "skipped"), total("sport", "sessions")], [33, 7, 14]);
+  const skipped = valueSeries(state, { of: "ration", value: "skipped", fn: "sum", by: "slot", range: week }, CTX);
+  assert.deepEqual([skipped.by, skipped.buckets, skipped.series[0].values], ["category", ["Завтрак", "Обед", "Перекус", "Ужин"], [2, 0, 5, 0]], "skipped meals per slot: the snack is the one left out");
+  assert.equal(skipped.series[0].values.reduce((a, b) => a + b, 0), total("ration", "skipped"), "the slots add up to the days");
+  const meals = valueSeries(state, { of: "ration", value: "meals", fn: "sum", by: "slot", range: week }, CTX);
+  assert.equal(meals.series[0].values.reduce((a, b) => a + b, 0), 33);
+  const sessions = valueSeries(state, { of: "sport", value: "sessions", fn: "sum", by: "slot", range: week }, CTX);
+  assert.deepEqual([sessions.buckets, sessions.series[0].values], [["Бег", "Силовая", "Йога", "Вне плана"], [3, 3, 3, 5]], "the activities outside the plan make one more bar");
+  assert.equal(sessions.series[0].values.reduce((a, b) => a + b, 0), 14);
+  assert.throws(() => valueSeries(state, { of: "shopping", value: "spent", fn: "sum", by: "slot", range: week }, CTX), /нет приёмов и тренировок/);
+});
+
+// -- pace: what is left per remaining day -------------------------------------------------------------------
+const SPEND = {
+  v: 2, name: "Траты",
+  tracks: [
+    { key: "spend", name: "Траты", kind: "log", fields: [{ key: "sum", name: "Сумма", type: "number", unit: "₽", min: 0, max: 1000000, goal: 20000, goalType: "max", goalPer: "month" }] },
+    { key: "steps", name: "Шаги", kind: "log", fields: [{ key: "n", name: "Шагов", type: "number", unit: "шагов", min: 0, max: 100000, goal: 50000, goalType: "min", goalPer: "week" }] },
+  ],
+  screens: [{
+    key: "spend", name: "Траты",
+    cards: [
+      { key: "spend_month", title: "Траты за месяц", body: [{ el: "meter", of: "spend", value: "sum", pace: "left" }] },
+      { key: "spend_left", title: "Остаток", size: "half", body: [{ el: "stat", of: "spend", value: "sum", fn: "sum", range: "@thisMonth", pace: "left" }] },
+      { key: "steps_week", title: "Шаги за неделю", size: "half", body: [{ el: "meter", of: "steps", value: "n", pace: "left" }] },
+    ],
+  }],
+};
+
+test("pace on a monthly limit: what may still be spent per remaining day, today included", () => {
+  const store = spaceOf(SPEND);
+  for (const [date, sum] of [["2026-10-03", 5000], ["2026-10-10", 4500], ["2026-10-20", 3000]]) record(store, "spend", { sum }, date);
+  const meter = bind(store.state(), { el: "meter", of: "spend", value: "sum", pace: "left" });
+  assert.deepEqual([meter.value, meter.goal], [12500, 20000]);
+  assert.deepEqual(
+    [meter.pace.per, meter.pace.spent, meter.pace.left, meter.pace.daysLeft, meter.pace.perDay, meter.pace.text.replace(/\s/g, " ")],
+    ["month", 12500, 7500, 8, 937, "можно ещё 937 ₽ в день"],
+    "7500 over the 8 days from the 24th to the 31st is 937,5; the limit is never rounded up",
+  );
+  const stat = bind(store.state(), { el: "stat", of: "spend", value: "sum", fn: "sum", range: "@thisMonth", pace: "left" });
+  assert.equal(stat.pace.text.replace(/\s/g, " "), "можно ещё 937 ₽ в день");
+  assert.equal("pace" in bind(store.state(), { el: "meter", of: "spend", value: "sum" }), false, "no pace unless asked");
+  record(store, "spend", { sum: 8000 }, "2026-10-21");
+  assert.equal(bind(store.state(), { el: "meter", of: "spend", value: "sum", pace: "left" }).pace.text, "лимит исчерпан");
+  assert.equal(resolveBinding(store.state(), { el: "meter", of: "spend", value: "sum", pace: "left" }, { today: "2026-10-31" }).pace.text.replace(/\s/g, " "), "лимит исчерпан");
+});
+
+test("pace on the last day of the period speaks about today, and on a weekly target says what is still needed", () => {
+  const store = spaceOf(SPEND);
+  record(store, "spend", { sum: 12500 }, "2026-10-03");
+  const last = resolveBinding(store.state(), { el: "meter", of: "spend", value: "sum", pace: "left" }, { today: "2026-10-31" }).pace;
+  assert.deepEqual([last.daysLeft, last.text.replace(/\s/g, " ")], [1, "сегодня можно ещё 7 500 ₽"]);
+  for (const [date, n] of [["2026-10-19", 9000], ["2026-10-20", 11000], ["2026-10-22", 8000], ["2026-10-23", 3000]]) record(store, "steps", { n }, date);
+  const week = bind(store.state(), { el: "meter", of: "steps", value: "n", pace: "left" });
+  assert.deepEqual([week.value, week.goal, week.pace.per, week.pace.left, week.pace.daysLeft, week.pace.perDay], [31000, 50000, "week", 19000, 2, 9500]);
+  assert.equal(week.pace.text.replace(/\s/g, " "), "нужно ещё 9 500 шагов в день");
+  record(store, "steps", { n: 20000 }, TODAY);
+  assert.equal(bind(store.state(), { el: "meter", of: "steps", value: "n", pace: "left" }).pace.text, "цель достигнута");
+});
+
+// -- planned values on time and scale fields ----------------------------------------------------------------
+const FAST = {
+  v: 2, name: "Окно питания",
+  tracks: [{
+    key: "fast", name: "Окно питания", kind: "habit", states: ["done", "changed", "skipped"],
+    fields: [{ key: "opens", name: "Открыто с", type: "time", planned: true }, { key: "closes", name: "Закрыто в", type: "time", planned: true }, { key: "energy", name: "Бодрость", type: "scale", planned: true }],
+    items: [{ key: "window", name: "Окно", from: "2026-10-20", plan: { opens: "12:00", closes: "20:00", energy: 3 } }],
+  }],
+  screens: [{ key: "fast", name: "Окно", cards: [{ key: "fast_today", title: "Окно сегодня", body: [{ el: "marks", of: "fast" }] }] }],
+};
+
+test("a time and a scale field carry the planned value of an item; a changed mark overrides it; an overlay moves the plan", () => {
+  const store = spaceOf(FAST);
+  mark(store, "fast", { item: "window" }, "done", "2026-10-22");
+  mark(store, "fast", { item: "window" }, "changed", "2026-10-23", { closes: "21:30" });
+  const day = (date) => resolveDay(store.state(), "fast", date, CTX).rows[0];
+  assert.deepEqual(day("2026-10-22").actual, { opens: "12:00", closes: "20:00", energy: 3 }, "done is as planned");
+  assert.deepEqual(day("2026-10-23").actual, { opens: "12:00", closes: "21:30", energy: 3 }, "changed takes its own values and keeps the rest of the plan");
+  const row = bind(store.state(), { el: "marks", of: "fast" }).rows[0];
+  assert.deepEqual([row.planned, row.state], [{ opens: "12:00", closes: "20:00", energy: 3 }, "pending"], "the marks row shows what is planned");
+
+  applied(store, { v: 2, name: "Сдвиг", tracks: [{ key: "fast", items: [{ key: "window", plan: { opens: "13:00" } }] }] });
+  assert.deepEqual(bind(store.state(), { el: "marks", of: "fast" }).rows[0].planned, { opens: "13:00", closes: "20:00", energy: 3 }, "an overlay changes the planned value and keeps the others");
+  mark(store, "fast", { item: "window" }, "done");
+  assert.deepEqual(day(TODAY).actual, { opens: "13:00", closes: "20:00", energy: 3 });
+  assert.deepEqual(bind(store.state(), { el: "marks", of: "fast" }).rows[0].ask.changed.map((f) => f.key), ["opens", "closes", "energy"], "planned fields are asked at changed");
+});
+
+// -- a follow track on purchases, and a field that asks at skipped ---------------------------------------------
+test("a follow track on shopping asks about each purchase of a day, and charts the answers", () => {
+  const store = spaceOf({
+    v: 2, name: "Где куплено",
+    tracks: [{ key: "store", name: "Где куплено", kind: "follow", follows: "shopping", fields: [{ key: "shop", name: "Магазин", type: "choice", options: ["Пятёрочка", "Рынок", "Онлайн"] }] }],
+    screens: [{ key: "store", name: "Где куплено", cards: [{ key: "store_where", title: "Где покупаю", body: [{ el: "bars", of: "store", fn: "count", by: "shop", range: "@last30d" }, { el: "marks", of: "store" }] }] }],
+  }, legacyToObjects(demoLegacyState(TODAY), { today: TODAY }), { today: "2026-10-20" });
+  const slots = slotsOf(store.state(), "shopping", "2026-10-23");
+  assert.equal(slots.length, 3, "three purchases that day");
+  const marks = bind(store.state(), { el: "marks", of: "store", date: "2026-10-23" });
+  assert.deepEqual(marks.rows.map((r) => [r.name, r.state]), slots.map((s) => [s.name, "none"]), "a day gone by, nobody answered: counts for nothing");
+  assert.deepEqual(marks.rows[0].ask.done.map((f) => f.key), ["shop"]);
+  assert.equal(marks.empty, "В этот день ничего не куплено");
+  mark(store, "store", { slot: slots[0].slot }, "done", "2026-10-23", { shop: "Пятёрочка" });
+  mark(store, "store", { slot: slots[1].slot }, "done", "2026-10-23", { shop: "Пятёрочка" });
+  mark(store, "store", { slot: slots[2].slot }, "done", "2026-10-23", { shop: "Рынок" });
+  const bars = bind(store.state(), { el: "bars", of: "store", fn: "count", by: "shop", range: "@last30d" });
+  assert.deepEqual([bars.buckets, bars.series[0].values], [["Пятёрочка", "Рынок"], [2, 1]]);
+  assert.throws(() => markOps(store.state(), "store", { slot: "p_nope", state: "done", date: "2026-10-23", today: TODAY }), /нет «p_nope»/);
+});
+
+test("a follow field with on skipped is asked under a skipped slot and not under a done one", () => {
+  const store = spaceOf({
+    v: 2, name: "Почему пропустил",
+    tracks: [{ key: "why", name: "Почему пропустил", kind: "follow", follows: "ration", states: ["done", "skipped"], fields: [{ key: "reason", name: "Причина", type: "choice", options: ["не успел", "не хотел", "не было"], on: ["skipped"] }] }],
+  }, legacyToObjects(demoLegacyState(TODAY), { today: TODAY }), { today: "2026-10-20" });
+  const slot = (name) => slotsOf(store.state(), "ration", "2026-10-22").find((s) => s.name === name).slot;
+  const row = bind(store.state(), { el: "marks", of: "why", date: "2026-10-22" }).rows[0];
+  assert.deepEqual([row.ask.done.map((f) => f.key), row.ask.skipped.map((f) => f.key)], [[], ["reason"]]);
+  mark(store, "why", { slot: slot("Завтрак") }, "skipped", "2026-10-22", { reason: "не успел" });
+  mark(store, "why", { slot: slot("Обед") }, "skipped", "2026-10-22", { reason: "не хотел" });
+  mark(store, "why", { slot: slot("Ужин") }, "done", "2026-10-22", { reason: "не успел" });
+  const entries = entriesOf(store.state(), "why", CTX).map((e) => [e.state, e.values.reason]);
+  assert.deepEqual(entries.map(([state]) => state).sort(), ["done", "skipped", "skipped"]);
+  assert.equal(entries.find(([state]) => state === "done")[1], null, "a value the done mark does not ask for is not kept");
+  const bars = bind(store.state(), { el: "bars", of: "why", value: "reason", fn: "count", by: "reason", range: "@last7d" });
+  assert.deepEqual([bars.buckets, bars.series[0].values], [["не успел", "не хотел"], [1, 1]], "the reasons of the skipped slots; the done one has none");
+});
+
+// -- a new track does not draw months of empty grid ---------------------------------------------------------------
+const NEW_WATER = {
+  v: 2, name: "Вода",
+  tracks: [{ key: "water", name: "Вода", kind: "log", fields: [{ key: "ml", name: "Выпито", type: "number", unit: "мл", min: 1, max: 5000, goal: 2000 }] }],
+  screens: [{ key: "water", name: "Вода", cards: [{ key: "water_weeks", title: "Вода", body: [{ el: "bars", of: "water", value: "ml", fn: "sum", by: "week", range: "@last12w" }] }, { key: "water_grid", title: "Календарь", body: [{ el: "heatmap", of: "water", value: "ml", fn: "sum", range: "@last12w" }] }] }],
+};
+
+test("charts of a track made today start where the track starts: a week of bars, four weeks of heatmap, never the whole range", () => {
+  const store = spaceOf(NEW_WATER);
+  record(store, "water", { ml: 500 });
+  const weeks = bind(store.state(), { el: "bars", of: "water", value: "ml", fn: "sum", by: "week", range: "@last12w" });
+  assert.deepEqual([weeks.buckets, weeks.range], [["2026-10-12", "2026-10-19"], { from: "2026-10-18", to: TODAY }], "two week buckets instead of twelve");
+  const grid = bind(store.state(), { el: "heatmap", of: "water", value: "ml", fn: "sum", range: "@last12w" });
+  assert.deepEqual([grid.buckets.length, grid.buckets[0], grid.buckets.at(-1)], [28, "2026-09-27", TODAY], "a heatmap shows at least four weeks");
+  const days = bind(store.state(), { el: "bars", of: "water", value: "ml", fn: "sum", range: "@last7d" });
+  assert.equal(days.buckets.length, 7, "a range that is not longer than the minimum stays whole");
+  record(store, "water", { ml: 300 }, "2026-08-10");
+  const older = bind(store.state(), { el: "bars", of: "water", value: "ml", fn: "sum", by: "week", range: "@last12w" });
+  assert.equal(older.buckets[0], "2026-08-10", "an older record moves the start back, the range still begins no earlier than asked");
+  assert.equal(older.buckets.length, 11);
+});
+
+// -- a row knows what it stands for ------------------------------------------------------------------------------
+test("rows carry the id and the kind of what they stand for: an entry of the track or an item", () => {
+  const store = spaceOf(CHORES);
+  mark(store, "chores", { item: "flowers" }, "done", "2026-10-22");
+  const state = store.state();
+  const entries = bind(state, { el: "table", of: "chores", columns: ["date", "item"], range: "@last7d" });
+  assert.deepEqual(entries.rows.map((r) => [r.kind, state.objects[r.id].type]), [["entry", "tr_chores"]]);
+  assert.equal(entries.mode, "entries");
+  const items = bind(state, { el: "list", of: "chores", rows: "items", columns: ["name", "state"], range: "@last7d" });
+  assert.deepEqual(items.rows.map((r) => [r.id, r.kind]), [["ti_chores_trash", "item"], ["ti_chores_flowers", "item"], ["ti_chores_floor", "item"]], "in the order of the names");
+  assert.deepEqual(items.rows.map((r) => state.objects[r.id].type), ["track_item", "track_item", "track_item"]);
+  const water = spaceOf(NEW_WATER);
+  record(water, "water", { ml: 250 });
+  const log = bind(water.state(), { el: "list", of: "water", columns: ["date", "ml"], range: "@today" });
+  assert.deepEqual(log.rows.map((r) => [r.kind, water.state().objects[r.id].props.tr_water__ml]), [["entry", 250]]);
+});
+
+test("item rows say their state in a word; the items of a habit with no period are today's", () => {
+  const store = spaceOf(CHORES);
+  mark(store, "chores", { item: "flowers" }, "done");
+  mark(store, "chores", { item: "floor" }, "changed");
+  mark(store, "chores", { item: "trash" }, "skipped", "2026-10-23");
+  const rows = (extra = {}) => bind(store.state(), { el: "list", of: "chores", rows: "items", columns: ["name"], ...extra }).rows.map((r) => [r.title, r.state, r.stateLabel]);
+  assert.deepEqual(rows(), [["Вынести мусор", "open", "открыто"], ["Полить цветы", "done", "сделано"], ["Помыть пол", "done", "изменено"]], "a changed mark is done, said as changed; yesterday's skip is not today's state");
+  assert.deepEqual(rows({ range: "@last7d" }).map((r) => r.slice(0, 2)), [["Вынести мусор", "skipped"], ["Полить цветы", "done"], ["Помыть пол", "done"]], "over a week the latest mark of each item counts");
+  const shown = bind(store.state(), { el: "marks", of: "chores", date: "@yesterday" });
+  assert.equal(shown.date, "2026-10-23");
+  assert.deepEqual(shown.rows.map((r) => [r.name, r.state]), [["Вынести мусор", "skipped"], ["Полить цветы", "none"], ["Помыть пол", "none"]]);
+  const catalog = bind(spaceOf(BOOKS).state(), { el: "list", of: "books", columns: ["name"] });
+  assert.equal(catalog.rows.every((r) => !("state" in r)), true, "a catalog row has no state");
 });

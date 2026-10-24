@@ -10,7 +10,7 @@
 // the element or attribute ("c-card[1] > c-bars[0]@fn"), `rule` is a short id, `message`
 // is a Russian sentence a model can act on, `allowed` lists the legal values when the rule has them.
 // `messages` is the same list as plain strings.
-import { LIMITS as KIT_LIMITS, componentsForMarkup } from "../kit/catalogue.js";
+import { LIMITS as KIT_LIMITS, componentsForMarkup, splitCondition, wherePairs } from "../kit/catalogue.js";
 import {
   BY, KCAL_GOAL_FLOOR, bucketsOf, dateRelationOf, isEnergyIntake, isNumericRelation, rangeProblem, resolveRange,
 } from "./util.js";
@@ -98,7 +98,7 @@ function kitComponents() {
     if (spec.text) continue;
     const attrs = { ...spec.attrs };
     if (attrs.of) attrs.of = TRACK;
-    if (attrs.where) attrs.where = { type: "pairs", max: KIT_LIMITS.where, example: "exercise=bench" };
+    if (attrs.where) attrs.where = { type: "where", max: KIT_LIMITS.where, example: "exercise=bench" };
     if (attrs.values) attrs.values = { type: "pairs", max: KIT_LIMITS.values, example: "ml=250" };
     if (attrs.fields && attrs.of) attrs.fields = { type: "keys", max: KIT_LIMITS.fields };
     // every kit element, input or display, goes through checkKitBound
@@ -249,7 +249,7 @@ const ALIASES = {
   "goal-type": { min: ["min", "reach", "target", "достичь"], max: ["max", "limit", "maximum", "лимит"] },
   order: { asc: ["asc", "ascending", "по возрастанию"], desc: ["desc", "descending", "по убыванию"] },
 };
-const RANGE_WORDS = { today: "@today", сегодня: "@today", yesterday: "@yesterday", вчера: "@yesterday", week: "@thisWeek", thisweek: "@thisWeek", неделя: "@thisWeek", month: "@thisMonth", thismonth: "@thisMonth", месяц: "@thisMonth" };
+const RANGE_WORDS = { all: "@all", today: "@today", сегодня: "@today", yesterday: "@yesterday", вчера: "@yesterday", week: "@thisWeek", thisweek: "@thisWeek", неделя: "@thisWeek", month: "@thisMonth", thismonth: "@thisMonth", месяц: "@thisMonth" };
 
 function aliasRange(value) {
   const v = value.trim().toLowerCase().replace(/\s+/g, " ");
@@ -361,9 +361,17 @@ function valueProblem(name, spec, value) {
       const ok = pairs.length <= (spec.max ?? 4) && pairs.every((p) => /^[a-z][a-z0-9_]{0,15}=[^=,<>"\u0000-\u001f]{1,40}$/.test(p));
       return ok ? null : { rule: "bad-value", message: `Атрибут «${name}» пишется парами ключ=значение через запятую (не больше ${spec.max ?? 4}), например ${name}="${spec.example || "ml=250"}".` };
     }
+    case "where": {
+      // conditions, each "key=value" or a key and a comparison: state!=done, expires<=+7d
+      const parts = value.split(",").map((s) => s.trim());
+      const pairs = wherePairs(value);
+      const ok = pairs && parts.length === Object.keys(pairs).length && parts.length <= (spec.max ?? 2)
+        && Object.entries(pairs).every(([key, raw]) => /^[a-z][a-z0-9_]{0,15}$/.test(key) && /^[^,"<>\u0000-\u001f]{1,40}$/.test(splitCondition(raw).value));
+      return ok ? null : { rule: "bad-value", message: `Атрибут «${name}» пишется условиями через запятую (не больше ${spec.max ?? 2}), например ${name}="${spec.example || "exercise=bench"}" или ${name}="state!=done,expires<=+7d".` };
+    }
     case "range": {
       const why = rangeProblem(value);
-      return why ? { rule: "bad-value", message: `Атрибут «${name}»: ${why}.`, allowed: ["@today", "@yesterday", "@last7d", "@last30d", "@last12w", "@last6m", "@thisWeek", "@thisMonth"] } : null;
+      return why ? { rule: "bad-value", message: `Атрибут «${name}»: ${why}.`, allowed: ["@today", "@yesterday", "@last7d", "@last30d", "@last12w", "@last6m", "@thisWeek", "@thisMonth", "@all"] } : null;
     }
   }
   return null;
@@ -463,7 +471,7 @@ export function validateMarkup(src, { state = null, today = "2026-01-15", probe 
       if (why) add(`${path}@${name}`, why.rule, why.message, why.allowed);
       if (type.type === "number" && !why) stats.numbers.add(canonNumber(value));
       if (type.type === "pairs" && !why) for (const m of value.matchAll(/=(-?\d+(?:\.\d+)?)(?=,|$)/g)) stats.numbers.add(canonNumber(m[1]));
-      if (type.type === "range" && !why) for (const m of value.matchAll(/\d+/g)) stats.numbers.add(String(Number(m[0])));
+      if ((type.type === "range" || type.type === "where") && !why) for (const m of value.matchAll(/\d+/g)) stats.numbers.add(String(Number(m[0])));
       if ((name === "title" || name === "caption") && type.type === "text") stats.texts.push({ path: `${path}@${name}`, text: value });
     }
     if (spec.text && node.tag === "c-empty" && !node.children.some((c) => c.type === "text" && c.text.trim())) add(path, "missing-text", "В <c-empty> нужен текст: одна фраза о том, чего не хватает.");
@@ -510,6 +518,8 @@ function checkShape(node, spec, a, own, add) {
   const range = a.range || spec.defaults?.range;
   const by = a.by || spec.defaults?.by || "day";
   if (!range || rangeProblem(range)) return;
+  // one bar per value of a field, or the whole life of a track: no count of periods to judge
+  if (range === "@all" || (node.tag === "c-bars" && !BY.includes(by))) return;
   const buckets = bucketsOf(resolveRange(range, "2026-06-15"), node.tag === "c-heatmap" || node.tag === "c-spark" ? "day" : by).length;
   if (node.tag === "c-bars" && buckets < 2) add(own("range"), "range-too-short", "Для столбцов нужно хотя бы два периода: возьмите @last7d, @last30d или @last12w.");
   if (node.tag === "c-bars" && buckets > LIMITS.bars) add(own("by"), "too-many-points", `Столбцов получается ${buckets}, а читаются не больше ${LIMITS.bars}. Возьмите by="week" или by="month", или период короче.`, BY);

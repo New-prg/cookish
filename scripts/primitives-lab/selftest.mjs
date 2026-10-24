@@ -18,6 +18,8 @@ import { pathToFileURL } from "node:url";
 import { LAB, ROOT, SHELL, SURFACES, TODAY, exists, need, openStore, readJson, readLines, readText, run, spaceFile, writeJson, writeText } from "./lib/common.mjs";
 import { builtCounts, builtLine, changedScreens, describeMarkdown } from "./lib/describe.mjs";
 import { waterOps } from "./lib/fixture.mjs";
+import { seedLines, seedState } from "./lib/seed.mjs";
+import { renderStage } from "./lib/stage.mjs";
 import { audit, diffObjects, openPage, press, renderRoutes, withBrowser } from "./lib/render.mjs";
 import { buildSpaces } from "./spaces.mjs";
 
@@ -108,6 +110,130 @@ async function main() {
     for (const needle of ["цель: не меньше 2000 в день", "единица мл", "от 1 до 5000", "шкала прогресса к цели", "кнопки быстрой записи", "Записей в хранилище: 7", "столбчатый график", "последние 7 дн."]) assert.ok(md.includes(needle), `описание без «${needle}»`);
     assert.deepEqual(builtCounts(after, after).empty, true, "ничего не менялось");
     assert.equal(changedScreens(after, after).length, 0);
+  });
+
+  await step("describe: says what elements do on their own, and shows renames and reorders", async () => {
+    const md = describeMarkdown(before, after);
+    for (const needle of ["Само по себе:", "«Отменить»", "цель достигнута", "Одно касание сразу записывает значения за сегодня", "столбцы выше цели или лимита не меняют цвет", "касание столбца показывает значение"]) assert.ok(md.includes(needle), `описание без «${needle}»`);
+    assert.match(md, /запись не правится и не удаляется|запись правится и удаляется только через список или таблицу с edit/, "сказано, можно ли править запись на экранах");
+    assert.ok(!md.includes("превышено на"), "у цели «не меньше» нет состояния превышения");
+    const limitOps = waterOps().map((op) => (op.op === "defineRelation" ? { ...op, relation: { ...op.relation, kit: { ...op.relation.kit, goalType: "max" } } } : op));
+    const limit = await openStore(empty);
+    assert.equal(limit.store.apply(limitOps, { actor: "human", summary: "лаб" }).ok, true);
+    const limitMd = describeMarkdown(before, limit.store.state());
+    assert.ok(limitMd.includes("близко к лимиту") && limitMd.includes("превышено на"), "лимит описан как лимит");
+    assert.ok(!limitMd.includes("цель достигнута"), "у лимита нет «цель достигнута»");
+
+    const base = await openStore(serializedAfter);
+    const note = { op: "create", type: "kit_card", id: "cd_water_note", name: "Заметка", props: { kit_key: "water_note", kit_screen: "sc_home", kit_size: "full", kit_order: 1, kit_app: "voda", kit_body: [{ el: "p", text: "Пейте воду." }] } };
+    assert.equal(base.store.apply([note], { actor: "human", summary: "лаб" }).ok, true);
+    const s1 = base.store.state();
+    const changed = await openStore(base.storage.dump());
+    assert.equal(changed.store.apply([
+      { op: "update", id: "cd_water_week", name: "Вода по дням" },
+      { op: "update", id: "cd_water_today", props: { kit_order: 1 } },
+      { op: "update", id: "cd_water_note", props: { kit_order: 0 } },
+      { op: "update", id: "sc_water", name: "Питьё" },
+    ], { actor: "human", summary: "лаб" }).ok, true);
+    const s2 = changed.store.state();
+    const diff = describeMarkdown(s1, s2);
+    for (const needle of ["Переименовано: «Вода за неделю» → «Вода по дням»", "Порядок карточек изменился: было «Вода сегодня», «Заметка»; стало «Заметка», «Вода сегодня»", "Экран переименован: «Вода» → «Питьё»", "Место на экране изменилось: было 1-е, стало 2-е"]) assert.ok(diff.includes(needle), `в различиях нет «${needle}»`);
+    assert.deepEqual(changedScreens(s1, s2).sort(), ["home", "water"], "переименованный и переставленный экраны надо смотреть");
+    assert.equal(describeMarkdown(s1, s1).includes("Было:"), false, "без изменений нет «Было»");
+  });
+
+  await step("seed: a fortnight of plausible records as the person, gaps kept, the answer's state untouched", async () => {
+    const first = await seedState(serializedAfter);
+    const again = await seedState(serializedAfter);
+    assert.equal(first.serialized, again.serialized, "тот же вход даёт ту же историю");
+    const report = first.report;
+    assert.equal(report.days, 12);
+    assert.deepEqual(report.refused, []);
+    assert.ok(report.records >= 15, `записей ${report.records}`);
+    assert.deepEqual(report.tracks.water.inputs, ["quick"]);
+    const objects = JSON.parse(first.serialized).objects;
+    const seeded = Object.values(objects).filter((o) => o.type === "tr_water" && o.createdBy === "human" && !o.id.startsWith("lab_w_"));
+    assert.equal(seeded.length, report.records);
+    const days = new Set(seeded.map((o) => o.props.date));
+    assert.ok(days.size >= 6 && days.size < 12, `дней с данными ${days.size} из 12: есть и пропуски`);
+    assert.ok([...days].every((d) => d >= report.from && d <= report.to), "только прошлые дни, сегодня не тронут");
+    assert.ok(seeded.every((o) => o.props.tr_water__ml >= 1 && o.props.tr_water__ml <= 5000), "значения внутри границ");
+    assert.equal(Object.values(JSON.parse(serializedAfter).objects).filter((o) => o.type === "tr_water").length, 7, "состояние после ответа не тронуто");
+    const lines = seedLines(report).join("\n");
+    assert.match(lines, /внесла от имени человека \d+ записей/);
+    assert.ok(!lines.includes("ОТКАЗЫ ВВОДА"));
+  });
+
+  await step("seed: an input that refuses is reported, and nothing is made to look fine", async () => {
+    const real = await need("kit/actions.js", ["markOps", "formOps", "quickOps", "addItemOps"]);
+    const refusing = { ...real, quickOps: () => { throw new Error("Выпито: не больше 5000 мл"); } };
+    const { report } = await seedState(serializedAfter, { actions: refusing });
+    assert.equal(report.records, 0);
+    assert.ok(report.refused.length >= 6 && report.refused.every((r) => r.message === "Выпито: не больше 5000 мл"));
+    assert.equal(report.empty, true);
+    const lines = seedLines(report).join("\n");
+    assert.match(lines, /ОТКАЗЫ ВВОДА \(\d+\)/);
+    assert.match(lines, /Выпито: не больше 5000 мл/);
+    assert.match(lines, /Ни одной записи внести не удалось/);
+  });
+
+  const realPipeline = exists(path.join(SHELL, "objects", "kit", "pipeline.js"));
+  const bundleState = async (bundle) => {
+    const { checkBundle, applyBundle } = await need("kit/pipeline.js", ["checkBundle", "applyBundle"]);
+    const built = await openStore(empty);
+    const checked = await checkBundle(bundle, built.store.state(), { today: TODAY });
+    assert.equal(checked.ok, true, JSON.stringify(checked.problems));
+    assert.equal((await applyBundle(built.store, checked)).ok, true);
+    return built.storage.dump();
+  };
+  const homeOnly = (title, body) => ({ key: "home", cards: [{ title, body }] });
+
+  await step("smoke: an empty list with add gets «Добавить», a name and a save first", async () => {
+    if (!realPipeline) { wait("K1: kit/pipeline.js, проверка нажатия на пустой список с add не запущена"); return; }
+    const state = await bundleState({ v: 2, name: "Купить", tracks: [{ key: "buy", name: "Купить", kind: "list" }], screens: [homeOnly("Купить", [{ el: "marks", of: "buy", add: true }])] });
+    const [entry] = await withBrowser((env) => renderRoutes(env, state, [{ key: "home", hash: "#/" }], path.join(OUT, "smoke-add")));
+    const tap = entry.smoke.find((s) => s.element === "c-marks");
+    assert.equal(tap.ok, true, JSON.stringify(tap));
+    assert.ok(tap.created.some((o) => o.type === "track_item" && o.by === "human"), "позиция создана человеком");
+    assert.match(tap.label, /Добавить/);
+  });
+
+  await step("smoke: a required date is filled with today, a required link select takes its first option", async () => {
+    if (!realPipeline) { wait("K1: kit/pipeline.js, проверка заполнения даты и выбора не запущена"); return; }
+    const shops = Array.from({ length: 9 }, (_, i) => ({ name: `Магазин ${i + 1}` }));
+    const spend = { key: "buy", name: "Траты", kind: "log", fields: [
+      { key: "amount", name: "Сумма", type: "number", unit: "₽", min: 1, max: 99999, required: true },
+      { key: "on", name: "Дата покупки", type: "date", required: true },
+      { key: "shop", name: "Магазин", type: "link", to: "shops", required: true }] };
+    const state = await bundleState({ v: 2, name: "Траты", tracks: [{ key: "shops", name: "Магазины", kind: "catalog", items: shops }, spend], screens: [homeOnly("Трата", [{ el: "form", of: "buy" }])] });
+    const [entry] = await withBrowser((env) => renderRoutes(env, state, [{ key: "home", hash: "#/" }], path.join(OUT, "smoke-fields")));
+    const tap = entry.smoke.find((s) => s.element === "c-form");
+    assert.equal(tap.ok, true, JSON.stringify(tap));
+    assert.equal(tap.mode, "filled");
+    const noRows = await bundleState({ v: 2, name: "Траты", tracks: [{ key: "shops", name: "Магазины", kind: "catalog" }, { key: "buy", name: "Траты", kind: "log", fields: [{ key: "shop", name: "Магазин", type: "link", to: "shops", required: true }] }], screens: [homeOnly("Трата", [{ el: "form", of: "buy" }])] });
+    const [empty2] = await withBrowser((env) => renderRoutes(env, noRows, [{ key: "home", hash: "#/" }], path.join(OUT, "smoke-nolink")));
+    const stuck = empty2.smoke.find((s) => s.element === "c-form");
+    assert.equal(stuck.ok, false);
+    assert.match(stuck.note, /нечего выбрать в поле «Магазин»: вариантов нет/, "форму, которую нельзя заполнить, лаборатория не выдаёт за рабочую");
+  });
+
+  await step("seeded render: nothing is due today, the tap is made on the next due day and says so", async () => {
+    if (!realPipeline) { wait("K1: kit/pipeline.js, проверка нажатия в ближайший день не запущена"); return; }
+    const state = await bundleState({ v: 2, name: "Зарядка", tracks: [{ key: "gym", name: "Зарядка", kind: "habit", items: [{ name: "Зарядка", every: "mon" }] }], screens: [homeOnly("Зарядка", [{ el: "marks", of: "gym" }])] });
+    const dir = path.join(OUT, "stage-monday");
+    const { screens, seed } = await renderStage(dir, state, [{ key: "home", hash: "#/", expectCards: [] }]);
+    assert.ok(seed.marks >= 1, "прошлые понедельники отмечены");
+    assert.deepEqual(seed.refused, []);
+    assert.ok(seed.backdated.includes("gym.zaryadka"), "позиция, начатая сегодня, датирована задним числом, и пакет это скажет");
+    assert.ok(exists(path.join(dir, "state-seeded.json")) && exists(path.join(dir, "screen-home-seeded.png")) && exists(path.join(dir, "screen-home-seeded-after.png")));
+    const plain = screens[0];
+    assert.equal(plain.smoke[0].skipped, true, "без данных в субботу нечего нажимать");
+    const tap = plain.seeded.smoke[0];
+    assert.equal(tap.day, "2026-10-26", "понедельник");
+    assert.equal(tap.ok, true, JSON.stringify(tap));
+    assert.match(tap.note, /ближайший день с расписанием, 2026-10-26/);
+    assert.ok(tap.changedCards.some((c) => /Отмечено 1 из 1/.test(c.after) && !/Отмечено 1 из 1/.test(c.before)), "карточка до и после нажатия различается");
+    assert.match(tap.toast, /Отменить/, "тост с отменой виден");
   });
 
   await step("diffObjects: a new human object and an unchanged one", () => {
@@ -289,6 +415,10 @@ async function main() {
     for (const s of verdict.screens) assert.ok(exists(path.join(dir, s.png)), s.png);
     assert.ok(exists(path.join(dir, "state-after.json")));
     assert.equal(JSON.parse(readText(path.join(dir, "state-after.json"))).objects.cd_water_today.name, "Вода сегодня");
+    const waterCount = (file) => Object.values(JSON.parse(readText(path.join(dir, file))).objects).filter((o) => o.type === "tr_water").length;
+    assert.equal(waterCount("state-after.json"), 7, "ответ не дополнен данными лаборатории");
+    assert.ok(waterCount("state-seeded.json") > 7, "копия с историей отдельно");
+    assert.ok(verdict.seed.records > 0 && Array.isArray(verdict.seed.refused));
     const home = verdict.screens.find((s) => s.key === "home");
     if (home.inputs["c-quick"]) {
       assert.equal(verdict.smokeTotals.passed, verdict.smokeTotals.total);
@@ -350,13 +480,39 @@ async function main() {
     const r = cli("judge-packet.mjs", [dir], env);
     assert.equal(r.code, 0, r.out + r.err);
     const md = readText(path.join(dir, "judge.md"));
-    for (const needle of ["# Оценка: water-quick", "## Проверки", "Добавил журнал воды с целью 2 литра.", "цель: не меньше 2000 в день", "screen-home.png", "screen-water.png", "Нажатия на элементы ввода", "Метки [новое]"]) assert.ok(md.includes(needle), `в judge.md нет «${needle}»`);
+    for (const needle of ["# Оценка: water-quick", "## Проверки", "Добавил журнал воды с целью 2 литра.", "цель: не меньше 2000 в день", "screen-home.png", "screen-water.png", "Нажатия на элементы ввода", "Метки [новое]", "## Данные для проверки", "Само по себе:", "Как читать описание", "С данными за прошлые дни", "screen-home-seeded.png"]) assert.ok(md.includes(needle), `в judge.md нет «${needle}»`);
     for (const leak of ["у ответа нет name", "это не JSON", "attempts", "answer.json", "\"v\":2", "Попытк"]) assert.ok(!md.includes(leak), `в judge.md просочилось «${leak}»`);
     const task = readText(path.join(dir, "judge-task.md"));
     assert.ok(task.includes("output/primitives/lab-selftest/run/json/water-quick/judge.md") && task.includes("rubric.md") && task.includes("judge.json"), task);
     const refused = dirOf("json", "vague-health");
     cli("judge-packet.mjs", [refused], env);
     assert.match(readText(path.join(refused, "judge.md")), /Ничего не создано и не изменено/);
+  });
+
+  await step("repacket: copies a run, redraws it under the current lab, leaves the old run and any judge.json alone", () => {
+    const from = path.join(OUT, "run");
+    const to = path.join(OUT, "run-b");
+    fs.rmSync(to, { recursive: true, force: true });
+    writeJson(path.join(dirOf("json", "water-quick"), "judge.json"), { id: "water-quick", checks: [], hallucinations: [], verdict: "fit", summary: "старый" });
+    const oldItem = readJson(path.join(dirOf("json", "water-quick"), "item.json"));
+    writeJson(path.join(dirOf("json", "water-quick"), "item.json"), { ...oldItem, checks: oldItem.checks.map((c) => ({ ...c, text: "СТАРЫЙ ТЕКСТ" })) });
+    const snapshot = (dir) => fs.readdirSync(dir).sort().map((f) => `${f}:${fs.statSync(path.join(dir, f)).size}`).join(",");
+    const before = snapshot(dirOf("json", "water-quick"));
+    const r = cli("repacket.mjs", [from, to, "water-quick,vague-health"], env);
+    assert.equal(r.code, 0, r.out + r.err);
+    assert.equal(snapshot(dirOf("json", "water-quick")), before, "старый прогон не тронут");
+    const copy = path.join(to, "json", "water-quick");
+    assert.ok(!exists(path.join(copy, "judge.json")), "старый вердикт судьи не скопирован");
+    assert.ok(readJson(path.join(copy, "item.json")).checks.every((c) => c.text !== "СТАРЫЙ ТЕКСТ"), "проверки взяты из корпуса сейчас");
+    const md = readText(path.join(copy, "judge.md"));
+    for (const needle of ["## Данные для проверки", "С данными за прошлые дни", "Само по себе:", "screen-home-seeded.png"]) assert.ok(md.includes(needle), `в перерисованном judge.md нет «${needle}»`);
+    assert.ok(exists(path.join(copy, "state-seeded.json")) && exists(path.join(copy, "screen-home-seeded.png")));
+    assert.equal(readText(path.join(copy, "state-after.json")), readText(path.join(dirOf("json", "water-quick"), "state-after.json")), "приложение то же");
+    assert.match(readText(path.join(to, "json", "vague-health", "judge.md")), /Ничего не создано и не изменено/);
+    writeJson(path.join(copy, "judge.json"), { id: "water-quick", verdict: "fit", mine: true });
+    assert.equal(cli("repacket.mjs", [from, to, "water-quick"], env).code, 0);
+    assert.equal(readJson(path.join(copy, "judge.json")).mine, true, "повторная сборка пакета не стирает ответ судьи");
+    assert.equal(cli("repacket.mjs", [from, from], env).code, 2, "писать в старый прогон нельзя");
   });
 
   await step("report: counts come from the files", () => {

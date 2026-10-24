@@ -72,7 +72,7 @@ function mealCard(state, date, mealId, mark, { compact, editing, future }) {
         : h("span", { class: "portion-amount", text: `${num(p.props?.amount)} ${p.props?.unit || ""}` }),
     )));
   const discrepancies = (mark?.discrepancies || []).map((id) => state.objects[id]).filter(Boolean);
-  const follow = compact || editing || future ? null : followControls(store, "ration", date, mark?.slot ?? meal.props?.slot ?? meal.id);
+  const follow = compact || editing || future ? null : followControls(store, "ration", date, mark?.slot ?? meal.props?.slot ?? meal.id, mealState);
   return h("article", { class: `meal state-${mealState}`, "data-meal": nameOf(meal) },
     head,
     items,
@@ -228,7 +228,7 @@ function sessionCard(state, date, s, { future, compact }) {
   if (!session) return null;
   const p = session.props || {};
   const title = nameOf(session) || optionName(state, "kind", p.kind);
-  const follow = compact || future ? null : followControls(store, "sport", date, s.slot);
+  const follow = compact || future ? null : followControls(store, "sport", date, s.slot, s.state || "unmarked");
   return h("article", { class: `meal state-${s.state || "unmarked"}`, "data-session": title },
     h("div", { class: "meal-head" },
       h("span", { class: "meal-time", text: p.time || "" }),

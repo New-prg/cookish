@@ -1,0 +1,24 @@
+{
+  "id": "docs",
+  "request": "Храню сроки действия документов: паспорт, права, страховка. Хочу искать по названию, править строки и видеть, что истекает в ближайшие два месяца",
+  "reply": "Собрал справочник «Документы»: на его экране все строки с поиском, нажмите на строку, чтобы указать срок или исправить её. Ниже те, что истекают в ближайшие два месяца.",
+  "tags": ["catalog", "date", "expire", "search", "edit", "list", "where"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Документы",
+    "tracks": [
+      {
+        "key": "docs", "name": "Документы", "kind": "catalog", "icon": "🗂",
+        "fields": [{ "key": "expires", "name": "Действует до", "type": "date" }],
+        "items": [{ "name": "Паспорт" }, { "name": "Права" }, { "name": "Страховка" }]
+      }
+    ],
+    "screens": [
+      { "key": "docs", "name": "Документы", "icon": "🗂", "cards": [
+        { "key": "docs_all", "title": "Все документы", "body": [{ "el": "list", "of": "docs", "columns": ["name", "expires"], "limit": 30, "add": true, "edit": true, "search": true }] },
+        { "key": "docs_soon", "title": "Истекает скоро", "caption": "В ближайшие два месяца", "body": [{ "el": "list", "of": "docs", "columns": ["name", "expires"], "limit": 10, "where": { "expires": "<=+60d" }, "sort": "expires", "order": "asc" }] }
+      ] }
+    ]
+  }
+}

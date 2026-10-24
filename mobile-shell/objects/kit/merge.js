@@ -2,6 +2,7 @@
 // that exists is changed with only the attributes written; a new key is a
 // create; a removal archives and cascades. Nothing here touches the store, and
 // the previous spec is never mutated.
+import { BY, BY_WORDS } from "./catalogue.js";
 import { appSlug } from "./normalize.js";
 import { live } from "./spec.js";
 
@@ -13,7 +14,8 @@ const GOAL_KEYS = ["goal", "goalType", "goalPer"];
 // The field keys an element reads. Lists are returned separately because a
 // list loses a key and survives; any other reference makes the element void.
 export function elementRefs(el) {
-  const single = [el.value, el.category, el.sort, ...Object.keys(el.values || {}), ...Object.keys(el.where || {})].filter(Boolean);
+  const byField = el.by && !Object.hasOwn(BY, el.by) && !Object.hasOwn(BY_WORDS, el.by) ? [el.by] : [];
+  const single = [el.value, el.category, el.sort, ...byField, ...Object.keys(el.values || {}), ...Object.keys(el.where || {})].filter(Boolean);
   const lists = ["columns", "fields"].filter((name) => Array.isArray(el[name]));
   return { single, lists };
 }

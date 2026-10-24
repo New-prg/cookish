@@ -5,11 +5,12 @@
 //
 // Nothing here writes. A mark is a fact; what it means (the unmarked policy,
 // the planned value a changed mark overrides, a week quota) is decided on read.
+import { resolveRange } from "../core/query.js";
 import { valueOf } from "../core/values.js";
-import { isAdditiveUnit } from "./catalogue.js";
-import { atMinutes, dueOn } from "./schedule.js";
-import { isSource, SOURCES, slotsOf, sourceDay, sourceGoal } from "./sources.js";
-import { bucketKey, bucketsOf, daysBetween, monthEnd, monthStart, shiftDate, weekStart } from "../viz/util.js";
+import { BY, FN_KEYS, dayToken, isAdditiveUnit, splitCondition, wherePairs } from "./catalogue.js";
+import { atMinutes, dueOn, occurrences } from "./schedule.js";
+import { isSource, SOURCES, slotsOf, sourceDay, sourceGoal, sourceSlots } from "./sources.js";
+import { bucketKey, bucketsOf, daysBetween, fmtValue, monthEnd, monthStart, shiftDate, weekStart } from "../viz/util.js";
 
 export const MARK_STATES = Object.freeze(["done", "changed", "skipped"]);
 export const VIRTUAL = Object.freeze({
@@ -129,7 +130,9 @@ export function requireTrack(state, key) {
 
 export const fieldOf = (track, key) => track.fields.find((f) => f.key === key) || null;
 
-export const labelOf = (track, state) => track.labels[state] || state;
+// «open» is the state of an item nobody marked; a track never renames it.
+const OPEN_LABEL = "открыто";
+export const labelOf = (track, state) => track.labels[state] || (state === "open" ? OPEN_LABEL : state);
 
 /** Does a mark state ask for the field? Planned fields ask at «changed» only unless `on` says otherwise; nothing asks at «skipped». */
 export function asksField(field, markState) {
@@ -290,7 +293,8 @@ export function actualOf(track, item, mark, state) {
   if (state === "pending" || state === "none") return {};
   const out = {};
   for (const field of track.fields) {
-    if (state === "skipped") out[field.key] = field.type === "number" ? 0 : null;
+    // A skipped occurrence is zero for numbers, unless the field asks at «skipped»: then the answer is the mark's own.
+    if (state === "skipped") out[field.key] = asksField(field, "skipped") && mark?.values[field.key] != null ? mark.values[field.key] : field.type === "number" ? 0 : null;
     else if (field.type === "calc") out[field.key] = mark?.values[field.key] ?? null;
     else out[field.key] = mark?.values[field.key] ?? item?.plan?.[field.key] ?? null;
   }
@@ -470,7 +474,7 @@ export function points(state, trackKey, range, ctx) {
     const { rows, extras } = dayRows(state, track, date, ctx);
     for (const row of rows) {
       if (row.state === "done" || row.state === "changed" || row.state === "skipped") {
-        out.push({ date, values: row.actual, slot: row.slot, item: row.key, name: row.name, state: row.state, via: row.via, id: row.markId });
+        out.push({ date, values: row.actual, slot: row.slot, item: row.key, name: row.name, state: row.state, via: row.via, id: row.markId, at: row.at ?? null });
       }
     }
     out.push(...extras);
@@ -524,31 +528,40 @@ export function streakFor(state, trackKey, ctx) {
 }
 
 // -- where ---------------------------------------------------------------------------------
-/** "exercise=bench,state=done" or { exercise: "bench" } -> [{ field, is }] */
+/** "exercise=bench,state!=done" or { exercise: "bench", expires: "<=+7d" } -> [{ field, is }]; `is` may start with an operator. */
 export function parseWhere(text) {
   if (!text) return [];
   if (Array.isArray(text)) return text;
   if (typeof text === "object") return Object.entries(text).map(([field, is]) => ({ field, is }));
-  return String(text).split(",").map((part) => part.trim()).filter(Boolean).map((part) => {
-    const at = part.indexOf("=");
-    if (at < 1) throw new Error(`условие «${part}»: нужно поле=значение, например exercise=bench`);
-    return { field: part.slice(0, at).trim(), is: part.slice(at + 1).trim() };
-  });
+  const pairs = wherePairs(text);
+  if (!pairs) throw new Error(`условие «${text}»: нужно поле=значение, например exercise=bench; со знаком: state!=done, expires<=+7d`);
+  return Object.entries(pairs).map(([field, is]) => ({ field, is }));
 }
 
 const norm = (value) => String(value ?? "").trim().toLocaleLowerCase("ru-RU");
+const WHERE_RECORD_KEYS = ["state", "item", "date", "slot"];
 
 function checkWhere(track, conds) {
-  const known = new Set([...track.fields.map((f) => f.key), "state", "item", "date", "slot"]);
+  const known = new Set([...track.fields.map((f) => f.key), ...WHERE_RECORD_KEYS]);
   for (const cond of conds) if (!known.has(cond.field)) throw new Error(`where: в разделе «${track.name}» нет поля «${cond.field}». Есть: ${[...known].join(", ")}`);
 }
 
-// A link matches the item by key, name or id; a choice by option id or name.
-function matchValue(state, track, cond, record) {
-  const field = fieldOf(track, cond.field);
-  const wanted = norm(cond.is);
-  if (cond.field === "item") return norm(record.item) === wanted || norm(record.itemName) === wanted;
-  if (!field) return norm(record[cond.field]) === wanted;
+// An unmarked occurrence is «open»; a changed mark is a kind of done, as everywhere the kit counts.
+const stateOfRecord = (record) => (record.state == null || record.state === "pending" || record.state === "none" ? "open" : record.state);
+
+function dayOfWhere(value, today, field) {
+  const day = dayToken(value, today);
+  if (day == null) throw new Error(`where: в «${field}» дата «${value}» не читается; пишите ГГГГ-ММ-ДД, today, +7d или -30d`);
+  return day;
+}
+
+function sameValue(state, track, key, value, record, today) {
+  const wanted = norm(value);
+  if (key === "state") return wanted === "done" ? ["done", "changed"].includes(stateOfRecord(record)) : stateOfRecord(record) === wanted;
+  if (key === "item") return norm(record.item) === wanted || norm(record.itemName) === wanted;
+  if (key === "date") return record.date === dayOfWhere(value, today, key);
+  if (key === "slot") return norm(record.slot) === wanted;
+  const field = fieldOf(track, key);
   const raw = record.values[field.key];
   if (raw == null) return wanted === "";
   if (field.type === "link") {
@@ -557,18 +570,43 @@ function matchValue(state, track, cond, record) {
   }
   if (field.type === "choice") return norm(raw) === wanted || norm(field.options?.find((o) => o.id === raw)?.name) === wanted;
   if (field.type === "yesno") return String(raw) === (["yes", "да", "true", "1"].includes(wanted) ? "true" : "false");
+  if (field.type === "date") return String(raw).slice(0, 10) === dayOfWhere(value, today, key);
   const n = numeric(raw);
-  return n != null && numeric(cond.is) != null ? n === numeric(cond.is) : norm(raw) === wanted;
+  return n != null && numeric(value) != null ? n === numeric(value) : norm(raw) === wanted;
+}
+
+// The two sides of an ordering test (<, <=, >, >=), or null when the field has no order.
+function orderedPair(track, key, value, record, today) {
+  if (key === "date") return record.date ? [record.date, dayOfWhere(value, today, key)] : null;
+  const field = fieldOf(track, key);
+  if (!field) return null;
+  const raw = record.values[field.key];
+  if (raw == null || raw === "") return null;
+  if (field.type === "date") return [String(raw).slice(0, 10), dayOfWhere(value, today, key)];
+  if (field.type === "time") return [String(raw), String(value)];
+  if (["number", "scale", "calc"].includes(field.type)) return numeric(raw) != null && numeric(value) != null ? [numeric(raw), numeric(value)] : null;
+  return null;
+}
+
+const ORDERING = Object.freeze({ "<": (c) => c < 0, "<=": (c) => c <= 0, ">": (c) => c > 0, ">=": (c) => c >= 0 });
+
+function matchValue(state, track, cond, record, today) {
+  const { op, value } = splitCondition(cond.is);
+  if (op === "=") return sameValue(state, track, cond.field, value, record, today);
+  if (op === "!=") return !sameValue(state, track, cond.field, value, record, today);
+  const pair = orderedPair(track, cond.field, value, record, today);
+  return pair != null && ORDERING[op](pair[0] < pair[1] ? -1 : pair[0] > pair[1] ? 1 : 0);
 }
 
 /**
- * A predicate for `where="exercise=bench,state=done"` over records
- * { values, state, date, slot, item, itemName }. Throws on a field the track lacks.
+ * A predicate for `where="exercise=bench,state!=done"` over records
+ * { values, state, date, slot, item, itemName }. A value may start with !=, <, <=, >, >=
+ * and name a day as today, +7d or -30d. Throws on a field the track lacks.
  */
-export function whereOf(state, track, text) {
+export function whereOf(state, track, text, today) {
   const conds = parseWhere(text);
   checkWhere(track, conds);
-  return (record) => conds.every((cond) => matchValue(state, track, cond, record));
+  return (record) => conds.every((cond) => matchValue(state, track, cond, record, today));
 }
 
 const pointRecord = (point) => ({ values: point.values, state: point.state, date: point.date, slot: point.slot, item: point.item, itemName: point.name });
@@ -581,8 +619,9 @@ function categoryOf(state, track, key, point) {
   const raw = point.values[key];
   if (raw == null || raw === "") return { id: "", label: "Без категории", order: 1e9 };
   if (field.type === "choice") {
-    const at = field.options.findIndex((o) => o.id === raw);
-    return { id: raw, label: field.options[at]?.name ?? String(raw), order: at < 0 ? 1e6 : at };
+    // A bundle writes the planned value of an item as the option's name, a person's entry as its id.
+    const at = field.options.findIndex((o) => o.id === raw || o.name === raw);
+    return { id: field.options[at]?.id ?? raw, label: field.options[at]?.name ?? String(raw), order: at < 0 ? 1e6 : at };
   }
   if (field.type === "link") return { id: raw, label: state.objects[raw]?.name || String(raw), order: 1e6 };
   if (field.type === "yesno") return { id: String(raw), label: raw ? "да" : "нет", order: raw ? 0 : 1 };
@@ -618,48 +657,144 @@ export function metaOf(state, of, value) {
   return valueMeta(requireTrack(state, of), value);
 }
 
+// -- the axis of a bar chart ---------------------------------------------------------
+// `by` is a time step (day, week, month) or the value to group by: a field key, item,
+// state or slot. A group is { id, label, order }; the order puts choices first in the
+// order of their options, everything else is ordered by value afterwards.
+const isTimeStep = (by) => !by || Object.hasOwn(BY, by);
+const ORDER_TAIL = 1e9;
+const STATE_ORDER = ["done", "changed", "skipped", "open"];
+const MAX_AXIS = 12;
+
+function axisOf(state, track, key, point) {
+  switch (key) {
+    case "item": return point.item ? { id: point.item, label: point.name || point.item, order: 1e6 } : { id: "", label: "Без пункта", order: ORDER_TAIL };
+    // The slot ids of a cycle differ from day to day («Завтрак» of Monday is not the one of Tuesday): a slot is its name, in the order of the day.
+    case "slot": return point.slot ? { id: norm(point.name || point.slot), label: point.name || point.slot, order: atMinutes(point.at) } : { id: "", label: "Без приёма", order: ORDER_TAIL };
+    case "state": {
+      const s = point.state == null ? null : point.state === "pending" || point.state === "none" ? "open" : point.state;
+      return s ? { id: s, label: labelOf(track, s), order: STATE_ORDER.indexOf(s) } : { id: "", label: "Без отметки", order: ORDER_TAIL };
+    }
+    default: return categoryOf(state, track, key, point);
+  }
+}
+
+// -- items as rows -------------------------------------------------------------------------
+/**
+ * The items of a track as rows: each with its planned values and the state of its
+ * latest mark in the range (a list item has one mark in all): open, done, changed or
+ * skipped. A catalog has no marks and no period, so its rows are always all there.
+ * @returns {Array<{ id, key, name, item, state, mark, date, values }>}
+ */
+export function itemRows(state, track, range, ctx) {
+  const catalog = track.kind === "catalog";
+  const index = catalog ? null : indexOf(state, track, ctx);
+  const out = [];
+  for (const item of itemsOf(state, track.key)) {
+    if (item.archived) continue;
+    if (range && !catalog && ((item.from && item.from > range.to) || (item.until && item.until < range.from))) continue;
+    const marks = (index?.byRef.get(itemRef(item.id)) || []).filter((m) => track.kind === "list" || !range || (m.date >= range.from && m.date <= range.to));
+    const mark = marks.at(-1) ?? null;
+    out.push({ id: item.id, key: item.key, name: item.name, item, state: mark ? (MARK_STATES.includes(mark.state) ? mark.state : "done") : "open", mark, date: mark?.date || item.from || "", values: item.values });
+  }
+  return out;
+}
+
+const itemRecord = (row) => ({ values: row.values, state: row.state, date: row.date, slot: null, item: row.key, itemName: row.name });
+
+const wantsItems = (track, spec) => track.kind === "catalog" || spec.rows === "items";
+
+// -- samples ------------------------------------------------------------------------------
 function eachDay(range, today, fn) {
   const last = range.to < today ? range.to : today;
   for (let date = range.from; date <= last; date = shiftDate(date, 1)) fn(date);
 }
 
-// Samples behind a bound display: { date, value, raw, state, cat, parts }.
+const virtualOf = (key, c) => {
+  const den = c.done + c.skipped + c.pending;
+  return { done: c.done, skipped: c.skipped, due: c.due, open: c.pending, rate: den ? Math.round((100 * c.done) / den) : null }[key];
+};
+
+function collectItems(state, track, spec, keep, axisKey, ctx) {
+  const wanted = spec.value && fieldOf(track, spec.value) ? spec.value : "count";
+  const meta = valueMeta(track, wanted);
+  const samples = [];
+  for (const row of itemRows(state, track, spec.range, ctx)) {
+    if (!keep(itemRecord(row))) continue;
+    const point = { date: row.date, values: row.values, state: row.state, item: row.key, name: row.name, slot: null };
+    const raw = meta.key === "count" ? 1 : row.values[meta.key] ?? null;
+    samples.push({
+      date: row.date, value: meta.key === "count" ? 1 : numeric(raw), raw, state: null, row: true,
+      cat: spec.category ? categoryOf(state, track, spec.category, point) : null, axis: axisKey ? axisOf(state, track, axisKey, point) : null,
+    });
+  }
+  return { samples, meta };
+}
+
+// Samples behind a bound display: { date, value, raw, state, cat, axis, parts }.
 function collect(state, spec, ctx) {
   const range = spec.range;
+  const axisKey = isTimeStep(spec.by) ? null : spec.by;
   if (isSource(spec.of)) {
     if (parseWhere(spec.where).length) throw new Error(`where: у источника «${spec.of}» нет полей для условия`);
+    if (axisKey && axisKey !== "slot") throw new Error(`by: у источника «${spec.of}» столбец на значение даёт только slot (приём или тренировка), а не «${axisKey}»`);
     const meta = sourceMeta(state, spec.of, spec.value);
     const samples = [];
     eachDay(range, ctx.today, (date) => {
+      if (axisKey) {
+        for (const part of sourceSlots(state, spec.of, date, ctx)) {
+          const v = part.values[meta.key];
+          if (v != null) samples.push({ date, value: v, raw: v, state: null, cat: null, axis: { id: norm(part.name), label: part.name, order: atMinutes(part.time) } });
+        }
+        return;
+      }
       const v = sourceDay(state, spec.of, date, ctx)[meta.key];
       if (v != null) samples.push({ date, value: v, raw: v, state: null, cat: null });
     });
     return { samples, meta };
   }
   const track = requireTrack(state, spec.of);
-  const keep = whereOf(state, track, spec.where);
-  const meta = valueMeta(track, spec.value);
+  const keep = whereOf(state, track, spec.where, ctx.today);
+  if (wantsItems(track, spec)) return collectItems(state, track, spec, keep, axisKey, ctx);
+  const meta = valueMeta(track, spec.value || (spec.fn === "count" ? "count" : undefined));
   const samples = [];
   if (meta.kind === "field" || meta.key === "count") {
     const pts = points(state, track.key, range, ctx).filter((point) => keep(pointRecord(point)));
     for (const point of pts) {
       const cat = spec.category ? categoryOf(state, track, spec.category, point) : null;
+      const axis = axisKey ? axisOf(state, track, axisKey, point) : null;
       if (meta.key === "count") {
-        if (point.state !== "skipped") samples.push({ date: point.date, value: 1, raw: 1, state: point.state, cat });
+        // A skipped mark is not a record to count, unless the bars are one per state: then it is a bar of its own.
+        if (point.state !== "skipped" || axisKey === "state") samples.push({ date: point.date, value: 1, raw: 1, state: axisKey === "state" ? null : point.state, cat, axis });
         continue;
       }
       const raw = point.values[meta.key];
-      samples.push({ date: point.date, value: numeric(raw), raw, state: point.state, cat });
+      // An answer given at «skipped» is a record like any other, not the zero of a missed occurrence.
+      const answered = point.state === "skipped" && point.via === "mark" && raw != null && asksField(meta.field, "skipped");
+      samples.push({ date: point.date, value: numeric(raw), raw, state: answered ? null : point.state, cat, axis });
     }
   } else {
     eachDay(range, ctx.today, (date) => {
       const { rows } = dayRows(state, track, date, ctx);
       const kept = rows.filter((row) => keep(rowRecord(row)));
       if (!kept.length) return;
+      if (axisKey) {
+        const groups = new Map();
+        for (const row of kept) {
+          const axis = axisOf(state, track, axisKey, { item: row.key, name: row.name, slot: row.slot, state: row.state, values: row.actual });
+          if (!groups.has(axis.id)) groups.set(axis.id, { axis, rows: [] });
+          groups.get(axis.id).rows.push(row);
+        }
+        for (const { axis, rows: part } of groups.values()) {
+          const c = countsOf(part);
+          const value = virtualOf(meta.key, c);
+          samples.push({ date, value, raw: value, state: null, cat: null, axis, parts: { num: c.done, den: c.done + c.skipped + c.pending } });
+        }
+        return;
+      }
       const c = countsOf(kept);
-      const den = c.done + c.skipped + c.pending;
-      const value = { done: c.done, skipped: c.skipped, due: c.due, open: c.pending, rate: den ? Math.round((100 * c.done) / den) : null }[meta.key];
-      samples.push({ date, value, raw: value, state: null, cat: null, parts: { num: c.done, den } });
+      const value = virtualOf(meta.key, c);
+      samples.push({ date, value, raw: value, state: null, cat: null, parts: { num: c.done, den: c.done + c.skipped + c.pending } });
     });
   }
   return { samples, meta };
@@ -671,7 +806,7 @@ function collect(state, spec, ctx) {
 // entries: the heaviest set is a set, not a day. sum and count never come here.
 function numbersOf(live, fn, meta) {
   const nums = live.filter((s) => s.value != null && Number.isFinite(s.value));
-  const perEntry = meta.kind !== "field" && meta.key !== "count";
+  const perEntry = (meta.kind !== "field" && meta.key !== "count") || nums.some((s) => s.row);
   if (perEntry || !["avg", "min", "max"].includes(fn) || (!meta.additive && fn !== "avg")) return nums.map((s) => s.value);
   const days = new Map();
   for (const s of nums) {
@@ -683,8 +818,12 @@ function numbersOf(live, fn, meta) {
   return [...days.values()].map((day) => (meta.additive ? day.sum : day.sum / day.n));
 }
 
+const finite = (s) => s.value != null && Number.isFinite(s.value);
+
 // One number out of samples. A skipped occurrence adds zero to a sum and takes
 // no part in the other functions, so an average weight ignores a skipped set.
+// first, last and delta read single entries in date order (a weigh-in is not a day total);
+// delta needs two of them, one entry has no change to show.
 function reduceSamples(list, fn, meta = {}) {
   const live = list.filter((s) => s.state !== "skipped" || fn === "sum");
   if (fn === "count") return list.filter((s) => s.state !== "skipped" && s.raw != null && s.raw !== "").length;
@@ -693,6 +832,13 @@ function reduceSamples(list, fn, meta = {}) {
     const den = live.reduce((total, s) => total + (s.parts?.den ?? 0), 0);
     return den ? Math.round((100 * num) / den) : null;
   }
+  if (fn === "first" || fn === "last" || fn === "delta") {
+    const ordered = live.filter(finite).sort((a, b) => a.date.localeCompare(b.date));
+    if (!ordered.length) return null;
+    if (fn === "first") return ordered[0].value;
+    if (fn === "last") return ordered.at(-1).value;
+    return ordered.length > 1 ? Math.round((ordered.at(-1).value - ordered[0].value) * 1e6) / 1e6 : null;
+  }
   const nums = numbersOf(live, fn, meta);
   if (!nums.length) return null;
   switch (fn) {
@@ -700,15 +846,13 @@ function reduceSamples(list, fn, meta = {}) {
     case "avg": return nums.reduce((a, b) => a + b, 0) / nums.length;
     case "min": return Math.min(...nums);
     case "max": return Math.max(...nums);
-    case "last": return live.filter((s) => s.value != null && Number.isFinite(s.value)).sort((a, b) => a.date.localeCompare(b.date)).at(-1).value;
   }
-  throw new Error(`неизвестная функция «${fn}»: sum, avg, min, max, count или last`);
+  throw new Error(`неизвестная функция «${fn}»: ${FN_KEYS.join(", ")}`);
 }
 
-const FNS = ["sum", "avg", "min", "max", "count", "last"];
 function fnOf(spec, meta) {
   const fn = spec.fn || meta.defaultFn;
-  if (!FNS.includes(fn)) throw new Error(`неизвестная функция «${fn}»: ${FNS.join(", ")}`);
+  if (!FN_KEYS.includes(fn)) throw new Error(`неизвестная функция «${fn}»: ${FN_KEYS.join(", ")}`);
   return fn;
 }
 
@@ -728,9 +872,47 @@ function byCategory(samples, label) {
   return [...groups.filter((g) => keep.has(g.cat.id)), { cat: { id: "__other", label: "Другое" }, samples: rest.flatMap((g) => g.samples), other: true }];
 }
 
+// One bar per value of the axis: the groups of a choice in the order of its options,
+// the others by their total, largest first; past MAX_AXIS the tail becomes «Другое».
+function axisSeries(spec, samples, meta, fn) {
+  const map = new Map();
+  for (const sample of samples) {
+    const axis = sample.axis || { id: "", label: "Без значения", order: ORDER_TAIL };
+    if (!map.has(axis.id)) map.set(axis.id, { axis, ids: new Set([axis.id]), samples: [] });
+    const group = map.get(axis.id);
+    if (axis.order < group.axis.order) group.axis = axis;
+    group.samples.push(sample);
+  }
+  let groups = [...map.values()].map((g) => ({ ...g, total: reduceSamples(g.samples, fn, meta) }));
+  // A bar for a value nothing was counted under says nothing.
+  if (fn === "count") groups = groups.filter((g) => g.total);
+  groups.sort((x, y) => x.axis.order - y.axis.order || (y.total ?? -Infinity) - (x.total ?? -Infinity) || x.axis.label.localeCompare(y.axis.label, "ru"));
+  if (groups.length > MAX_AXIS) {
+    const rest = groups.slice(MAX_AXIS - 1);
+    groups = [...groups.slice(0, MAX_AXIS - 1), { axis: { id: "__other", label: "Другое", order: ORDER_TAIL }, ids: new Set(rest.flatMap((g) => [...g.ids])), samples: rest.flatMap((g) => g.samples) }];
+  }
+  const series = byCategory(samples, meta.label).map((group, i) => {
+    const cells = new Map();
+    for (const sample of group.samples) {
+      const id = sample.axis?.id ?? "";
+      if (!cells.has(id)) cells.set(id, []);
+      cells.get(id).push(sample);
+    }
+    const values = groups.map((g) => {
+      const subset = [...g.ids].flatMap((id) => cells.get(id) || []);
+      return subset.length ? reduceSamples(subset, fn, meta) : null;
+    });
+    return { key: group.cat.id, label: group.cat.label, color: group.other ? 6 : i, values };
+  });
+  if (!series.length) series.push({ key: "value", label: meta.label, color: 0, values: groups.map(() => null) });
+  return { by: "category", axis: spec.by, fn, buckets: groups.map((g) => g.axis.label), series, range: spec.range ?? null, unit: meta.unit, label: meta.label, goal: null, goalType: meta.goalType, rows: samples.length };
+}
+
 /**
  * The series behind bars, line, spark and heatmap, in the shape the chart kit
  * draws: buckets by day, week (Monday first) or month, one series per category.
+ * With `by` a field, item, state or slot the buckets are the values of it instead
+ * (one bar per value over the whole range).
  * `value` is a field key, a virtual value (done, skipped, due, rate, open, count)
  * or, for a classic source, one of its values. A goal is read from the field and
  * shown when the bucket is the goal's period.
@@ -739,6 +921,7 @@ export function valueSeries(state, spec, ctx) {
   const by = spec.by || "day";
   const { samples, meta } = collect(state, spec, ctx);
   const fn = fnOf(spec, meta);
+  if (!isTimeStep(by)) return axisSeries(spec, samples, meta, fn);
   const buckets = bucketsOf(spec.range, by);
   const series = byCategory(samples, meta.label).map((group, i) => {
     const cells = new Map();
@@ -771,3 +954,54 @@ export function defaultGoalRange(meta) {
   return { day: "@today", week: "@thisWeek", month: "@thisMonth" }[meta.goalPer] || "@today";
 }
 
+// -- a course: the goal is the schedule -----------------------------------------------------
+/**
+ * The period of a course meter. `@all` runs from the first day of the track; when every
+ * live item has an `until` it runs on to the last of them, so the goal is the whole course.
+ */
+export function courseRange(state, track, token, ctx) {
+  const wanted = token || "@all";
+  const range = resolveRange(wanted, ctx.today, { since: startOf(state, track, ctx) });
+  if (wanted === "@all") {
+    const live = itemsOf(state, track.key).filter((item) => !item.archived);
+    const end = live.length && live.every((item) => item.until) ? live.map((item) => item.until).sort().at(-1) : null;
+    if (end && end > range.to) range.to = end;
+  }
+  return range;
+}
+
+/** How many occurrences of the track's items fall due in the whole range, future days included. */
+export function dueTotal(state, track, range, keep = () => true) {
+  let total = 0;
+  for (const occ of occurrences(track.key, itemsOf(state, track.key), range)) {
+    if (keep({ values: occ.item.plan, state: null, date: occ.date, slot: null, item: occ.item.key, itemName: occ.item.name })) total += 1;
+  }
+  return total;
+}
+
+// -- pace: what is left of a weekly or monthly goal per remaining day ------------------------
+const paceNumber = (value, up) => {
+  const scaled = value >= 10 ? 1 : 10;
+  return (up ? Math.ceil(value * scaled - 1e-9) : Math.floor(value * scaled + 1e-9)) / scaled;
+};
+
+/**
+ * What is left of a goal per week or month, spread over the days that remain
+ * (today included). Null when the field has no such goal.
+ * @returns {{ per, goal, spent, left, daysLeft, perDay, goalType, unit, text } | null}
+ */
+export function paceOf(state, track, field, spec, ctx) {
+  if (!field || field.goal == null || !["week", "month"].includes(field.goalPer)) return null;
+  const window = windowAround(field.goalPer, ctx.today);
+  const spent = valueTotal(state, { of: track.key, value: field.key, fn: "sum", where: spec.where, range: window }, ctx).value ?? 0;
+  const daysLeft = daysBetween(ctx.today, window.to) + 1;
+  const left = field.goal - spent;
+  const limit = field.goalType === "max";
+  const perDay = left > 0 ? paceNumber(left / daysLeft, !limit) : 0;
+  const amount = fmtValue(perDay, field.unit);
+  let text;
+  if (left <= 0) text = limit ? "лимит исчерпан" : "цель достигнута";
+  else if (daysLeft === 1) text = limit ? `сегодня можно ещё ${amount}` : `сегодня нужно ещё ${amount}`;
+  else text = limit ? `можно ещё ${amount} в день` : `нужно ещё ${amount} в день`;
+  return { per: field.goalPer, goal: field.goal, spent, left, daysLeft, perDay, goalType: field.goalType, unit: field.unit, text };
+}

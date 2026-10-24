@@ -34,18 +34,32 @@ const shiftMonthOf = (day, n) => {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1)).toISOString().slice(0, 10);
 };
 
-// The one range resolver: queries, charts and the bundle validator all read
-// periods through it. «@last12w» runs from the Monday 11 weeks back and
+// The grammar of a period token: @today, @yesterday, @thisWeek, @thisMonth, @all
+// and @lastNd, @lastNw, @lastNm with N up to these limits. The resolver below is
+// lenient about N (the classic screens keep their own limits); the kit's
+// validator holds a bundle to RANGE_LIMITS.
+export const RANGE_LIMITS = Object.freeze({ d: 365, w: 52, m: 12 });
+export const RANGE_WORDS = Object.freeze(["@today", "@yesterday", "@thisWeek", "@thisMonth", "@all"]);
+
+export function parseLastRange(token) {
+  const m = /^@last(\d+)(d|w|m)$/.exec(typeof token === "string" ? token : "");
+  return m ? { n: Number(m[1]), unit: m[2] } : null;
+}
+
+// The one range resolver: queries, charts, the bundle validator and the ledger all
+// read periods through it. «@last12w» runs from the Monday 11 weeks back and
 // «@last6m» from the first day of the month 5 months back, both to today; this
-// week and this month run to their end. A fixed date is a one-day range.
-export function resolveRange(token, today) {
+// week and this month run to their end. A fixed date is a one-day range. «@all»
+// runs from `since` (the first day the caller has data for) to today.
+export function resolveRange(token, today, { since = null } = {}) {
   if (token && typeof token === "object" && token.from) return { from: resolveDate(token.from, today), to: resolveDate(token.to ?? token.from, today) };
   const text = typeof token === "string" ? token : "";
-  const last = /^@last(\d+)(d|w|m)$/.exec(text);
-  if (last) {
-    const n = Number(last[1]);
-    if (last[2] === "d") return { from: shift(today, -(n - 1)), to: today };
-    if (last[2] === "w") return { from: shift(weekStartOf(today), -7 * (n - 1)), to: today };
+  if (text === "@all") return { from: since && since <= today ? since : today, to: today };
+  const last = parseLastRange(text);
+  if (last && last.n >= 1) {
+    const { n, unit } = last;
+    if (unit === "d") return { from: shift(today, -(n - 1)), to: today };
+    if (unit === "w") return { from: shift(weekStartOf(today), -7 * (n - 1)), to: today };
     return { from: shiftMonthOf(today, -(n - 1)), to: today };
   }
   const next = /^@next(\d+)d$/.exec(text);

@@ -4,16 +4,17 @@
 // problem it prints at most six lines «путь: сообщение» of the first failing
 // layer and exits 1. Otherwise it applies the bundle to a store seeded from the
 // item's state, saves state-after.json, renders the changed screens, audits
-// them, saves screenshots, performs the smoke interactions, prints «Готово: …»
-// and exits 0. Exit 2 is a failure of the lab itself, not of the answer.
+// them, saves screenshots, performs the smoke interactions, then does the same
+// on a copy of the state with two weeks of history entered as the person
+// (state-seeded.json, screen-<key>-seeded*.png; see lib/seed.mjs; only the
+// judge packet uses it), prints «Готово: …» and exits 0. Exit 2 is a failure of the lab itself, not of the answer.
 // Every run appends one line to attempts.jsonl and rewrites verdict.json.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { LabError, SURFACES, TODAY, appendLine, exists, isMain, need, openStore, readLines, readText, run, surfaceOf, writeJson, writeText } from "./lib/common.mjs";
-import { builtCounts, builtLine, changedScreens, readKit } from "./lib/describe.mjs";
-import { renderRoutes, withBrowser } from "./lib/render.mjs";
-import { withSlot } from "./lib/slots.mjs";
+import { builtCounts, builtLine } from "./lib/describe.mjs";
+import { renderStage, routesFor } from "./lib/stage.mjs";
 
 const MAX_SHOWN = 6;
 
@@ -28,24 +29,6 @@ const RENDER_RULES = [
   [/одним цветом/, "render-status-color"],
 ];
 const renderRule = (message) => RENDER_RULES.find(([re]) => re.test(message))?.[1] || "render-other";
-
-// The render phase takes a slot of the shared semaphore, so a crowd of checks
-// waits instead of timing out. A lab failure here is tried once more on a fresh
-// slot before it is reported; only a lab failure, never a verdict on the answer.
-async function renderScreens(serialized, routes, dir) {
-  let last;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      return await withSlot(() => withBrowser((env) => renderRoutes(env, serialized, routes, dir)), {
-        onWait: () => console.error("Жду свободного места для отрисовки (проверяют сразу много ответов), это нормально."),
-      });
-    } catch (error) {
-      if (error instanceof LabError) throw error;
-      last = error;
-    }
-  }
-  throw last;
-}
 
 const pathText = (p) => (Array.isArray(p) ? p.join(".") : p == null ? "" : String(p));
 
@@ -86,7 +69,7 @@ export async function check(surface, dirArg) {
   }
   const { checkBundle, applyBundle } = await need("kit/pipeline.js", ["checkBundle", "applyBundle"]);
   const { bundleFromMarkup } = surface === "html" ? await need("kit/markup.js", ["bundleFromMarkup"]) : {};
-  for (const f of ["state-after.json", "verdict.json", ...fs.readdirSync(dir).filter((x) => /^screen-.*\.png$/.test(x))]) fs.rmSync(path.join(dir, f), { force: true });
+  for (const f of ["state-after.json", "state-seeded.json", "verdict.json", ...fs.readdirSync(dir).filter((x) => /^screen-.*\.png$/.test(x))]) fs.rmSync(path.join(dir, f), { force: true });
 
   const show = (shown) => {
     console.log(`Проблемы, исправьте ответ в ${SURFACES[surface].file} и запустите проверку снова:`);
@@ -141,10 +124,8 @@ export async function check(surface, dirArg) {
     const stateB = after.store.state();
     const counts = builtCounts(stateA, stateB);
     const line = builtLine(stateA, stateB);
-    const keys = changedScreens(stateA, stateB);
-    const kit = readKit(stateB);
-    const routes = keys.map((key) => ({ key, hash: key === "home" ? "#/" : `#/screen/${key}`, expectCards: process.env.LAB_SKIP_CARD_CHECK ? [] : (kit.screens.find((s) => s.key === key)?.cards || []).map((c) => c.name).filter(Boolean) }));
-    const screens = routes.length ? await renderScreens(serializedAfter, routes, dir) : [];
+    const routes = routesFor(stateA, stateB);
+    const { screens, seed } = routes.length ? await renderStage(dir, serializedAfter, routes) : { screens: [], seed: null };
 
     const renderProblems = [];
     for (const s of screens) {
@@ -158,7 +139,7 @@ export async function check(surface, dirArg) {
     const smoke = screens.flatMap((s) => s.smoke.map((x) => ({ screen: s.key, ...x })));
     const attempted = smoke.filter((x) => !x.skipped);
     const smokeTotals = { total: attempted.length, passed: attempted.filter((x) => x.ok).length, skipped: smoke.length - attempted.length };
-    const extra = { sha, reply, built: counts, line, screens, smokeTotals, changes: [...markupChanges, ...(checked.changes || [])].map((c) => (typeof c === "string" ? c : c.message || JSON.stringify(c))) };
+    const extra = { sha, reply, built: counts, line, screens, seed, smokeTotals, changes: [...markupChanges, ...(checked.changes || [])].map((c) => (typeof c === "string" ? c : c.message || JSON.stringify(c))) };
 
     if (renderProblems.length) {
       return show(fail({ dir, n, layer: "L4", problems: renderProblems, extra }));

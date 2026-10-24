@@ -40,7 +40,10 @@ test("a request becomes a checked proposal with change rows that the person appl
   const { checked } = result.proposal;
   assert.deepEqual(checked.rows, [
     ["Трек", "Чай", "поле «Чашек, шт.», лимит 4 в день"],
+    ["Новый экран", "🍵 Чай", ""],
     ["Новая карточка", "Чай сегодня", "экран «Главная»: шкала цели, кнопка записи"],
+    ["Новая карточка", "Чашек по дням", "экран «Чай»: столбцы"],
+    ["Новая карточка", "Последние записи", "экран «Чай»: список"],
   ]);
   assert.equal(store.state().types.tr_tea, undefined, "nothing is written before the person applies");
   assert.equal(readSpec(store.state()).cards.tea_today, undefined);

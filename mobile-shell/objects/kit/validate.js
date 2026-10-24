@@ -5,9 +5,9 @@
 // the first that fails: shape and vocabulary, then references and kind rules,
 // then the safety floors, so one repair round fixes one class of mistake.
 import {
-  AT, BUNDLE_ATTRS, CALC_FUNCTIONS, CARD_ATTRS, ELEMENTS, ELEMENT_KEYS, EVERY, FIELD_ATTRS, FIELD_TYPES, FIELD_TYPE_KEYS, ITEM_ATTRS,
-  KEYS, KINDS, KIND_KEYS, LIMITS, MARK_KINDS, NUMERIC_TYPES, RANGE_TOKENS, REMOVAL_KINDS, RESERVED, RESERVED_TRACK_KEYS, SCREEN_ATTRS, TRACK_ATTRS, VIRTUAL,
-  isAt, isDate, isEvery, isKey,
+  AT, BUNDLE_ATTRS, BY, BY_FIELD_TYPES, CALC_FUNCTIONS, CARD_ATTRS, CATEGORY_FIELD_TYPES, ELEMENTS, ELEMENT_KEYS, EVERY, FIELD_ATTRS, FIELD_TYPES, FIELD_TYPE_KEYS, ITEM_ATTRS,
+  FOLLOWS, KEYS, KINDS, KIND_KEYS, LIMITS, MARK_KINDS, NUMERIC_TYPES, RANGE_EXAMPLES, RANGE_HELP, REMOVAL_KINDS, RESERVED, RESERVED_TRACK_KEYS, SCREEN_ATTRS, SOURCES, STATES, TRACK_ATTRS, VIRTUAL, WHERE_STATES,
+  dayToken, isAt, isDate, isEvery, isKey, isRange, rangeProblem, splitCondition,
 } from "./catalogue.js";
 import { formulaRefs, hasFunction, parseFormula } from "../core/formula.js";
 import { resolveRange } from "../core/query.js";
@@ -89,6 +89,14 @@ function checkValue(value, attr, path, name, add, owner) {
         if (!["string", "number", "boolean"].includes(typeof v)) bad(`${q(name)} у ${owner}: значение ${q(k)} должно быть строкой, числом или true/false.`);
         else if (attr.type === "pairs" && typeof v === "string" && attr.max === LIMITS.label && v.length > LIMITS.label) add(path, "text-too-long", `${q(name)} у ${owner}: подпись ${q(k)} длиннее ${LIMITS.label} символов.`);
       }
+      return;
+    case "range": {
+      const why = rangeProblem(value);
+      if (why) bad(`${q(name)} у ${owner}: ${why}.`, RANGE_EXAMPLES);
+      return;
+    }
+    case "by":
+      if (typeof value !== "string" || !value.trim()) bad(`${q(name)} у ${owner} должно быть словом: day, week, month, ключом поля или item, state, slot.`);
       return;
     case "track": case "value": case "field":
       if (typeof value !== "string" || !value) bad(`${q(name)} у ${owner} должно быть ключом, например ${JSON.stringify(attr.example ?? "water")}.`);
@@ -213,6 +221,7 @@ function screenShape(s, i, spec, seen, seenCard, add) {
   if (!keyIssue("screen", s.key, `${at}.key`, "экрана", add, seen)) return;
   unknownKeys(s, SCREEN_ATTRS, at, `экрана ${q(s.key)}`, add);
   for (const [name, attr] of Object.entries(SCREEN_ATTRS)) if (name !== "key" && name !== "cards" && name in s) checkValue(s[name], attr, `${at}.${name}`, name, add, `экрана ${q(s.key)}`);
+  if (s.key === "home" && "name" in s) add(`${at}.name`, "home-name", "Главный экран home называется по дате, его name нигде не виден. Уберите name у home; назвать можно свой экран, например {\"key\":\"water\",\"name\":\"Вода\"}.");
   if (!spec.screens[s.key] && s.key !== "home" && !("name" in s)) add(`${at}.name`, "missing-attr", `Экрана ${q(s.key)} нет, значит это новый экран, и ему нужно name.`);
   if (Array.isArray(s.order) && s.order.some((k) => typeof k !== "string")) add(`${at}.order`, "bad-value", "В order нужны ключи карточек строками [\"a\",\"b\"].");
   if (!("cards" in s)) return;
@@ -243,12 +252,15 @@ function elementShape(el, k, card, path, add) {
   if (!isObj(el)) return add(at, "bad-value", "Элемент должен быть объектом {\"el\":\"meter\",\"of\":…}.");
   const spec = ELEMENTS[el.el];
   if (!spec) return add(`${at}.el`, "unknown-element", `Элемента ${q(el.el)} нет. Допустимы: ${ELEMENT_KEYS.join(", ")}.`, ELEMENT_KEYS);
+  // A number in goal is the old spelling: the goal lives on the field. Only meter takes goal, as "due".
+  const numericGoal = (name) => name === "goal" && typeof el.goal === "number";
   for (const name of Object.keys(el)) {
-    if (name === "el" || name in spec.attrs) continue;
+    if (name === "el" || (name in spec.attrs && !numericGoal(name))) continue;
     const hint = name === "goal" || name === "goalType" ? " Цель задаётся один раз в поле трека (goal в объявлении поля), а не в элементе." : name === "set" ? " Данные берутся из трека: of=\"ключ трека\"." : "";
     add(`${at}.${name}`, "unknown-attr", `У ${spec.tag} нет атрибута ${q(name)}.${hint} Допустимо: ${Object.keys(spec.attrs).join(", ") || "никаких"}.`, Object.keys(spec.attrs));
   }
   for (const [name, attr] of Object.entries(spec.attrs)) {
+    if (numericGoal(name)) continue;
     if (name in el) checkValue(el[name], attr, `${at}.${name}`, name, add, spec.tag);
     else if (attr.required) add(`${at}.${name}`, "missing-attr", `У ${spec.tag} нет обязательного атрибута ${q(name)}: ${attr.doc}. Пример: ${name}: ${JSON.stringify(attr.example)}.`);
   }
@@ -377,7 +389,12 @@ function trackRules(decl, spec, merged, add) {
       add(`${at}.${name}`, "kind-attr", `Атрибут ${q(name)} есть только у ${attr.kinds.map((k) => `kind=${k}`).join(", ")}, а ${q(decl.key)} имеет kind=${track.kind}. Уберите ${name}${name === "items" ? " (для пунктов возьмите kind=habit или list)" : ""}.`, attr.kinds);
     }
   }
-  if (track.kind === "follow" && !track.follows) add(`${at}.follows`, "missing-attr", `Трек follow привязан к приёмам Рациона или тренировкам Спорта, поэтому ему нужен follows: ration или sport.`, ["ration", "sport"]);
+  const states = track.states ?? KINDS[track.kind]?.defaults.states ?? [];
+  if (MARK_KINDS.includes(track.kind) && !states.includes("skipped")) {
+    const asks = track.fields.filter((f) => f.on?.includes("skipped"));
+    if (asks.length) add(`${at}.states`, "bad-value", `Поле ${q(asks[0].key)} спрашивается при skipped, а кнопки «пропущено» у трека ${q(track.key)} нет. Добавьте в states skipped: [${[...states, "skipped"].map((s) => `"${s}"`).join(",")}].`, STATES);
+  }
+  if (track.kind === "follow" && !track.follows) add(`${at}.follows`, "missing-attr", `Трек follow привязан к приёмам Рациона, тренировкам Спорта или покупкам из Запросов, поэтому ему нужен follows: ${Object.keys(FOLLOWS).join(", ")}.`, Object.keys(FOLLOWS));
   if ((track.times != null) !== (track.per != null)) add(`${at}.${track.times != null ? "per" : "times"}`, "missing-attr", "times и per пишутся вместе: сколько отметок в период (times) и за какой период (per: day или week).");
   if (track.states && MARK_KINDS.includes(track.kind)) {
     if (!track.states.includes("done")) add(`${at}.states`, "bad-value", "В states должна быть кнопка done («сделано»): без неё нечего отмечать.", ["done"]);
@@ -520,6 +537,15 @@ function valueProblem(field, value) {
 const AT_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 // -- elements ---------------------------------------------------------------------
+const TIME_STEPS = Object.keys(BY);
+const SERIES_ELEMENTS = ["bars", "line", "spark", "heatmap"];
+const EQ_OPS = ["=", "!="];
+const categorical = (by) => typeof by === "string" && !TIME_STEPS.includes(by);
+// Items as rows: a catalog is always its rows, any other track says rows: items.
+const itemsMode = (track, el) => !track.readonly && (track.kind === "catalog" || el.rows === "items");
+// What an element reads from the items of a track: the planned fields of a habit or a list, every field of a catalog.
+const itemFieldsOf = (track) => track.fields.filter((f) => f.type !== "calc" && (track.kind === "catalog" || f.planned));
+
 function bucketCount(token, by) {
   const { from, to } = resolveRange(token, "2026-06-15");
   const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1;
@@ -541,10 +567,10 @@ function trackFor(el, merged, path, add) {
   return track;
 }
 
-function resolveValue(track, name) {
-  const field = track.fields.find((f) => f.key === name);
+function resolveValue(track, name, items = false) {
+  const field = (items ? itemFieldsOf(track) : track.fields).find((f) => f.key === name);
   if (field) return { field, numeric: Boolean(field.virtual) || FIELD_TYPES[field.type]?.numeric };
-  if (track.readonly) return null;
+  if (track.readonly || items) return null;
   if (name in VIRTUAL.any) return { virtual: name, numeric: true };
   if (MARK_KINDS.includes(track.kind) && VIRTUAL.marks.kinds.includes(track.kind) && name in VIRTUAL.marks.values) return { virtual: name, numeric: true };
   return null;
@@ -556,8 +582,9 @@ const valuesOf = (track) => [
   ...(!track.readonly && VIRTUAL.marks.kinds.includes(track.kind) ? Object.keys(VIRTUAL.marks.values) : []),
 ];
 
-function columnsFor(track) {
+function columnsFor(track, items) {
   const cols = [];
+  if (items) return track.kind === "catalog" ? ["name"] : ["name", "state", "date"];
   if (track.kind !== "catalog") cols.push("date");
   if (MARK_KINDS.includes(track.kind) && track.kind !== "follow") cols.push("item");
   if (MARK_KINDS.includes(track.kind)) cols.push("state");
@@ -565,6 +592,8 @@ function columnsFor(track) {
   if (track.kind === "catalog") cols.push("name");
   return cols;
 }
+
+const NO_CATALOG_SERIES = (label, track) => `У справочника ${q(track.key)} нет дат, поэтому ${label} по времени не рисуется. Строки справочника показывают list и table, их число или сумму поля — stat (fn: "count" или value — числовое поле), а столбец на каждое значение поля — bars с rows: "items" и by: ключ поля choice, text, yesno или link.`;
 
 function elementRules(el, path, merged, add) {
   const spec = ELEMENTS[el.el];
@@ -577,38 +606,62 @@ function elementRules(el, path, merged, add) {
   if (track.readonly && !spec.sources) {
     return add(`${path}.of`, "source-readonly", `${q(el.of)} — классический раздел: приложение его только читает, записывать или отмечать в нём элементом нельзя. Для ${label} возьмите свой трек; из ${el.of} можно показывать числа элементами stat, meter, bars, line, spark и heatmap.`);
   }
+  if (track.kind === "catalog" && SERIES_ELEMENTS.includes(el.el) && !(el.el === "bars" && categorical(el.by))) {
+    return add(`${path}.el`, "kind-element", NO_CATALOG_SERIES(label, track), ["list", "table", "stat", "bars"]);
+  }
   if (!track.readonly && !spec.kinds.includes(track.kind)) {
     return add(`${path}.el`, "kind-element", `${label} не работает с треком ${q(track.key)} (kind=${track.kind}). Он подходит для: ${spec.kinds.join(", ")}.${el.el === "marks" || el.el === "streak" ? " Привычки и списки отмечаются, журнал записывается формой form или кнопкой quick." : ""}`, spec.kinds);
   }
+  if (el.rows === "items" && (track.readonly || !ELEMENTS[el.el].attrs.rows.kinds.includes(track.kind))) {
+    return add(`${path}.rows`, "kind-attr", `rows: "items" считает пункты, а они есть у habit, list и catalog; ${q(track.key)} — ${track.readonly ? "классический раздел" : `kind=${track.kind}`}, у него только записи. Уберите rows.`, ["habit", "list", "catalog"]);
+  }
+  const items = itemsMode(track, el);
+
   if (spec.display && spec.bound) {
-    const rangeOptional = !spec.needsRange || (spec.rangeUnlessCatalog && track.kind === "catalog");
-    if (!el.range && !rangeOptional) add(`${path}.range`, "missing-attr", `У ${label} нет range: период нужен каждому элементу с данными. Допустимо: ${RANGE_TOKENS.join(", ")}.`, RANGE_TOKENS);
+    const rangeOptional = !spec.needsRange || (spec.rangeUnlessCatalog && items);
+    if (!el.range && !rangeOptional) add(`${path}.range`, "missing-attr", `У ${label} нет range: период нужен каждому элементу с данными. ${RANGE_HELP}`, RANGE_EXAMPLES);
   }
-  if (spec.needsValue) {
-    if (!el.value && el.fn !== "count") add(`${path}.value`, "missing-attr", `У ${label} нет value: что считать. Поля трека ${q(track.key)} и величины: ${words(valuesOf(track))}. Либо укажите fn: "count" для числа записей.`, valuesOf(track));
+  if (el.range === "@all") allRangeRules(track, el, path, add);
+
+  if (el.el === "meter" && el.goal === "due") dueRules(track, el, path, add);
+  const dueMeter = el.el === "meter" && el.goal === "due";
+  if (spec.needsValue && !el.value && el.fn !== "count" && !dueMeter) {
+    add(`${path}.value`, "missing-attr", `У ${label} нет value: что считать. ${items ? `Поля пунктов ${q(track.key)}: ${words(itemFieldsOf(track).map((f) => f.key)) || "нет"}` : `Поля трека ${q(track.key)} и величины: ${words(valuesOf(track))}`}. Либо укажите fn: "count" для числа ${items ? "пунктов" : "записей"}.`, items ? itemFieldsOf(track).map((f) => f.key) : valuesOf(track));
   }
+  const fn = el.fn || "sum";
+  if (fn === "delta" && !["stat", "meter"].includes(el.el)) add(`${path}.fn`, "bad-value", `delta — изменение за весь период, его показывают stat и meter. У ${label} возьмите last или first.`, ["last", "first"]);
+  let target = null;
   if (el.value) {
-    const target = resolveValue(track, el.value);
+    target = resolveValue(track, el.value, items);
     if (!target) {
-      add(`${path}.value`, "unknown-key", `В треке ${q(track.key)} нет поля или величины ${q(el.value)}. Поля: ${words(fields.map((f) => f.key)) || "нет"}; величины: ${words(valuesOf(track).filter((k) => !fields.some((f) => f.key === k)))}. Напишите value: ${JSON.stringify(nearest(el.value, valuesOf(track))[0] ?? "ml")}.`, valuesOf(track));
+      if (items) {
+        const own = itemFieldsOf(track).map((f) => f.key);
+        add(`${path}.value`, "unknown-key", `С rows: "items" value — поле пункта: ${words(own) || "у пунктов трека нет полей (planned: true в поле даёт пункту значение)"}. Отметки пунктов считайте через where {"state": "done"}, а их число — fn: "count".`, own);
+      } else {
+        add(`${path}.value`, "unknown-key", `В треке ${q(track.key)} нет поля или величины ${q(el.value)}. Поля: ${words(fields.map((f) => f.key)) || "нет"}; величины: ${words(valuesOf(track).filter((k) => !fields.some((f) => f.key === k)))}. Напишите value: ${JSON.stringify(nearest(el.value, valuesOf(track))[0] ?? "ml")}.`, valuesOf(track));
+      }
     } else {
-      const fn = el.fn || "sum";
       if (!target.numeric && fn !== "count" && spec.needsValue) {
-        const numeric = fields.filter((f) => FIELD_TYPES[f.type]?.numeric || f.virtual).map((f) => f.key);
+        const numeric = (items ? itemFieldsOf(track) : fields).filter((f) => FIELD_TYPES[f.type]?.numeric || f.virtual).map((f) => f.key);
         add(`${path}.fn`, "fn-not-numeric", `Поле ${q(el.value)} (${target.field.type}) не число: fn=${fn} его не считает. Возьмите числовое поле (${words(numeric) || "в треке нет числовых"}) или fn: "count".`, numeric);
       }
-      if (el.el === "meter") meterRules(track, el, target, path, add);
+      if (el.el === "meter" && !dueMeter) meterRules(track, el, target, path, add);
     }
-  } else if (el.el === "meter") add(`${path}.value`, "missing-attr", `meter показывает значение против цели, ему нужен value — поле с целью.`);
-  if (track.kind === "catalog" && el.el === "stat" && el.fn !== "count") add(`${path}.fn`, "kind-element", `У справочника ${q(track.key)} stat считает строки: напишите fn: "count".`, ["count"]);
-  if (el.where) whereRules(track, el.where, path, add, merged);
+  } else if (el.el === "meter" && !dueMeter) add(`${path}.value`, "missing-attr", `meter показывает значение против цели, ему нужен value — поле с целью.`);
+  if (el.pace) paceRules(track, el, target, path, add);
+  if (track.kind === "catalog" && el.el === "stat" && el.fn !== "count" && !target) add(`${path}.fn`, "kind-element", `У справочника ${q(track.key)} stat считает строки: напишите fn: "count" или value — числовое поле строк.`, ["count"]);
+  if (el.where) whereRules(track, el.where, path, add, merged, items);
   if (el.category) {
     const field = fields.find((f) => f.key === el.category);
-    const splits = fields.filter((f) => f.type === "choice" || f.type === "link").map((f) => f.key);
-    if (!field || !["choice", "link"].includes(field.type)) add(`${path}.category`, "unknown-key", `Разбить на ряды можно по полю choice или link. В треке ${q(track.key)} такие поля: ${words(splits) || "нет ни одного"}.`, splits);
+    const splits = fields.filter((f) => CATEGORY_FIELD_TYPES.includes(f.type)).map((f) => f.key);
+    if (!field || !CATEGORY_FIELD_TYPES.includes(field.type)) add(`${path}.category`, "unknown-key", `Разбить на ряды можно по полю choice, link или text. В треке ${q(track.key)} такие поля: ${words(splits) || "нет ни одного"}.`, splits);
   }
-  if (spec.display && el.range && ["bars", "line", "spark", "heatmap"].includes(el.el) && RANGE_TOKENS.includes(el.range)) bucketRules(el, path, add);
-  if (spec.rows) rowRules(track, el, path, add);
+  if (el.by !== undefined && el.el === "bars" && categorical(el.by)) axisRules(track, el, items, path, add);
+  else if (items && el.el === "bars") add(`${path}.by`, "bad-value", `У bars с rows: "items" нет оси времени: by — ключ поля пункта (choice, text, yesno или link)${track.kind === "catalog" ? "" : ", state"}, по нему получится столбец на значение.`, axisOptions(track, items));
+  if (el.compare && (items || el.range === "@all")) add(`${path}.compare`, "bad-value", `compare сравнивает с прошлым периодом, а ${items ? "у пунктов нет периодов" : "у @all прошлого периода нет"}. Уберите compare.`);
+  if (el.spark && el.range === "@all") add(`${path}.spark`, "bad-value", "Мини-график к числу за всё время получился бы слишком длинным. Уберите spark или возьмите range @last90d.");
+  if (spec.display && el.range && SERIES_ELEMENTS.includes(el.el) && !items && el.range !== "@all" && !categorical(el.by) && isRange(el.range)) bucketRules(el, path, add);
+  if (spec.rows) rowRules(track, el, items, path, add);
   if (el.el === "quick") quickRules(track, el, path, add);
   if (el.el === "form") formRules(track, el, path, add);
   if (el.el === "list" && el.add && !["catalog", "list"].includes(track.kind)) add(`${path}.add`, "kind-element", `add у list добавляет строку справочника или пункт списка; у трека ${q(track.key)} (kind=${track.kind}) записи вносит form или quick. Уберите add.`);
@@ -617,6 +670,35 @@ function elementRules(el, path, merged, add) {
     const goal = fields.some((f) => f.goal != null);
     if (track.kind !== "habit" && !goal) add(`${path}.of`, "kind-element", `streak считает дни по привычке или по цели поля. Добавьте goal в объявление поля трека ${q(track.key)} или возьмите kind=habit.`);
   }
+}
+
+// @all runs from the first day of the track to today, so a chart of it must not draw a bar per day.
+function allRangeRules(track, el, path, add) {
+  if (track.readonly) return add(`${path}.range`, "bad-value", `У классического раздела ${q(track.key)} нет собственного начала, @all не определено. Возьмите @last90d или @last12w.`, ["@last90d", "@last12w"]);
+  if (el.el === "spark" || el.el === "heatmap") add(`${path}.range`, "range-too-long", `${ELEMENTS[el.el].tag} за всё время получился бы слишком длинным. Возьмите ${el.el === "heatmap" ? "@last12w или @last90d" : "@last90d"}.`, ["@last90d", "@last12w"]);
+  if ((el.el === "bars" || el.el === "line") && !categorical(el.by) && !["week", "month"].includes(el.by)) {
+    add(`${path}.by`, "too-many-points", `С @all по дням получается слишком много точек. Добавьте by: "week" или by: "month".`, ["week", "month"]);
+  }
+}
+
+function dueRules(track, el, path, add) {
+  if (track.kind !== "habit") add(`${path}.goal`, "kind-attr", `goal: "due" считает пункты по расписанию, а расписание есть у habit; ${q(track.key)} — kind=${track.kind}. Цель по числу объявляется в поле: goal: 2000.`, ["habit"]);
+  if (el.value !== "done") add(`${path}.value`, el.value ? "bad-value" : "missing-attr", `С goal: "due" в value стоит done — сколько пунктов сделано. Напишите value: "done".`, ["done"]);
+  if ((el.fn || "sum") !== "sum") add(`${path}.fn`, "bad-value", `С goal: "due" значение — сумма сделанного: уберите fn.`, ["sum"]);
+  if (el.pace) add(`${path}.pace`, "bad-value", `pace и goal: "due" вместе не работают: у цели по расписанию свой остаток. Уберите pace.`);
+  if (el.category) add(`${path}.category`, "bad-value", `С goal: "due" ряды не делятся. Уберите category.`);
+}
+
+function paceRules(track, el, target, path, add) {
+  const here = `${path}.pace`;
+  if (track.readonly) return add(here, "bad-value", `pace считает остаток цели поля, а ${q(track.key)} — классический раздел без цели в поле. Уберите pace.`);
+  const field = target?.field;
+  const weekly = (f) => f.goal != null && ["week", "month"].includes(f.goalPer);
+  if (!field || !weekly(field)) {
+    const own = track.fields.filter(weekly).map((f) => f.key);
+    add(here, "no-goal", `pace считает, сколько ещё можно (или нужно) в день до конца недели или месяца, поэтому value — поле с goal и goalPer: "week" или "month". ${own.length ? `У трека ${q(track.key)} такие поля: ${words(own)}.` : `Добавьте goalPer: "week" или "month" полю с целью в треке ${q(track.key)}.`}`, own);
+  }
+  if ((el.fn || "sum") !== "sum") add(`${path}.fn`, "bad-value", `С pace значение считается суммой за неделю или месяц цели: уберите fn.`, ["sum"]);
 }
 
 function meterRules(track, el, target, path, add) {
@@ -628,17 +710,96 @@ function meterRules(track, el, target, path, add) {
   }
 }
 
-function whereRules(track, where, path, add, merged) {
+// -- bars by a value ----------------------------------------------------------------
+function axisOptions(track, items) {
+  if (track.readonly) return SOURCES[track.key]?.slots ? ["slot"] : [];
+  const own = (items ? itemFieldsOf(track) : track.fields).filter((f) => BY_FIELD_TYPES.includes(f.type)).map((f) => f.key);
+  const named = [];
+  if (["habit", "list", "catalog"].includes(track.kind)) named.push("item");
+  if (MARK_KINDS.includes(track.kind)) named.push("state");
+  if (track.kind === "follow") named.push("slot");
+  return [...TIME_STEPS, ...own, ...named];
+}
+
+function axisRules(track, el, items, path, add) {
+  const here = `${path}.by`;
+  const options = axisOptions(track, items);
+  const named = options.filter((o) => !TIME_STEPS.includes(o));
+  if (!options.includes(el.by)) {
+    const reason = track.readonly
+      ? `У ${q(track.key)} столбец на значение даёт только ${SOURCES[track.key]?.slots ? "by: slot (приём или тренировка)" : "время"}`
+      : `У трека ${q(track.key)} (kind=${track.kind}) такие by: ${words(named) || "только день, неделя, месяц"}`;
+    return add(here, "unknown-key", `by ${q(el.by)} не подходит. ${reason}. Время: day, week, month. По значению: ключ поля choice, text, yesno или link${items ? " (поле пункта)" : ""}, а также item, state, slot по виду трека.`, options);
+  }
+  if (el.category && el.category === el.by) add(`${path}.category`, "bad-value", `category делит столбец на ряды, а by уже делит по ${q(el.by)}. Возьмите для category другое поле или уберите его.`);
+}
+
+// -- where --------------------------------------------------------------------------
+function whereKeys(track, items) {
+  const keys = (items ? itemFieldsOf(track) : track.fields).map((f) => f.key);
+  if (MARK_KINDS.includes(track.kind)) keys.push("state");
+  if (["habit", "list", "catalog"].includes(track.kind)) keys.push("item");
+  if (track.kind !== "catalog") keys.push("date");
+  return keys;
+}
+
+function whereRules(track, where, path, add, merged, items) {
   if (track.readonly) return add(`${path}.where`, "where-source", `У классического раздела ${q(track.key)} нет полей для where. Уберите where.`);
-  for (const [key, value] of Object.entries(where)) {
+  const known = whereKeys(track, items);
+  for (const [key, raw] of Object.entries(where)) {
+    const at = `${path}.where.${key}`;
+    const { op, value } = splitCondition(raw);
+    const text = String(value ?? "");
+    const bad = (message, allowed) => add(at, "bad-value", message, allowed);
+    const onlyEq = () => !EQ_OPS.includes(op) && bad(`Для ${q(key)} годятся = и !=, а знак ${q(op)} сравнивает по порядку: он для чисел, дат и времени. Напишите {"${key}": "${text}"} или {"${key}": "!=${text}"}.`, EQ_OPS);
+    if (!known.includes(key)) {
+      add(at, "unknown-key", `В треке ${q(track.key)} нет поля ${q(key)} для where. Ключи: ${words(known)}.`, known);
+      continue;
+    }
+    if (key === "state") {
+      onlyEq();
+      if (!WHERE_STATES.includes(text)) bad(`Отметка ${q(text)} не из списка. state: ${WHERE_STATES.join(", ")}.`, WHERE_STATES);
+      continue;
+    }
+    if (key === "item") {
+      onlyEq();
+      const rows = (merged.tracks[track.key]?.items || []).filter((i) => !i.archived);
+      if (!rows.some((i) => i.key === text || i.name === text)) bad(`В треке ${q(track.key)} нет пункта ${q(text)}. Ключи пунктов: ${words(rows.map((i) => i.key)) || "пунктов пока нет"}.`, rows.map((i) => i.key));
+      continue;
+    }
+    if (key === "date") {
+      if (dayToken(text, "2026-01-01") == null) bad(`Дата ${q(text)} не читается. Пишите ГГГГ-ММ-ДД или today, yesterday, +7d, -30d, например {"date": ">=-30d"}.`);
+      continue;
+    }
     const field = track.fields.find((f) => f.key === key);
-    const keys = track.fields.filter((f) => f.type !== "calc").map((f) => f.key);
-    if (!field) { add(`${path}.where.${key}`, "unknown-key", `В треке ${q(track.key)} нет поля ${q(key)} для where. Поля: ${words(keys)}.`, keys); continue; }
-    if (field.type === "choice" && !field.options?.includes(String(value))) add(`${path}.where.${key}`, "bad-value", `Вариант ${q(value)} не из списка поля ${q(key)}: ${words(field.options || [])}.`, field.options);
-    if (field.type === "yesno" && typeof value !== "boolean") add(`${path}.where.${key}`, "bad-value", `Для поля yesno в where нужно true или false.`);
-    const rows = field.type === "link" && field.to !== "product" ? merged.tracks[field.to]?.items?.filter((i) => !i.archived) : null;
-    if (rows && !rows.some((i) => i.key === value || i.name === value)) {
-      add(`${path}.where.${key}`, "bad-value", `В справочнике ${q(field.to)} нет строки ${q(value)}. Ключи строк: ${words(rows.map((i) => i.key)) || "справочник пока пуст"}. Напишите where: {"${key}": "${nearest(String(value), rows.map((i) => i.key))[0] ?? "ключ"}"}.`, rows.map((i) => i.key));
+    switch (field.type) {
+      case "number": case "scale": case "calc":
+        if (text === "" || !Number.isFinite(Number(text))) bad(`Для числового поля ${q(key)} нужно число, например {"${key}": ">=${field.min ?? 1}"}.`);
+        break;
+      case "date":
+        if (dayToken(text, "2026-01-01") == null) bad(`Дата ${q(text)} в поле ${q(key)} не читается. Пишите ГГГГ-ММ-ДД или today, +7d, -30d, например {"${key}": "<=+7d"}.`);
+        break;
+      case "time":
+        if (!AT_TIME.test(text)) bad(`Для поля времени ${q(key)} нужно ЧЧ:ММ, например {"${key}": "<=22:00"}.`);
+        break;
+      case "choice":
+        onlyEq();
+        if (!field.options?.includes(text)) bad(`Вариант ${q(text)} не из списка поля ${q(key)}: ${words(field.options || [])}.`, field.options);
+        break;
+      case "yesno":
+        onlyEq();
+        if (!["true", "false"].includes(text)) bad(`Для поля yesno в where нужно true или false.`, ["true", "false"]);
+        break;
+      case "link": {
+        onlyEq();
+        const rows = field.to !== "product" ? merged.tracks[field.to]?.items?.filter((i) => !i.archived) : null;
+        if (rows && !rows.some((i) => i.key === text || i.name === text)) {
+          bad(`В справочнике ${q(field.to)} нет строки ${q(text)}. Ключи строк: ${words(rows.map((i) => i.key)) || "справочник пока пуст"}. Напишите where: {"${key}": "${nearest(text, rows.map((i) => i.key))[0] ?? "ключ"}"}.`, rows.map((i) => i.key));
+        }
+        break;
+      }
+      default:
+        onlyEq();
     }
   }
 }
@@ -655,10 +816,10 @@ function bucketRules(el, path, add) {
   if (el.el === "heatmap" && (n < 14 || n > LIMITS.heatmapDays)) add(`${path}.range`, "range-too-short", `Календарь показывает от 14 дней до 27 недель: возьмите @last12w или @last90d.`, ["@last12w", "@last90d"]);
 }
 
-function rowRules(track, el, path, add) {
-  const allowed = [...columnsFor(track), ...track.fields.map((f) => f.key)];
+function rowRules(track, el, items, path, add) {
+  const allowed = [...columnsFor(track, items), ...(items ? itemFieldsOf(track) : track.fields).map((f) => f.key)];
   for (const column of el.columns || []) {
-    if (!allowed.includes(column)) add(`${path}.columns`, "unknown-key", `Столбца ${q(column)} нет. У трека ${q(track.key)} столбцы: ${words(allowed)}.`, allowed);
+    if (!allowed.includes(column)) add(`${path}.columns`, "unknown-key", `Столбца ${q(column)} нет. У ${items ? "пунктов " : ""}трека ${q(track.key)} столбцы: ${words(allowed)}.`, allowed);
   }
   if (new Set(el.columns || []).size !== (el.columns || []).length) add(`${path}.columns`, "bad-value", "В columns столбцы не повторяются.");
   if (el.sort && !allowed.includes(el.sort)) add(`${path}.sort`, "unknown-key", `Сортировать можно по: ${words(allowed)}.`, allowed);

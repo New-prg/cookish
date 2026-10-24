@@ -1,0 +1,29 @@
+{
+  "id": "repair",
+  "request": "Собираю список материалов для ремонта кухни и цену каждого. Отмечаю, что уже взял. Хочу видеть, на какую сумму ещё осталось",
+  "reply": "Собрал список «Ремонт кухни» с ценой у каждой вещи. Отмечайте взятое, а карточка внизу считает сумму того, что ещё осталось взять.",
+  "tags": ["list", "money", "items", "plan", "stat", "marks"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Ремонт кухни",
+    "tracks": [
+      {
+        "key": "repair", "name": "Ремонт кухни", "kind": "list", "icon": "🔨",
+        "fields": [{ "key": "price", "name": "Цена", "type": "number", "unit": "₽", "min": 0, "max": 500000, "planned": true }],
+        "items": [
+          { "name": "Краска", "plan": { "price": 3500 } },
+          { "name": "Плитка", "plan": { "price": 12000 } },
+          { "name": "Смеситель", "plan": { "price": 4500 } },
+          { "name": "Кисти и валики", "plan": { "price": 600 } }
+        ]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "repair_list", "title": "Что взять", "body": [{ "el": "marks", "of": "repair", "add": true }] },
+        { "key": "repair_left", "title": "Осталось на сумму", "body": [{ "el": "stat", "of": "repair", "value": "price", "fn": "sum", "rows": "items", "where": { "state": "open" }, "range": "@all" }] }
+      ] }
+    ]
+  }
+}

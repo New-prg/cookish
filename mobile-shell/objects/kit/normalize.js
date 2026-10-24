@@ -5,7 +5,7 @@
 // reported as a Russian sentence. Anything with two readings is left alone for
 // the validator to name.
 import {
-  AT, BUNDLE_VERSION, ELEMENTS, ELEMENT_KEYS, KEYS, RANGE_TOKENS, TIME_OF_DAY, UNIT_ALIASES, UNIT_KEYS, WEEKDAYS, WEEKDAY_ALIASES, isEvery,
+  AT, BUNDLE_VERSION, ELEMENTS, ELEMENT_KEYS, KEYS, TIME_OF_DAY, UNIT_ALIASES, UNIT_KEYS, WEEKDAYS, WEEKDAY_ALIASES, isEvery, isRange, wherePairs,
 } from "./catalogue.js";
 
 const TRANSLIT = { а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "c", ч: "ch", ш: "sh", щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya" };
@@ -37,7 +37,9 @@ const table = (entries) => Object.fromEntries(Object.entries(entries).flatMap(([
 const ALIAS = {
   kind: table({ log: ["журнал", "лог", "записи", "запись", "journal", "diary", "tracker"], habit: ["привычка", "habits"], list: ["список", "checklist", "todo"], catalog: ["справочник", "каталог", "catalogue", "directory"], follow: ["дополнение"] }),
   type: table({ number: ["int", "integer", "float", "decimal", "numeric", "num", "число", "целое", "дробное"], text: ["string", "str", "textarea", "текст", "строка"], choice: ["select", "enum", "choices", "option", "выбор"], yesno: ["bool", "boolean", "checkbox", "toggle", "да/нет"], scale: ["rating", "slider", "шкала", "оценка"], date: ["дата"], time: ["время"], calc: ["formula", "computed", "расчёт", "формула"], link: ["ref", "reference", "relation", "ссылка"] }),
-  fn: table({ sum: ["total", "сумма", "итого", "суммa"], avg: ["average", "mean", "среднее", "average"], min: ["minimum", "минимум"], max: ["maximum", "максимум"], count: ["количество", "кол-во"] }),
+  fn: table({ sum: ["total", "сумма", "итого", "суммa"], avg: ["average", "mean", "среднее", "average"], min: ["minimum", "минимум"], max: ["maximum", "максимум"], count: ["количество", "кол-во"], last: ["latest", "последнее", "последний"], first: ["earliest", "первое", "первый"], delta: ["change", "diff", "difference", "изменение", "разница"] }),
+  rows: table({ items: ["item", "пункты", "позиции", "строки"] }),
+  pace: table({ left: ["remaining", "осталось", "остаток"] }),
   by: table({ day: ["daily", "days", "день", "дни", "по дням"], week: ["weekly", "weeks", "неделя", "недели", "по неделям"], month: ["monthly", "months", "месяц", "месяцы", "по месяцам"] }),
   stack: table({ stacked: ["stack", "с накоплением"], grouped: ["group", "рядом"] }),
   good: table({ up: ["higher", "increase", "рост", "вверх"], down: ["lower", "decrease", "снижение", "вниз"], none: ["neutral", "нет"] }),
@@ -47,7 +49,7 @@ const ALIAS = {
   goalPer: table({ day: ["daily", "per_day", "в день", "день", "сутки"], week: ["weekly", "per_week", "в неделю", "неделя"], month: ["monthly", "per_month", "в месяц", "месяц"] }),
   per: table({ day: ["daily", "в день", "день"], week: ["weekly", "в неделю", "неделя"] }),
   unmarked: table({ ignore: ["ignored", "none"], missed: ["miss", "skipped", "skip"], assumed: ["assume", "done"] }),
-  follows: table({ ration: ["рацион"], sport: ["спорт"] }),
+  follows: table({ ration: ["рацион"], sport: ["спорт"], shopping: ["покупки", "запросы", "requests"] }),
   what: table({ "ration-today": ["ration_today", "rationtoday", "рацион"], "sport-today": ["sport_today", "sporttoday", "спорт"], requests: ["запросы", "request"] }),
 };
 const EVERY_WORDS = table({ day: ["daily", "everyday", "every_day", "каждый день", "ежедневно", "каждый_день"], weekdays: ["weekday", "workdays", "будни", "по будням", "рабочие дни"], weekends: ["weekend", "выходные", "по выходным"], open: ["без срока", "бессрочно"] });
@@ -59,13 +61,13 @@ const DAY_NAMES = (() => {
 
 function aliasRange(value) {
   const v = value.trim().toLowerCase().replace(/\s+/g, " ").replace(/^@/, "");
-  const words = { today: "@today", сегодня: "@today", yesterday: "@yesterday", вчера: "@yesterday", week: "@thisWeek", thisweek: "@thisWeek", "this week": "@thisWeek", неделя: "@thisWeek", "эта неделя": "@thisWeek", month: "@thisMonth", thismonth: "@thisMonth", "this month": "@thisMonth", месяц: "@thisMonth", "этот месяц": "@thisMonth" };
+  const words = { today: "@today", сегодня: "@today", yesterday: "@yesterday", вчера: "@yesterday", week: "@thisWeek", thisweek: "@thisWeek", "this week": "@thisWeek", неделя: "@thisWeek", "эта неделя": "@thisWeek", month: "@thisMonth", thismonth: "@thisMonth", "this month": "@thisMonth", месяц: "@thisMonth", "этот месяц": "@thisMonth", all: "@all", alltime: "@all", "all time": "@all", "всё время": "@all", "все время": "@all", "за всё время": "@all", "за все время": "@all" };
   if (words[v]) return words[v];
   const m = /^(?:last|за|последние|последний|последняя)?\s*(\d{1,3})\s*(d|w|m|days?|weeks?|months?|дн\S*|нед\S*|мес\S*)$/.exec(v);
   if (!m) return null;
   const unit = m[2][0] === "d" || m[2][0] === "д" ? "d" : m[2][0] === "w" || m[2][0] === "н" ? "w" : "m";
   const token = `@last${Number(m[1])}${unit}`;
-  return RANGE_TOKENS.includes(token) ? token : null;
+  return isRange(token) ? token : null;
 }
 
 // An answer in words only: a refusal or a question. It changes nothing and has no name.
@@ -366,13 +368,28 @@ export function normalizeBundle(raw, { spec = null } = {}) {
         case "fields": out[name] = list(out[name], w); if (Array.isArray(out[name])) out[name] = out[name].map((k) => key(k, w)); break;
         case "bool": out[name] = bool(out[name], w); break;
         case "int": case "number": out[name] = num(out[name], w); break;
-        case "pairs": out[name] = pairs(out[name], w, name === "values" ? numericValue : (v) => v); if (out[name] && typeof out[name] === "object" && !Array.isArray(out[name])) out[name] = Object.fromEntries(Object.entries(out[name]).map(([k, v]) => [key(k, w), v])); break;
+        case "pairs":
+          if (name === "where" && typeof out[name] === "string") {
+            const parsed = wherePairs(out[name]);
+            if (parsed) { note(`${w}: строка «${cut(out[name])}» записана парами.`); out[name] = parsed; }
+          }
+          out[name] = pairs(out[name], w, name === "values" ? numericValue : (v) => v); if (out[name] && typeof out[name] === "object" && !Array.isArray(out[name])) out[name] = Object.fromEntries(Object.entries(out[name]).map(([k, v]) => [key(k, w), v])); break;
+        case "range":
+          if (typeof out[name] === "string" && !isRange(out[name])) {
+            const fixed = aliasRange(out[name]);
+            if (fixed) { note(`${w}: «${cut(out[name])}» записано как «${fixed}».`); out[name] = fixed; }
+          }
+          break;
+        case "by":
+          if (typeof out[name] === "string") {
+            const hit = ALIAS.by[out[name].trim().toLowerCase().replace(/\s+/g, " ")];
+            if (hit) { if (hit !== out[name]) note(`${w}: «${cut(out[name])}» записано как «${hit}».`); out[name] = hit; } else out[name] = key(out[name], w);
+          }
+          break;
         case "enum":
-          if (name === "range" || attr.values.every((v) => RANGE_TOKENS.includes(v))) {
-            if (typeof out[name] === "string" && !RANGE_TOKENS.includes(out[name])) {
-              const fixed = aliasRange(out[name]);
-              if (fixed) { note(`${w}: «${cut(out[name])}» записано как «${fixed}».`); out[name] = fixed; }
-            }
+          if (name === "date" && typeof out[name] === "string" && !attr.values.includes(out[name])) {
+            const fixed = aliasRange(out[name]);
+            if (fixed && attr.values.includes(fixed)) { note(`${w}: «${cut(out[name])}» записано как «${fixed}».`); out[name] = fixed; }
           } else out[name] = alias(out[name], name, w);
           break;
         case "text": out[name] = trimText(out[name], w); break;

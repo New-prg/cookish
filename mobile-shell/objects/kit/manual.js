@@ -7,11 +7,12 @@
 // text, when a sample or an example does not pass checkBundle, and when a
 // "wrong" line below stops being wrong.
 import {
-  AT, BUNDLE_ATTRS, BY, CALC_FUNCTIONS, CARD_ATTRS, COLUMNS, ELEMENTS, ELEMENT_KEYS, ENERGY_FLOOR, EVERY, FIELD_ATTRS, FIELD_TYPES, FIELD_TYPE_KEYS,
-  FNS, FOLLOWS, GOAL_PERS, GOAL_TYPES, ITEM_ATTRS, KINDS, KIND_KEYS, LIMITS, RANGES, REMOVAL_KINDS, SCREEN_ATTRS, SOURCES, STATES, TRACK_ATTRS,
+  AT, BUNDLE_ATTRS, BY, BY_FIELD_TYPES, BY_WORDS, CALC_FUNCTIONS, CARD_ATTRS, COLUMNS, ELEMENTS, ELEMENT_KEYS, ENERGY_FLOOR, EVERY, FIELD_ATTRS, FIELD_TYPES, FIELD_TYPE_KEYS,
+  FNS, FOLLOWS, GOAL_PERS, GOAL_TYPES, ITEM_ATTRS, KINDS, KIND_KEYS, LIMITS, MARK_KINDS, RANGES, REMOVAL_KINDS, SCREEN_ATTRS, SOURCES, STATES, TRACK_ATTRS,
   UNIT_KEYS, UNMARKED, VIRTUAL,
 } from "./catalogue.js";
 import { expandDefaults } from "./defaults.js";
+import { DECISIONS } from "./examples/decisions.js";
 import { EXAMPLES, exampleById } from "./examples/index.js";
 import { bundleToMarkup } from "./markup.js";
 import { applyBundle, checkBundle } from "./pipeline.js";
@@ -19,7 +20,9 @@ import { printSpec, readSpec } from "./spec.js";
 import { openObjectStore } from "../core/store.js";
 import { escapeAttr } from "../viz/validate.js";
 
-export const MANUAL_BUDGET = Object.freeze({ target: 7000, cap: 9000 });
+// target: the prompt for an empty or demo space, what a typical request costs.
+// cap: a space that has grown; its summary shrinks to keys, the rest stays.
+export const MANUAL_BUDGET = Object.freeze({ target: 9000, cap: 11000 });
 export const estimateTokens = (text) => Math.ceil(String(text).length / 3.2);
 
 const EXAMPLE_TODAY = "2026-10-24";
@@ -33,7 +36,7 @@ const emptyState = () => openObjectStore({ storage: null, today: () => EXAMPLE_T
 // plain values together on one line and gives each nested value its own.
 const isPlain = (value) => value === null || typeof value !== "object" || (Array.isArray(value) && value.every((item) => item === null || typeof item !== "object"));
 
-export function formatJson(value, indent = 0, width = 110) {
+export function formatJson(value, indent = 0, width = 170) {
   const flat = JSON.stringify(value);
   if (value === null || typeof value !== "object" || flat.length + indent <= width) return flat;
   const pad = " ".repeat(indent + 1);
@@ -84,7 +87,7 @@ const TAG_WORDS = [
   ["home", /на главн/i],
   ["goal", /цел[ьиюе]|норм[ау]|не больше|не меньше|хотя бы|лимит|предел/i],
   ["goalmax", /не больше|максимум|лимит|предел|не превыш/i],
-  ["log", /записыва|веду|считай|считать|учёт|учет|журнал|трекер|дневник|замер|вноси/i],
+  ["log", /записыва|веду|считай|считать|учёт|учет|журнал|трекер|дневник|замер|вноси|подход|повтор/i],
   ["habit", /привычк|кажд|ежедневн|по утрам|по вечерам|по будням|отмеча|курс|принима|раз в недел|расписан/i],
   ["streak", /сери[яюи]/i],
   ["avoid", /не (ем|пью|курю|трачу)|без (сладк|алкогол|сахар|кофе|курени)|срыв/i],
@@ -96,7 +99,7 @@ const TAG_WORDS = [
   ["embed", /раздел|экран|на главн.*(план|рацион|тренировк)|из плана/i],
   ["screen", /раздел|экран/i],
   ["quick", /кнопк|одним нажатием|быстр|\+\s?\d/i],
-  ["form", /ввод|вводить|записыва|сколько .*(км|кг|мин|раз|длин|штук)/i],
+  ["form", /ввод|вводить|записыва|подход|повтор|сколько .*(км|кг|мин|раз|длин|штук)/i],
   ["calc", /сумм|произведен|темп|скорост|среднее|умнож|поделить|вычисл|посчита|километр/i],
   ["scale", /шкал|оценк|от 1 до|баллов|насколько/i],
   ["choice", /вариант|вкус|выбрать|категор|стиль|вид /i],
@@ -109,6 +112,18 @@ const TAG_WORDS = [
   ["heatmap", /календар/i],
   ["line", /график|динамик|тренд|как меняется/i],
   ["bars", /по дням|по неделям|столбц|сравни/i],
+  ["counter", /сколько раз|на этой недел|сколько .*(сделал|полил|пропустил)/i],
+  ["missed", /пропуст|пропуск|не сделан|забыл/i],
+  ["weekdays", /по (понедельник|вторник|сред|четверг|пятниц|суббот|воскресень)|по будням|в будни|по выходным|раз в \d дн|(^|[ ,;:])(пн|вт|ср|чт|пт|сб|вс)[ ,;:]/i],
+  ["month", /за месяц|в месяц|этот месяц|за последний месяц/i],
+  ["frequency", /чаще|как часто|больше всего|по вариант|каких больше|куда (хож|езж)/i],
+  ["course", /курс|на \d+ дн|две недели|экзамен|челлендж|программ/i],
+  ["money", /цен[аыуе]|стоимост|₽|руб|трат|потрат|стоит/i],
+  ["pace", /в день до конца|сколько ещё можно|сколько можно/i],
+  ["delta", /последн(ее|ий|юю|его)|что изменилось|изменил|прирост|разниц|сколько проех/i],
+  ["expire", /срок[а-я]* (годн|действ)|годност|истека|портит|срок действия/i],
+  ["search", /искать|поиск|найти/i],
+  ["edit", /править|исправ|редактир/i],
   ["refuse", /доз[ауы]|диагноз|лечени|похуд|схуд/i],
 ];
 
@@ -184,12 +199,15 @@ export const hasTracks = (state) => Object.values(readSpec(state).tracks).some((
 
 // A space that lives long outgrows the prompt. Past this size the summary
 // loses detail step by step: fields shrink to keys, cards to keys, tracks to
-// their name and kind. Keys are what a change needs, so they stay.
+// their name and kind, then to key and kind, screens to keys. Keys are what a
+// change needs, so they stay.
 export const SPACE_CHARS = 4800;
 const SHRINK = [
   (summary) => ({ ...summary, tracks: summary.tracks.map((track) => ({ ...track, fields: track.fields.map((field) => field.key) })) }),
   (summary) => ({ ...summary, screens: summary.screens.map((screen) => ({ ...screen, cards: screen.cards.map((card) => card.key) })) }),
   (summary) => ({ ...summary, tracks: summary.tracks.map(({ key, name, kind }) => ({ key, name, kind })) }),
+  (summary) => ({ ...summary, tracks: summary.tracks.map(({ key, kind }) => ({ key, kind })) }),
+  (summary) => ({ ...summary, screens: summary.screens.map(({ key, cards }) => ({ key, cards })) }),
 ];
 
 function summaryOf(state, surface) {
@@ -223,26 +241,26 @@ export const FIELD_SAMPLES = Object.freeze({
   scale: { key: "calm", name: "Спокойствие", type: "scale", min: 1, max: 5, labels: ["тревожно", "", "нормально", "", "спокойно"] },
   text: { key: "feel", name: "Самочувствие", type: "text" },
   choice: { key: "flavor", name: "Вкус", type: "choice", options: ["шоколад", "ваниль", "ягоды"] },
-  yesno: { key: "has", name: "Овощи были", type: "yesno" },
-  date: { key: "opened", name: "Банка открыта", type: "date" },
+  yesno: { key: "warm", name: "Размялся", type: "yesno" },
+  date: { key: "valid_to", name: "Действует до", type: "date" },
   time: { key: "ate_at", name: "Во сколько", type: "time", required: true },
-  calc: { key: "km", name: "Проплыто", type: "calc", calc: "laps * pool / 1000", unit: "км" },
+  calc: { key: "km", name: "Пройдено", type: "calc", calc: "rounds * lap / 1000", unit: "км" },
   link: { key: "route", name: "Маршрут", type: "link", to: "routes", required: true },
 });
 
 export const ELEMENT_SAMPLES = Object.freeze({
-  stat: { el: "stat", of: "swim", value: "km", fn: "sum", range: "@last30d", compare: true, good: "up" },
+  stat: { el: "stat", of: "ski", value: "km", fn: "sum", range: "@last30d", compare: true, good: "up" },
   meter: { el: "meter", of: "shakes", value: "portions" },
-  bars: { el: "bars", of: "swim", value: "km", fn: "sum", by: "week", range: "@last12w" },
+  bars: { el: "bars", of: "ski", value: "km", fn: "sum", by: "week", range: "@last12w" },
   line: { el: "line", of: "meditate", value: "calm", fn: "avg", range: "@last30d" },
-  spark: { el: "spark", of: "swim", value: "laps", fn: "sum", range: "@last30d" },
+  spark: { el: "spark", of: "ski", value: "rounds", fn: "sum", range: "@last30d" },
   heatmap: { el: "heatmap", of: "meditate", value: "rate", range: "@last12w" },
-  table: { el: "table", of: "swim", columns: ["date", "laps", "pool", "km"], limit: 6, range: "@last30d" },
+  table: { el: "table", of: "ski", columns: ["date", "rounds", "lap", "km"], limit: 6, range: "@last30d" },
   list: { el: "list", of: "rides", columns: ["date", "route", "mins"], limit: 6, range: "@last30d" },
   p: { el: "p", text: "Отмечайте вещи, когда кладёте их в сумку." },
   empty: { el: "empty", text: "Записей пока нет." },
   quick: { el: "quick", of: "shakes", values: { portions: 1 }, label: "+1 порция" },
-  form: { el: "form", of: "swim", fields: ["laps", "pool"] },
+  form: { el: "form", of: "ski", fields: ["rounds", "lap"] },
   marks: { el: "marks", of: "gymbag", add: true },
   streak: { el: "streak", of: "floss" },
   embed: { el: "embed", what: "ration-today" },
@@ -293,7 +311,7 @@ ${printAnswer(refusal, surface)}
 function world(surface) {
   const names = surface === "html" ? "<c-track>, <c-screen>, <c-card>" : "tracks, screens, cards";
   return `КАК УСТРОЕНО ПРИЛОЖЕНИЕ (${names})
-Всё, что человек ведёт, это трек: заплывы, привычка, список, справочник. Трек хранит записи и отметки, их вносит только человек кнопками; ты записи не создаёшь.
+Всё, что человек ведёт, это трек: прогулки, привычка, список, справочник. Трек хранит записи и отметки, их вносит только человек кнопками; ты записи не создаёшь.
 Экран состоит из карточек, карточка из 1–${LIMITS.elements} элементов: числа, графики, кнопки, формы. Экран home это главная, он есть всегда.
 Ключ, которого нет в пространстве, создаёт новое. Ключ, который уже есть, меняет только написанное. remove убирает.
 Рацион (ration), Спорт (sport) и Покупки (shopping) уже есть в приложении: их числа можно показывать, но писать в них нельзя.`;
@@ -302,32 +320,46 @@ function world(surface) {
 // What a person says → the kind. The catalogue's own `when` lines name subjects
 // of the corpus, so the table is worded here, one line per kind.
 const WISH = Object.freeze({
-  log: "число или событие, которое человек вносит, когда оно случилось; записей может быть много в день: заплыв, поездка, порция, самочувствие",
+  log: "число или событие, которое человек вносит, когда оно случилось; записей может быть много в день: прогулка, поездка, порция, самочувствие",
   habit: "повторяется по расписанию, отмечается «сделал» или «пропустил»: зарядка, нить для зубов, «не пить алкоголь»",
   list: "разовые пункты, каждый отмечается один раз: сборы в зал, дела",
-  catalog: "постоянный перечень, на который ссылаются записи другого трека: маршруты, сорта чая. Строки в items пишешь ты, если они названы; если человек должен пополнять перечень сам, поставь на экран list с add: форма из названия и полей трека",
-  follow: "вопрос или поле к каждому приёму пищи (follows: ration) или тренировке (follows: sport) из плана: были ли овощи в приёме",
+  catalog: "постоянный перечень, на который ссылаются записи другого трека: маршруты, сорта чая. Строки в items пишешь ты, если они названы; если человек должен пополнять перечень сам, поставь на экран list с add",
+  follow: "вопрос или поле к каждому приёму пищи (follows: ration) или тренировке (follows: sport) из плана: был ли в приёме десерт",
 });
 
-function wishTable() {
+// A piece of a checked answer, cut out by key; see examples/decisions.js.
+const attrsText = (node, names, surface) => names
+  .map((name) => (surface === "html" ? `${kebab(name)}="${escapeAttr(String(node[name]))}"` : `"${name}":${JSON.stringify(node[name])}`))
+  .join(surface === "html" ? " " : ",");
+
+export function pieceNode(piece) {
+  if (piece.node) return { kind: "el", node: piece.node };
+  const bundle = exampleById(piece.base).bundle;
+  if (piece.card) {
+    const card = bundle.screens.flatMap((screen) => screen.cards || []).find((candidate) => candidate.key === piece.card);
+    return { kind: "el", node: card.body[piece.at] };
+  }
+  const track = bundle.tracks.find((candidate) => candidate.key === piece.track);
+  return { kind: "attrs", node: piece.item === undefined ? track : track.items[piece.item] };
+}
+
+const pieceText = (piece, surface) => {
+  const { kind, node } = pieceNode(piece);
+  return kind === "el" ? snippet("el", node, surface) : attrsText(node, piece.attrs, surface);
+};
+
+function wishTable(surface) {
   const rows = KIND_KEYS.map((key) => `- ${key} (${KINDS[key].name}): ${WISH[key]}.`);
+  const decisions = DECISIONS.map((row) => `- «${row.wish}»: ${row.say}${row.show.length ? ` Так: ${row.show.map((piece) => pieceText(piece, surface)).join("  ")}` : ""}`);
   return `ЧТО ВЫБРАТЬ
 Тип трека (kind):
 ${rows.join("\n")}
-Нужно число каждый раз (километры, порции): log. Нужна галочка по расписанию: habit. Серия дней без числа: habit.
+Нужно число каждый раз (километры, порции): log. Нужна галочка по расписанию: habit. Серия дней без числа: habit. «Не делать» это habit с avoid.
 Только цифры Рациона, Спорта или Покупок: треков не нужно, элементы с of=ration, sport или shopping.
-Поменять или убрать то, что уже собрано: те же ключи из «Пространства» и remove, заново не собирай. Карточка с известным key: её body заменяется целиком. Переставить карточки: у экрана order со списком ключей, они встанут первыми по порядку, остальные следом.
-Типовые сборки:
-- число раз в день и график: log, поле number, form или quick, bars (сумма за день) или line (измерение) с range
-- цель или лимит на число: goal в поле (goalType max для «не больше»), meter или stat
-- отметки по расписанию и серия: habit, items с every и at, marks, streak
-- отмечать только срывы: habit с avoid: true
-- список пунктов с числом у каждого: list, поле number, marks с add, stat с fn sum
-- выбор из своих вариантов: поле choice; из перечня со свойствами: catalog и поле link
-- вопрос к приёму пищи или тренировке: follow и поле нужного типа
-- пункты на ограниченный срок: items с from и until
-- оценка: поле scale
-Что показать: одно число за период stat; прогресс к цели meter; дни и недели столбцами bars; динамику line; календарь выполнения heatmap; последние записи table или list; запись одним касанием quick; запись нескольких полей form; отметки пунктов marks; серию streak; готовый блок Рациона, Спорта или Покупок embed.`;
+От слов человека к деталям (после текста кусок проверенного ответа):
+${decisions.join("\n")}
+Ещё: свои варианты это поле choice, перечень со свойствами catalog и поле link, оценка поле scale.
+Поменять или убрать то, что уже собрано: те же ключи из «Пространства» и remove, заново не собирай. Карточка с известным key: её body заменяется целиком. Переставить карточки: у экрана order со списком ключей, они встанут первыми по порядку, остальные следом.`;
 }
 
 // Enums that no line of the vocabulary prints yet: the ones of the elements, the cards and the tracks.
@@ -360,6 +392,16 @@ export const CALC_DOCS = Object.freeze({
 
 const sourceValue = (v) => `${v.key} (${v.name.toLowerCase()}${v.unit && !v.name.toLowerCase().split(" ").includes(v.unit.toLowerCase()) ? `, ${v.unit}` : ""})`;
 
+// The range grammar with the forms a model may copy: the plain words on one line, each N form on its own.
+function rangeLines() {
+  const words = RANGES.filter((r) => r.examples.length === 1 && r.examples[0] === r.token && r.token !== "@all");
+  const forms = RANGES.filter((r) => !words.includes(r));
+  return [
+    `  ${words.map((r) => `${r.token} (${r.doc})`).join(", ")}`,
+    ...forms.map((r) => `  ${r.token}${r.examples[0] === r.token ? "" : ` (${r.examples.join(", ")})`}: ${r.doc}`),
+  ];
+}
+
 function vocabulary() {
   const sources = Object.entries(SOURCES).map(([key, source]) => `${key}: ${list(source.values.map(sourceValue))}`);
   return `СЛОВАРИ (бери слова только отсюда)
@@ -370,8 +412,9 @@ every: ${EVERY.doc}
 at: ${AT.doc}
 fn (как свести значения):
 ${Object.entries(FNS).map(([name, doc]) => `  ${name}: ${doc}`).join("\n")}
-range: ${RANGES.map((r) => r.token).join(", ")}
-by: ${Object.keys(BY).join(", ")}
+range (период, одно слово):
+${rangeLines().join("\n")}
+by (у bars и line): ${Object.keys(BY).join(", ")}; у bars ещё ключ поля (${BY_FIELD_TYPES.join(", ")}) или слово ${Object.entries(BY_WORDS).map(([word, doc]) => `${word} (${doc})`).join(", ")}: столбец на каждое значение
 goalType: ${Object.keys(GOAL_TYPES).join(" | ")}. goalPer: ${Object.keys(GOAL_PERS).join(" | ")}
 states: ${list(STATES)}. unmarked: ${Object.keys(UNMARKED).join(" | ")}. follows: ${Object.keys(FOLLOWS).join(" | ")}
 ${otherEnums().join(". ")}
@@ -387,19 +430,22 @@ function attrLine(name, attr, surface) {
   return `  ${attrName(name, surface)}${markFlag(attr)}: ${docOf(name, attr, surface)}.${only}`;
 }
 
+const COMMON_FIELD_ATTRS = Object.freeze(["on", "required", "hint"]);
+
 function declarations(surface) {
   const html = surface === "html";
   const block = (title, attrs, skip = []) => `${title}\n${Object.entries(attrs).filter(([name]) => !skip.includes(name)).map(([name, attr]) => attrLine(name, attr, surface)).join("\n")}`;
   const types = FIELD_TYPE_KEYS.map((key) => {
     const type = FIELD_TYPES[key];
-    return `  ${key}: ${snippet("field", FIELD_SAMPLES[key], surface)} ${type.doc}. Допустимы: ${list(type.attrs.map((a) => attrName(a, surface)))}.`;
+    const own = type.attrs.filter((a) => !COMMON_FIELD_ATTRS.includes(a));
+    return `  ${key}: ${snippet("field", FIELD_SAMPLES[key], surface)} ${type.doc}.${own.length ? ` Допустимы: ${list(own.map((a) => attrName(a, surface)))}.` : ""}`;
   });
   const removals = Object.entries(REMOVAL_KINDS).map(([key, doc]) => `${key} — ${doc.replace(/,? например .*$/, "")}`);
   return `ОБЪЯВЛЕНИЯ (* обязательно, + обязательно для нового ключа)
-${block(html ? "<c-bundle>" : "Пакет", BUNDLE_ATTRS, html ? ["tracks", "screens", "remove"] : [])}
+${block(html ? "<c-bundle>" : "Пакет", BUNDLE_ATTRS, ["tracks", "screens", "remove"])}
 ${block(html ? "<c-track> (внутри <c-field> и <c-item>)" : "Трек (tracks)", TRACK_ATTRS, html ? ["fields", "items"] : [])}
 ${block(html ? "<c-field>" : "Поле (fields)", FIELD_ATTRS)}
-Поле по типам:
+Поле по типам (у всех, кроме calc, ещё ${list(COMMON_FIELD_ATTRS)}; у calc hint):
 ${types.join("\n")}
 ${block(html ? "<c-item>" : "Пункт (items)", ITEM_ATTRS)}
 ${block(html ? "<c-screen> (внутри <c-card>)" : "Экран (screens)", SCREEN_ATTRS, html ? ["cards"] : [])}
@@ -407,55 +453,109 @@ ${block(html ? "<c-card> (внутри элементы)" : "Карточка (c
 Убрать (${html ? "<c-remove>" : "remove"}), ровно один ключ в записи: ${removals.join("; ")}.`;
 }
 
+// Where an element works, printed once per group instead of once per element.
+function placementLines(heading) {
+  const groups = new Map();
+  for (const key of ELEMENT_KEYS) {
+    const kinds = KIND_KEYS.filter((kind) => (ELEMENTS[key].kinds || []).includes(kind));
+    if (!kinds.length || kinds.length === KIND_KEYS.length) continue;
+    groups.set(list(kinds), [...(groups.get(list(kinds)) || []), heading(key)]);
+  }
+  const needing = (test) => ELEMENT_KEYS.filter((key) => test(ELEMENTS[key])).map(heading);
+  const rangeless = needing((e) => e.needsRange && e.rangeUnlessCatalog);
+  return [
+    ...[...groups].map(([kinds, names]) => `  ${names.join(", ")}: только треки ${kinds}`),
+    `  В of можно ration, sport, shopping: ${needing((e) => e.sources).join(", ")}.`,
+    `  range обязателен: ${needing((e) => e.needsRange).join(", ")}${rangeless.length ? `; у справочника не нужен: ${rangeless.join(", ")}` : ""}. У meter период берётся из цели поля.`,
+  ];
+}
+
 function elementLines(surface) {
   const html = surface === "html";
+  const heading = (key) => (html ? ELEMENTS[key].tag : key);
   const counts = new Map();
   const seen = (name, attr) => `${name}\u0000${docOf(name, attr, surface)}`;
   for (const element of Object.values(ELEMENTS)) for (const [name, attr] of Object.entries(element.attrs)) counts.set(seen(name, attr), (counts.get(seen(name, attr)) || 0) + 1);
   const shared = new Map([...counts].filter(([, n]) => n > 1).map(([key]) => key.split("\u0000")));
   const lines = ELEMENT_KEYS.map((key) => {
     const element = ELEMENTS[key];
-    const heading = html ? element.tag : key;
+    const doc = element.doc.replace(/\.$/, "");
     if (element.text) {
-      return `${heading}: ${element.doc.replace(/\.$/, "")}. ${html ? "Текст пишется внутри тега." : "Атрибут: text*."} Пример: ${snippet("el", ELEMENT_SAMPLES[key], surface)}`;
+      return `${heading(key)}: ${doc}. ${html ? "Текст пишется внутри тега." : "Атрибут: text*."} Пример: ${snippet("el", ELEMENT_SAMPLES[key], surface)}`;
     }
     const names = Object.entries(element.attrs).map(([name, attr]) => {
       const required = attr.required || (name === "value" && element.needsValue);
       return `${attrName(name, surface)}${required ? "*" : ""}${shared.has(name) ? "" : ` (${docOf(name, attr, surface)})`}`;
     });
     const notes = [
-      element.kinds?.length && element.kinds.length < KIND_KEYS.length ? `Треки: ${list(element.kinds)}.` : "",
-      element.sources ? "В of можно ration, sport, shopping." : "",
-      element.needsRange ? (element.rangeUnlessCatalog ? "range обязателен, у справочника не нужен." : "range обязателен.") : element.bound ? "range не нужен." : "",
       element.needsGoal ? "У поля должна быть цель." : "",
       element.needsHabitOrGoal ? "Нужен habit или поле с целью." : "",
     ].filter(Boolean);
-    return `${heading}: ${element.doc.replace(/\.$/, "")}. Атрибуты: ${names.join(", ")}. ${notes.join(" ")} Пример: ${snippet("el", ELEMENT_SAMPLES[key], surface)}`.replace(/ {2,}/g, " ");
+    return `${heading(key)}: ${doc}. Атрибуты: ${names.join(", ")}. ${notes.join(" ")} Пример: ${snippet("el", ELEMENT_SAMPLES[key], surface)}`.replace(/ {2,}/g, " ");
   });
-  const common = [...shared].map(([name, doc]) => `  ${attrName(name, surface)}: ${doc}.`);
+  const common = [...shared].filter(([name]) => name !== "range").map(([name, doc]) => `  ${attrName(name, surface)}: ${doc}.`);
   return `ЭЛЕМЕНТЫ КАРТОЧКИ
 ${lines.join("\n")}
+Где работают:
+${placementLines(heading).join("\n")}
 Общие атрибуты:
 ${common.join("\n")}`;
 }
 
+// One fresh track per case; the table below is what expandDefaults makes of it,
+// and the test pins the same cases. `when` says what makes the case.
+const NUMBER = (extra = {}) => ({ key: "n", name: "Число", type: "number", ...extra });
+export const DEFAULT_CASES = Object.freeze([
+  { kind: "log", when: "число копится за день", track: { kind: "log", fields: [NUMBER({ unit: "мл", goal: 2000 })] } },
+  { kind: "log", when: "один счётчик (порц., шт., раз)", track: { kind: "log", fields: [NUMBER({ unit: "порц.", goal: 2, goalType: "max" })] } },
+  { kind: "log", when: "измерение без цели (температура, рост)", track: { kind: "log", fields: [NUMBER({ unit: "см" })] } },
+  { kind: "habit", when: "обычная", track: { kind: "habit", items: [{ name: "Пункт" }] } },
+  { kind: "habit", when: "у пункта есть until (курс)", track: { kind: "habit", items: [{ name: "Пункт", until: "2026-11-06" }] } },
+  { kind: "list", when: "обычный", track: { kind: "list", items: [{ name: "Пункт" }] } },
+  { kind: "list", when: "в поле ₽ planned: true", track: { kind: "list", fields: [NUMBER({ unit: "₽", planned: true })], items: [{ name: "Пункт", plan: { n: 100 } }] } },
+  { kind: "catalog", when: "любой", track: { kind: "catalog", fields: [{ key: "note", name: "Заметка", type: "text" }] } },
+  { kind: "follow", when: "есть поле-число", track: { kind: "follow", follows: "ration", fields: [{ key: "lvl", name: "Уровень", type: "scale" }] } },
+  { kind: "follow", when: "есть поле choice", track: { kind: "follow", follows: "ration", fields: [{ key: "feel", name: "Как", type: "choice", options: ["хорошо", "плохо"] }] } },
+]);
+
+// An element as the table names it: its tag and the attributes that make it that card.
+const briefEl = (el) => {
+  const extra = [
+    el.goal && `goal ${el.goal}`,
+    ["last", "delta", "count"].includes(el.fn) && `fn ${el.fn}`,
+    el.by && `by ${el.by}`,
+    el.rows && `rows ${el.rows}`,
+    el.where && `where ${Object.entries(el.where).map(([key, value]) => `${key} ${value}`).join(", ")}`,
+    el.el === "stat" && el.range === "@thisMonth" && "range @thisMonth",
+    el.el === "bars" && el.value === "done" && "value done",
+    el.add && "add",
+    el.edit && "edit",
+    el.search && "search",
+  ].filter(Boolean);
+  return extra.length ? `${el.el} (${extra.join(", ")})` : el.el;
+};
+
+export function defaultsFor(track) {
+  const none = { tracks: {}, screens: {}, cards: {} };
+  const expanded = expandDefaults(none, { v: 2, name: "Демо", tracks: [{ key: "demo", name: "Демо", ...track }] }, { today: EXAMPLE_TODAY });
+  const shown = (screens) => screens.flatMap((s) => s.cards || []).flatMap((c) => c.body || []);
+  return {
+    track: expanded.tracks[0],
+    home: shown((expanded.screens || []).filter((s) => s.key === "home")),
+    own: shown((expanded.screens || []).filter((s) => s.key !== "home")),
+  };
+}
+
 // What the app adds by itself, printed from the function that adds it.
 function defaultsTable() {
-  const none = { tracks: {}, screens: {}, cards: {} };
-  const rows = KIND_KEYS.map((key) => {
-    const fields = key === "log" ? [{ key: "n", name: "Число", type: "number", unit: "шт.", goal: 1 }] : key === "follow" ? [{ key: "n", name: "Число", type: "number" }] : [];
-    const track = { key: "demo", name: "Демо", kind: key, ...(key === "follow" ? { follows: "ration" } : {}), fields, ...(KINDS[key].items && key !== "catalog" ? { items: [{ name: "Пункт" }] } : {}) };
-    const expanded = expandDefaults(none, { v: 2, name: "Демо", tracks: [track] }, { today: EXAMPLE_TODAY });
-    const shown = (screens) => screens.flatMap((s) => s.cards || []).flatMap((c) => c.body || []).map((el) => el.el);
-    const home = shown((expanded.screens || []).filter((s) => s.key === "home"));
-    const own = shown((expanded.screens || []).filter((s) => s.key !== "home"));
-    const defaults = KINDS[key].defaults;
-    return `- ${key}: ${defaults.states.length ? `кнопки ${list(defaults.states)}, unmarked ${defaults.unmarked}. ` : ""}Приложение добавит: на главную ${home.length ? list(home) : "ничего"}; на экран трека ${own.length ? list(own) : "ничего"}.`;
+  const rows = DEFAULT_CASES.map(({ kind, when, track }) => {
+    const { home, own } = defaultsFor(track);
+    return `- ${kind}, ${when}: на главную ${home.length ? list(home.map(briefEl)) : "ничего"}; на экран ${own.length ? list(own.map(briefEl)) : "ничего"}.`;
   });
   return `ЧТО ПРИЛОЖЕНИЕ ДОБАВЛЯЕТ САМО
-Если в ответе у трека нет ни одной карточки, приложение соберёт экраны по типу трека:
+Если в ответе у трека нет ни одной карточки, приложение соберёт экраны по типу трека. Если карточка есть только на главной, экран трека с историей приложение добавит всё равно.
 ${rows.join("\n")}
-avoid=true у habit: день без отметки удался (unmarked assumed), кнопки «держусь» и «сорвался», серия считает дни без срывов.
+Кнопки по умолчанию: ${MARK_KINDS.map((kind) => `${kind} ${list(KINDS[kind].defaults.states)}`).join(", ")}; unmarked ${[...new Set(MARK_KINDS.map((kind) => KINDS[kind].defaults.unmarked))].join(", ")}. avoid=true у habit: день без отметки удался (unmarked assumed), кнопки «держусь» и «сорвался», серия считает дни без срывов.
 Поэтому самый короткий верный ответ это один трек. Свои экраны и карточки пиши, когда человек просит конкретный вид.`;
 }
 
@@ -464,20 +564,14 @@ avoid=true у habit: день без отметки удался (unmarked assum
 // the node is, `wrong` the node with the slip, `rule` the problem the
 // validator must give for it, `say` why in a few words.
 export const MISTAKES = Object.freeze([
-  { id: "no-range", base: "swim", at: ["screens", 1, "cards", 1, "body", 0], kind: "el", rule: "missing-attr", say: "у bars, line, stat, spark, heatmap, table и list нужен range",
-    wrong: { el: "bars", of: "swim", value: "km", fn: "sum", by: "week" } },
-  { id: "meter-without-goal", base: "swim", at: ["screens", 1, "cards", 0, "body", 0], kind: "el", rule: "no-goal", say: "meter берёт цель из поля: у поля нужен goal, иначе возьми stat",
-    wrong: { el: "meter", of: "swim", value: "laps", fn: "sum" } },
+  { id: "no-range", base: "ski", at: ["screens", 1, "cards", 1, "body", 0], kind: "el", rule: "missing-attr", say: "у bars, line, stat, spark, heatmap, table и list нужен range",
+    wrong: { el: "bars", of: "ski", value: "km", fn: "sum", by: "week" } },
+  { id: "meter-without-goal", base: "ski", at: ["screens", 1, "cards", 0, "body", 0], kind: "el", rule: "no-goal", say: "meter берёт цель из поля: у поля нужен goal, иначе возьми stat",
+    wrong: { el: "meter", of: "ski", value: "rounds", fn: "sum" } },
   { id: "every-in-words", base: "flossing", at: ["tracks", 0, "items", 0], kind: "item", rule: "bad-value", say: "расписание every отдельно, время суток at отдельно",
     wrong: { name: "Почистить нитью", every: "каждый вечер" } },
-  { id: "marks-on-log", base: "swim", at: ["screens", 0, "cards", 0, "body", 0], kind: "el", rule: "kind-element", say: "marks для habit и list; в журнал записывают form или quick",
-    wrong: { el: "marks", of: "swim" } },
-  { id: "form-with-calc", base: "swim", at: ["screens", 0, "cards", 0, "body", 0], kind: "el", rule: "bad-value", say: "calc считается сама, в форму её не ставят",
-    wrong: { el: "form", of: "swim", fields: ["laps", "pool", "km"] } },
-  { id: "number-in-text", base: "gymbag", at: ["screens", 0, "cards", 0, "body", 0], kind: "el", rule: "number-in-text", say: "числа о человеке в тексте не пиши: их показывают элементы",
-    wrong: { el: "p", text: "Вы собрали 4 вещи из 4." } },
-  { id: "reserved-key", base: "swim", at: ["tracks", 0, "fields", 0], kind: "field", rule: "reserved-key", say: "count, done, rate, open, date и ещё несколько слов заняты приложением",
-    wrong: { key: "count", name: "Длин", type: "number", min: 1, max: 200 } },
+  { id: "reserved-key", base: "ski", at: ["tracks", 0, "fields", 0], kind: "field", rule: "reserved-key", say: "count, done, rate, open, date и ещё несколько слов заняты приложением",
+    wrong: { key: "count", name: "Кругов", type: "number", min: 1, max: 100 } },
 ]);
 
 function mistakeLines(surface) {
@@ -492,13 +586,13 @@ function rules(surface) {
   return `ПРАВИЛА
 1. Ключи: латиница в нижнем регистре, цифры и _, с буквы. Ключи пространства копируй из «Пространства», похожие не придумывай.
 2. Новый ключ создаёт: у трека нужны name и kind, у поля name и type, у экрана name, у карточки title и body. Существующий ключ меняет только написанное.
-3. Цель пишется один раз, в поле: goal, goalType, goalPer. В элементы цель не пишут: meter, bars и line берут её сами.
+3. Цель пишется один раз, в поле: goal, goalType, goalPer. В элементы число-цель не пишут: meter, bars и line берут её сами (goal due у meter привычки это не число).
 4. value это ключ поля того же трека или слово из словарей. У каждого элемента один источник of.
 5. fn: sum для того, что копится за день (порции, минуты, километры, деньги), avg для измерений и оценок.
 6. Записи вносит человек. В ответе нет значений записей, id, ссылок, картинок, скриптов и стилей.
 7. Безопасность: цель по энергии ниже ${ENERGY_FLOOR} ккал в день не ставь. Дозы лекарств и добавок (мг, мкг, МЕ, таб.) не считай и не пиши в calc. Чисел о человеке (его показателей, калорий, доз) в названиях, подписях и reply не пиши: числа показывают элементы. Не стыди за срывы.
-8. Не обещай того, чего в приложении нет: напоминаний, уведомлений, поиска, ввода из датчиков и других приложений. Записи вносит человек, скажи это в reply, если просят иначе.
-9. Новая карточка встаёт в конец экрана. Чтобы переставить, убери карточку (remove) и объяви её заново с новым ключом.
+8. Не обещай того, чего в приложении нет: напоминаний, уведомлений, ввода из датчиков и других приложений. Записи вносит человек, скажи это в reply, если просят иначе. Обещай в reply только то, что показывают карточки ответа.
+9. Новая карточка встаёт в конец экрана; переставить можно order у экрана.
 10. Лимиты: ${limits}.
 
 ЧАСТЫЕ ОШИБКИ (✗ неверно, ✓ верно)
@@ -538,7 +632,7 @@ export function manualParts(state, { surface = "json", request = "", today = nul
   return [
     ["contract", contract(surface, REFUSAL)],
     ["world", world(surface)],
-    ["wish", wishTable()],
+    ["wish", wishTable(surface)],
     ["vocabulary", vocabulary()],
     ["declarations", declarations(surface)],
     ["elements", elementLines(surface)],

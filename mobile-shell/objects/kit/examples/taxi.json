@@ -1,0 +1,22 @@
+{
+  "id": "taxi",
+  "request": "Веду траты на такси. Лимит на месяц 5000 ₽. Покажи, сколько ещё можно тратить в день до конца месяца",
+  "reply": "Собрал «Такси»: лимит на месяц в поле суммы, на главной шкала месяца и подсказка, сколько ещё можно тратить в день.",
+  "tags": ["log", "goal", "goalmax", "money", "pace", "month", "meter", "form"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Такси",
+    "tracks": [
+      {
+        "key": "taxi", "name": "Такси", "kind": "log", "icon": "🚕",
+        "fields": [{ "key": "fare", "name": "Сумма", "type": "number", "unit": "₽", "min": 1, "max": 20000, "goal": 5000, "goalType": "max", "goalPer": "month" }]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "taxi_month", "title": "Такси в этом месяце", "body": [{ "el": "meter", "of": "taxi", "value": "fare", "pace": "left" }, { "el": "form", "of": "taxi", "fields": ["fare"] }] }
+      ] }
+    ]
+  }
+}

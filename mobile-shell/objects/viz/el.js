@@ -57,6 +57,11 @@ const ICON_PATHS = {
   down: "M12 5v13m-6-6 6 6 6-6",
   flat: "M5 12h14",
   over: "M12 4 3 20h18L12 4zm0 6v5m0 3v.01",
+  edit: "M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4",
+  open: "M12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12z",
+  skip: "M7 7l10 10M17 7 7 17",
+  prev: "M15 5 8 12l7 7",
+  next: "M9 5l7 7-7 7",
 };
 
 export function glyph(name, size = 16) {
@@ -67,7 +72,7 @@ export function emptyBox(text, { error = false } = {}) {
   return h("div", { class: `viz-empty${error ? " is-error" : ""}`, role: error ? "alert" : "status" }, glyph(error ? "warn" : "empty", 20), h("span", { class: "viz-empty-text", text }));
 }
 
-export const ATTRS = ["title", "data-title", "caption", "set", "of", "where", "value", "fn", "range", "by", "category", "goal", "date", "unit", "stack", "area", "compare", "spark", "good", "goal-type", "columns", "limit", "sort", "order", "cols"];
+export const ATTRS = ["title", "data-title", "caption", "set", "of", "where", "value", "fn", "range", "by", "category", "goal", "date", "unit", "stack", "area", "compare", "spark", "good", "goal-type", "columns", "limit", "sort", "order", "cols", "edit", "search", "rows"];
 
 export class VizElement extends HTMLElement {
   static get observedAttributes() { return ATTRS; }

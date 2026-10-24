@@ -279,8 +279,8 @@ test("bindings are checked against the object space", () => {
   one(`set="set_water" value="drunk" goal="0"`, "bad-goal", "@goal");
   one(`set="set_water" value="drunk" goal="99999999"`, "bad-goal", "@goal");
   one(`set="set_water" value="drunk" range="@today"`, "range-too-short", "@range");
-  one(`set="set_water" value="drunk" range="@last366d"`, "too-many-points");
-  one(`set="set_water" value="drunk" range="@last366d" by="day"`, "too-many-points", "@by");
+  one(`set="set_water" value="drunk" range="@last365d"`, "too-many-points");
+  one(`set="set_water" value="drunk" range="@last365d" by="day"`, "too-many-points", "@by");
   assert.equal(check(bars(`set="set_water" value="drunk" range="@last12w" by="week"`)).ok, true);
   assert.equal(check(wrap(`<c-card title="a"><c-heatmap set="set_water" value="drunk" range="@last7d"></c-heatmap></c-card>`)).problems[0].rule, "range-too-short");
   assert.equal(check(wrap(`<c-card title="a"><c-meter set="set_water" value="drunk" range="@today"></c-meter></c-card>`)).problems[0].rule, "missing-attr", "a meter needs a goal");

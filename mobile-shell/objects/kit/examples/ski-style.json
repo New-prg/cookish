@@ -1,0 +1,20 @@
+{
+  "id": "ski-style",
+  "request": "На лыжах хочу отмечать ход: классика или конёк",
+  "reply": "Добавил поле «Ход» в лыжи и в форму на главной. Прежние записи остались как были.",
+  "tags": ["patch", "overlay", "choice", "form"],
+  "space": "empty",
+  "after": ["ski"],
+  "bundle": {
+    "v": 2,
+    "name": "Ход на лыжах",
+    "tracks": [
+      { "key": "ski", "fields": [{ "key": "style", "name": "Ход", "type": "choice", "options": ["классика", "конёк"] }] }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "ski_add", "body": [{ "el": "form", "of": "ski", "fields": ["rounds", "lap", "style"] }] }
+      ] }
+    ]
+  }
+}

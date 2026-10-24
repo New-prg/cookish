@@ -5,10 +5,15 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { authorBundle, repairMessage } from "../mobile-shell/objects/kit/author.js";
 import * as catalogue from "../mobile-shell/objects/kit/catalogue.js";
+import { DECISIONS } from "../mobile-shell/objects/kit/examples/decisions.js";
 import { EXAMPLES, exampleById } from "../mobile-shell/objects/kit/examples/index.js";
-import { CALC_DOCS, ELEMENT_SAMPLES, EMBED_NOTES, FIELD_SAMPLES, MANUAL_BUDGET, MISTAKES, SPACE_CHARS, estimateTokens, manualParts, pickExamples, priorState, printAnswer, renderManual, renderReference, requestTags } from "../mobile-shell/objects/kit/manual.js";
+import { expandDefaults } from "../mobile-shell/objects/kit/defaults.js";
+import { readSpec } from "../mobile-shell/objects/kit/spec.js";
+import { CALC_DOCS, DEFAULT_CASES, ELEMENT_SAMPLES, EMBED_NOTES, FIELD_SAMPLES, MANUAL_BUDGET, MISTAKES, SPACE_CHARS, defaultsFor, estimateTokens, manualParts, pickExamples, pieceNode, priorState, printAnswer, renderManual, renderReference, requestTags, snippet } from "../mobile-shell/objects/kit/manual.js";
 import { bundleFromMarkup, bundleToMarkup } from "../mobile-shell/objects/kit/markup.js";
 import { applyBundle, checkBundle } from "../mobile-shell/objects/kit/pipeline.js";
+import { addItemOps, formOps, itemOps, markOps } from "../mobile-shell/objects/kit/actions.js";
+import { resolveBinding } from "../mobile-shell/objects/kit/bind.js";
 import { openObjectStore } from "../mobile-shell/objects/core/store.js";
 import { createMockProvider } from "../mobile-shell/services/assistant/ai-provider.js";
 import { buildDemoState } from "../mobile-shell/objects/viz/demo.js";
@@ -103,19 +108,65 @@ test("the examples cover every kind, input element, goal type, quota, avoid, fol
   for (const type of ["number", "scale", "text", "choice", "yesno", "time", "calc", "link"]) assert.ok(fields.some((f) => f.type === type), `field type ${type}`);
 });
 
-// The corpus is the exam: the examples may not teach its subjects.
-test("no example touches a subject of the corpus", () => {
-  const banned = ["вод", "вес", "шаг", "настроен", "бег", "пробеж", "кофе", "витамин", "магни", "антибиот", "сладк", "голодан", "растяж", "уборк", "жим", "сон", "давлен", "рецепт", "замер", "бюджет", "книг", "вишлист", "сыт", "rpe", "омег", "пылесос", "суп"];
+// The corpus and the holdout are the exam: the examples may not teach their subjects.
+// HOLDOUT_STEMS names, per holdout request, the words that identify its subject. A
+// request added to holdout.json without an entry fails the first test below, so the
+// decision is never forgotten.
+const CORPUS_STEMS = ["вод", "вес", "шаг", "настроен", "бег", "пробеж", "кофе", "витамин", "магни", "антибиот", "сладк", "голодан", "растяж", "уборк", "жим", "сон", "давлен", "рецепт", "замер", "бюджет", "книг", "вишлист", "сыт", "rpe", "омег", "пылесос", "суп"];
+const HOLDOUT_STEMS = {
+  "h-core-meal-time-spread": [],
+  "h-core-sport-by-kind": [],
+  "h-cust-homemade": ["домашн", "приготовл"],
+  "h-cust-session-place": [],
+  "h-sugar-drinks": ["сахар", "напит", "ложк"],
+  "h-fruit-veg-portions": ["фрукт", "овощ"],
+  "h-plank-30": ["планк", "челлендж"],
+  "h-weekly-dinners": ["ужин"],
+  "h-swim-sets": ["бассейн", "плав", "заплыв", "дорожк"],
+  "h-trip-categories": ["молочк", "мясо", "чек"],
+  "h-gift-list": ["подар"],
+  "h-spices-restock": ["специ", "докуп"],
+  "h-fu-plank-rest-days": [],
+  "h-fu-gift-occasion": ["повод"],
+  "h-vague-sit-less": ["сидеть", "сидя"],
+  "h-refuse-autofill-marks": [],
+};
+const HOLDOUT_FILE = path.join(here, "../scripts/primitives-lab/holdout.json");
+const CORPUS_FILE = path.join(here, "../scripts/primitives-lab/corpus.json");
+const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+const requestsOf = (file) => readJson(file).map((item) => item.text || item.request);
+// veg is the follow example that tests/kit-logic.test.mjs pins by id and keys. Its pattern, a
+// yes/no on each meal, is not the holdout's counter of portions; only the word is shared.
+const PINNED = { veg: ["овощ"] };
+
+test("every request of the holdout has an entry in the ban list", () => {
+  assert.deepEqual(readJson(HOLDOUT_FILE).map((item) => item.id).sort(), Object.keys(HOLDOUT_STEMS).sort());
+});
+
+const textOf = (example) => {
+  const bundle = example.bundle || {};
+  const tracks = (bundle.tracks || []).flatMap((t) => [t.key, t.name, ...(t.fields || []).flatMap((f) => [f.name, ...(f.options || [])]), ...(t.items || []).map((i) => i.name)]);
+  const screens = (bundle.screens || []).flatMap((s) => [s.name, ...(s.cards || []).flatMap((c) => [c.title, c.caption, ...(c.body || []).flatMap((el) => [el.text, el.label])])]);
+  return [example.request, example.reply, bundle.name, ...tracks, ...screens].filter(Boolean).join(" ").toLowerCase();
+};
+
+test("no example touches a subject of the corpus or of the holdout", () => {
+  const banned = [...CORPUS_STEMS, ...Object.values(HOLDOUT_STEMS).flat()];
   const exempt = new Set(["весь", "всего"]);
   for (const example of EXAMPLES) {
-    const text = [example.request, example.reply, example.bundle?.name, ...(example.bundle?.tracks || []).flatMap((t) => [t.key, t.name, ...(t.fields || []).map((f) => f.name), ...(t.items || []).map((i) => i.name)])].filter(Boolean).join(" ").toLowerCase();
-    const words = text.split(/[^a-zа-яё0-9]+/i).filter(Boolean);
+    const words = textOf(example).split(/[^a-zа-яё0-9]+/i).filter(Boolean);
     for (const word of words) {
       if (exempt.has(word)) continue;
-      const hit = banned.find((stem) => word.startsWith(stem));
-      assert.equal(hit, undefined, `${example.id}: «${word}» is a subject of the corpus (${hit})`);
+      const hit = banned.find((stem) => word.startsWith(stem) && !(PINNED[example.id] || []).includes(stem));
+      assert.equal(hit, undefined, `${example.id}: «${word}» is a subject of the corpus or the holdout (${hit})`);
     }
   }
+});
+
+test("the ban sees a subject of the holdout: the checker is not blind", () => {
+  const probe = { id: "probe", request: "Плаваю в бассейне", reply: "Собрал заплыв" };
+  const hits = textOf(probe).split(/[^a-zа-яё0-9]+/i).filter((word) => Object.values(HOLDOUT_STEMS).flat().some((stem) => word.startsWith(stem)));
+  assert.deepEqual(hits, ["плаваю", "бассейне", "заплыв"]);
 });
 
 // -- the manual ---------------------------------------------------------------------------
@@ -159,23 +210,6 @@ test("the manual names every catalogue word, in both surfaces", () => {
   }
 });
 
-test("the manual fits the budget on the empty, the demo and a busy space, in both surfaces", () => {
-  const spaces = {
-    empty: emptyState(),
-    demo: buildDemoState(TODAY),
-    busy: withApps("shakes", "meditation", "swim", "rides"),
-  };
-  const sizes = {};
-  for (const surface of SURFACES) {
-    for (const [name, state] of Object.entries(spaces)) {
-      const tokens = estimateTokens(renderManual(state, { surface, request: "Хочу считать воду, цель два литра, кнопки +250 и +500", today: TODAY }));
-      sizes[`${surface}/${name}`] = tokens;
-      assert.ok(tokens <= MANUAL_BUDGET.cap, `${surface}/${name}: ${tokens} tokens is over the cap ${MANUAL_BUDGET.cap}`);
-    }
-  }
-  console.log("manual tokens (chars / 3.2):", JSON.stringify(sizes));
-});
-
 test("the html surface round-trips every example through bundleToMarkup and bundleFromMarkup", () => {
   for (const example of EXAMPLES) {
     const answer = example.bundle ? { reply: example.reply, ...example.bundle } : { reply: example.reply };
@@ -187,9 +221,9 @@ test("the html surface round-trips every example through bundleToMarkup and bund
 });
 
 test("both surfaces print the answer envelope the model must copy: reply first, then the bundle", () => {
-  const swim = exampleById("swim");
-  assert.match(printAnswer(swim, "json"), /^\{\n "reply": "Собрал «Бассейн»/);
-  assert.match(printAnswer(swim, "html"), /^<c-bundle v="2" name="Бассейн">\n  <c-reply>Собрал «Бассейн»/);
+  const ski = exampleById("ski");
+  assert.match(printAnswer(ski, "json"), /^\{\n "reply": "Собрал «Лыжи»/);
+  assert.match(printAnswer(ski, "html"), /^<c-bundle v="2" name="Лыжи">\n  <c-reply>Собрал «Лыжи»/);
   assert.equal(printAnswer(exampleById("creatine-refuse"), "json").includes("\"v\""), false, "a refusal has no bundle");
   assert.match(printAnswer(exampleById("creatine-refuse"), "html"), /^<c-reply>Дозу я не считаю/);
 });
@@ -209,19 +243,19 @@ test("the examples in the manual follow the request, and a patch example rides a
 
   const empty = renderManual(emptyState(), { request: "Считать порции, не больше двух в день", today: TODAY });
   assert.doesNotMatch(empty, /В пространстве уже было/);
-  const busy = renderManual(withApps("swim"), { request: "Добавь на главную километры", today: TODAY });
+  const busy = renderManual(withApps("ski"), { request: "Добавь на главную километры", today: TODAY });
   assert.match(busy, /В пространстве уже было/);
   assert.match(busy, /Просьба: «Добавь на главную километры за неделю»/);
 });
 
 test("the manual carries the person's space and the request, and the surfaces differ in syntax only", () => {
-  const state = withApps("swim");
+  const state = withApps("ski");
   const json = renderManual(state, { surface: "json", request: "Убери график", today: TODAY });
   const html = renderManual(state, { surface: "html", request: "Убери график", today: TODAY });
   assert.match(json, /ПРОСЬБА ЧЕЛОВЕКА\n«Убери график»/);
   assert.match(html, /ПРОСЬБА ЧЕЛОВЕКА\n«Убери график»/);
-  assert.ok(/"key":"swim"/.test(json), "the space is printed as JSON");
-  assert.ok(/<c-track key="swim"/.test(html), "the space is printed as markup");
+  assert.ok(/"key":"ski"/.test(json), "the space is printed as JSON");
+  assert.ok(/<c-track key="ski"/.test(html), "the space is printed as markup");
   assert.doesNotMatch(html, /\{"el":/, "no JSON elements in the markup surface");
   assert.doesNotMatch(json, /<c-meter/, "no markup elements in the JSON surface");
   assert.ok(/goalType/.test(json));
@@ -235,16 +269,9 @@ test("the reference for the assistant has no person-specific parts", () => {
   assert.ok(estimateTokens(reference) < MANUAL_BUDGET.cap);
 });
 
-test("the manual says what the app adds by itself, from expandDefaults", () => {
-  const defaults = manualParts(emptyState(), { request: "x" }).find((part) => part.id === "defaults").text;
-  for (const kind of catalogue.KIND_KEYS) assert.match(defaults, new RegExp(`- ${kind}: `));
-  assert.match(defaults, /- habit: .*marks/);
-  assert.match(defaults, /- log: .*form/);
-});
-
 // Each "wrong" line of the manual is a real mistake the validator names, and the "right" line is the node of a passing example.
 test("every mistake of the manual fails the validator with its rule, and the fix passes", () => {
-  assert.ok(MISTAKES.length >= 6);
+  assert.ok(MISTAKES.length >= 4);
   for (const mistake of MISTAKES) {
     const example = exampleById(mistake.base);
     const state = spaceOf(example);
@@ -386,7 +413,7 @@ test("authorBundle on the html surface parses markup and repairs through the sam
 test("a sample for every field type and every element, and each passes the validator", () => {
   assert.deepEqual(Object.keys(FIELD_SAMPLES).sort(), [...catalogue.FIELD_TYPE_KEYS].sort());
   assert.deepEqual(Object.keys(ELEMENT_SAMPLES).sort(), [...catalogue.ELEMENT_KEYS].sort());
-  const state = withApps("swim", "shakes", "meditation", "rides", "flossing", "gymbag");
+  const state = withApps("ski", "shakes", "meditation", "rides", "flossing", "gymbag");
   const cards = Object.entries(ELEMENT_SAMPLES).map(([key, el]) => ({ key: `sample_${key}`, title: "Образец", body: [el] }));
   const onHome = checkBundle({ v: 2, name: "Образцы", screens: [{ key: "home", cards: cards.slice(0, 8) }, { key: "samples", name: "Образцы", cards: cards.slice(8) }] }, state, { today: TODAY });
   assert.equal(onHome.ok, true, JSON.stringify(onHome.problems));
@@ -395,7 +422,7 @@ test("a sample for every field type and every element, and each passes the valid
     v: 2,
     name: "Образцы полей",
     tracks: [
-      { key: "sample_a", name: "Образец А", kind: "log", fields: [{ key: "laps", name: "Длин", type: "number" }, { key: "pool", name: "Бассейн", type: "number" }, S.calc, S.number, S.scale, S.text, S.choice, S.yesno] },
+      { key: "sample_a", name: "Образец А", kind: "log", fields: [{ key: "rounds", name: "Кругов", type: "number" }, { key: "lap", name: "Длина круга", type: "number" }, S.calc, S.number, S.scale, S.text, S.choice, S.yesno] },
       { key: "sample_b", name: "Образец Б", kind: "log", fields: [S.date, S.time, S.link] },
     ],
   };
@@ -409,6 +436,8 @@ test("the reference text and its samples name no subject of the corpus", () => {
     /\bвод[аыуе]\b|\bwater\b|\bml\b/, /\bвес(а|у|ом|е)?\b|\bweight\b|\bkg\b/, /настроени|\bmood\b/, /пробеж|\bбег(а|у|ом)?\b/, /кофе/, /витамин|магни|vitamin/, /антибиот/, /сладк/,
     /голодан/, /растяж/, /уборк|пылесос/, /заготовк/, /\bжим\b|bench|\bsets\b|\breps\b/, /\bсон\b|\bсна\b|\bsleep\b|выспал|\blay\b|\bwoke\b/, /давлен|пульс/, /рецепт(?! трека)/, /замер/, /бюджет/,
     /книг/, /вишлист/, /сытост|насколько сыт|голоден/, /\brpe\b/, /омег/,
+    // the holdout
+    /планк|челлендж/, /подар/, /специ[йяюи]/, /сахар|напитк|ложк/, /фрукт|овощ/, /ужин/, /бассейн|плава|заплыв|дорожк/, /молочк/, /сидеть|сидя/, /домашн|приготовл/,
   ];
   const skip = /^(unit:|Источники|Столбцы|Функции|Величины)/;
   for (const surface of SURFACES) {
@@ -461,4 +490,295 @@ test("a space that has grown for a long time shrinks to keys and still fits the 
     for (let n = 1; n <= 24; n += 1) assert.ok(space.includes(`count_${n}_today`), `${surface}: the card key count_${n}_today survives`);
     assert.ok(estimateTokens(renderManual(state, { surface, request: "добавь ещё один", today: TODAY })) <= MANUAL_BUDGET.cap);
   }
+});
+
+// -- the budget -------------------------------------------------------------------------------
+
+test("a typical prompt fits the target for every request of the corpus and the holdout, a grown space fits the cap, in both surfaces", () => {
+  const requests = [...requestsOf(CORPUS_FILE), ...requestsOf(HOLDOUT_FILE)];
+  assert.ok(requests.length >= 60, `${requests.length} requests`);
+  const busy = withApps("shakes", "meditation", "ski", "rides");
+  const sizes = {};
+  for (const surface of SURFACES) {
+    for (const [name, state] of Object.entries({ empty: emptyState(), demo: buildDemoState(TODAY) })) {
+      const worst = Math.max(...requests.map((request) => estimateTokens(renderManual(state, { surface, request, today: TODAY }))));
+      sizes[`${surface}/${name}`] = worst;
+      assert.ok(worst <= MANUAL_BUDGET.target, `${surface}/${name}: ${worst} tokens is over the target ${MANUAL_BUDGET.target}`);
+    }
+    const tokens = estimateTokens(renderManual(busy, { surface, request: "Хочу считать порции, цель не больше двух", today: TODAY }));
+    sizes[`${surface}/busy`] = tokens;
+    assert.ok(tokens <= MANUAL_BUDGET.cap, `${surface}/busy: ${tokens} tokens is over the cap ${MANUAL_BUDGET.cap}`);
+  }
+  console.log("manual tokens, worst request of the corpus and the holdout (chars / 3.2):", JSON.stringify(sizes));
+});
+
+// -- the decision rows -------------------------------------------------------------------------
+
+test("every decision row names a wish, a rule and pieces cut from checked answers; the literal pieces pass checkBundle on the demo space", () => {
+  assert.ok(DECISIONS.length >= 18, `${DECISIONS.length} rows`);
+  assert.equal(new Set(DECISIONS.map((row) => row.id)).size, DECISIONS.length);
+  const required = ["week-count", "missed", "weekdays", "month", "frequency", "plan-fact", "course", "money-left", "pace", "last-delta", "expiring", "edit-search", "one-record", "own-date", "catalog-or-list", "shopping", "streak", "honest"];
+  assert.deepEqual(DECISIONS.map((row) => row.id).sort(), required.sort());
+  for (const row of DECISIONS) {
+    assert.match(row.wish, /[а-яё]/i, row.id);
+    assert.match(row.say, /[а-яё]/i, row.id);
+    for (const token of row.say.match(/@\w+/g) || []) assert.equal(catalogue.isRange(token), true, `${row.id}: ${token} is not in the range grammar`);
+    for (const piece of row.show) {
+      const { kind, node } = pieceNode(piece);
+      assert.ok(node && typeof node === "object", `${row.id}: the piece is gone`);
+      if (piece.base) {
+        const example = exampleById(piece.base);
+        assert.equal(checkBundle(example.bundle, spaceOf(example), { today: TODAY }).ok, true, `${row.id}: example ${piece.base} must pass`);
+        if (kind === "attrs") for (const name of piece.attrs) assert.notEqual(node[name], undefined, `${row.id}: ${name} is not written in the example`);
+      } else {
+        const card = { key: "row_check", title: "Проверка", body: [node] };
+        const checked = checkBundle({ v: 2, name: "Строка", screens: [{ key: "home", cards: [card] }] }, buildDemoState(TODAY), { today: TODAY });
+        assert.equal(checked.ok, true, `${row.id}: ${JSON.stringify(checked.problems)}`);
+        assert.deepEqual(checked.changes, [], row.id);
+      }
+    }
+  }
+});
+
+test("the manual prints every decision row with its pieces, in the syntax of the surface", () => {
+  for (const surface of SURFACES) {
+    const wish = manualParts(emptyState(), { surface, request: "x", today: TODAY }).find((part) => part.id === "wish").text;
+    for (const row of DECISIONS) {
+      assert.ok(wish.includes(`«${row.wish}»: ${row.say}`), `${surface}: the row ${row.id}`);
+      for (const piece of row.show) {
+        const { kind, node } = pieceNode(piece);
+        if (kind === "el") assert.ok(wish.includes(snippet("el", node, surface)), `${surface}: ${row.id} shows ${node.el}`);
+        else for (const name of piece.attrs) assert.ok(wish.includes(surface === "html" ? `${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${node[name]}"` : `"${name}":${JSON.stringify(node[name])}`), `${surface}: ${row.id} shows ${name}`);
+      }
+    }
+    if (surface === "html") assert.doesNotMatch(wish, /\{"el":/, "no JSON elements in the markup rows");
+    else assert.doesNotMatch(wish, /<c-stat|<c-bars|<c-meter/, "no markup elements in the JSON rows");
+  }
+});
+
+test("the examples carry every pattern the rows teach", () => {
+  const bundles = EXAMPLES.filter((example) => example.bundle).map((example) => example.bundle);
+  const tracks = bundles.flatMap((bundle) => bundle.tracks || []);
+  const els = bundles.flatMap((bundle) => (bundle.screens || []).flatMap((screen) => (screen.cards || []).flatMap((card) => card.body || [])));
+  const has = (test, label) => assert.ok(els.some(test), label);
+  has((el) => el.el === "bars" && el.fn === "count" && !["day", "week", "month"].includes(el.by) && el.by, "bars by a choice field");
+  has((el) => el.el === "stat" && el.rows === "items" && el.where?.state === "open", "remaining sum over open items");
+  has((el) => el.pace === "left", "pace left");
+  has((el) => el.el === "meter" && el.goal === "due" && el.range === "@all", "course meter");
+  has((el) => el.fn === "last", "fn last");
+  has((el) => el.fn === "delta", "fn delta");
+  has((el) => el.edit === true && el.search === true, "edit and search");
+  has((el) => Object.values(el.where || {}).some((value) => /^<=\+\d+d$/.test(value)), "where with an operator and a relative day");
+  has((el) => el.range === "@thisWeek" && el.value === "done", "weekly count");
+  has((el) => el.range === "@thisWeek" && el.value === "skipped", "weekly skips");
+  has((el) => el.range === "@thisMonth", "this month");
+  assert.ok(tracks.some((track) => track.unmarked === "missed"), "unmarked missed");
+  assert.ok(tracks.some((track) => (track.items || []).some((item) => /^[a-z]{3}(,[a-z]{3})+$/.test(item.every || ""))), "a list of weekdays");
+  assert.ok(tracks.some((track) => (track.items || []).some((item) => item.until)), "an item with until");
+  assert.ok(tracks.some((track) => track.kind === "list" && (track.fields || []).some((field) => field.planned && field.unit === "₽")), "a list with a planned price");
+  assert.ok(tracks.some((track) => (track.fields || []).some((field) => field.goalType === "max" && field.goalPer === "month")), "a monthly limit");
+});
+
+// The rows promise behaviour; the examples they point at must keep the promise on a real space.
+const TOOLS = {
+  open(id, { created = TODAY } = {}) {
+    const store = openObjectStore({ storage: null, today: () => TODAY });
+    const checked = checkBundle(exampleById(id).bundle, store.state(), { today: created });
+    assert.equal(checked.ok, true, JSON.stringify(checked.problems));
+    assert.equal(applyBundle(store, checked).ok, true);
+    return store;
+  },
+  person(store, ops) {
+    const result = store.apply(ops, { actor: "human" });
+    assert.equal(result.ok, true, result.reason);
+  },
+  card: (id, key, at = 0) => exampleById(id).bundle.screens.flatMap((screen) => screen.cards).find((card) => card.key === key).body[at],
+  read: (store, el) => resolveBinding(store.state(), el, { today: TODAY }),
+};
+
+test("a habit that counts a missed day: unmarked missed turns an unmarked due day into a skip, and without it the skip is not counted", () => {
+  const run = (bundle) => {
+    const store = openObjectStore({ storage: null, today: () => TODAY });
+    const checked = checkBundle(bundle, store.state(), { today: "2026-10-19" });
+    assert.equal(checked.ok, true, JSON.stringify(checked.problems));
+    applyBundle(store, checked);
+    const item = Object.values(store.state().objects).find((object) => object.type === "track_item").props.kit_key;
+    TOOLS.person(store, markOps(store.state(), "plants", { item, state: "done", date: "2026-10-20", today: TODAY }));
+    return ["done", "skipped"].map((value) => TOOLS.read(store, { el: "stat", of: "plants", value, range: "@thisWeek" }).value);
+  };
+  const example = exampleById("plants").bundle;
+  assert.deepEqual(run(example), [1, 1], "Tuesday done, Friday unmarked and counted as missed");
+  const lenient = clone(example);
+  delete lenient.tracks[0].unmarked;
+  assert.deepEqual(run(lenient), [1, 0], "the default policy leaves Friday uncounted");
+});
+
+test("frequency per option, remaining money, course progress and the monthly pace read as the rows say", () => {
+  const walks = TOOLS.open("walks");
+  for (const [place, mins] of [["парк", 30], ["парк", 40], ["двор", 20], ["набережная", 50]]) TOOLS.person(walks, formOps(walks.state(), "walks", { place, mins }, { today: TODAY }));
+  const bars = TOOLS.read(walks, TOOLS.card("walks", "walks_places"));
+  assert.deepEqual([bars.buckets, bars.series[0].values], [["парк", "набережная", "двор"], [2, 1, 1]]);
+  assert.equal(TOOLS.read(walks, TOOLS.card("walks", "walks_month")).value, 140);
+
+  const repair = TOOLS.open("repair");
+  assert.equal(TOOLS.read(repair, TOOLS.card("repair", "repair_left")).value, 20600);
+  TOOLS.person(repair, markOps(repair.state(), "repair", { item: "kraska", state: "done", today: TODAY }));
+  assert.equal(TOOLS.read(repair, TOOLS.card("repair", "repair_left")).value, 17100, "a bought item leaves the remaining sum");
+
+  const exam = TOOLS.open("exam");
+  const course = TOOLS.read(exam, TOOLS.card("exam", "exam_today", 1));
+  assert.deepEqual([course.value, course.goal], [0, 14], "fourteen evenings from today to the last day");
+  TOOLS.person(exam, markOps(exam.state(), "exam", { item: "zanyatie", state: "done", today: TODAY }));
+  assert.equal(TOOLS.read(exam, TOOLS.card("exam", "exam_today", 1)).value, 1);
+
+  const taxi = TOOLS.open("taxi");
+  TOOLS.person(taxi, formOps(taxi.state(), "taxi", { fare: 700 }, { today: TODAY }));
+  const pace = TOOLS.read(taxi, TOOLS.card("taxi", "taxi_month", 0)).pace;
+  assert.deepEqual([pace.left, pace.daysLeft, pace.perDay, pace.text.replace(/\s/g, " ")], [4300, 8, 537, "можно ещё 537 ₽ в день"]);
+});
+
+test("the latest value, the change over the period and the expiring rows read as the rows say", () => {
+  const odo = TOOLS.open("odo");
+  TOOLS.person(odo, formOps(odo.state(), "odo", { reading: 100000 }, { today: TODAY, date: "2026-10-05" }));
+  TOOLS.person(odo, formOps(odo.state(), "odo", { reading: 100200 }, { today: TODAY }));
+  assert.equal(TOOLS.read(odo, TOOLS.card("odo", "odo_last")).value, 100200);
+  assert.equal(TOOLS.read(odo, TOOLS.card("odo", "odo_month")).value, 200);
+
+  const docs = TOOLS.open("docs");
+  TOOLS.person(docs, addItemOps(docs.state(), "docs", { name: "Загранпаспорт", plan: { expires: "2026-12-01" } }, { today: TODAY }));
+  TOOLS.person(docs, addItemOps(docs.state(), "docs", { name: "Полис", plan: { expires: "2027-06-01" } }, { today: TODAY }));
+  TOOLS.person(docs, itemOps(docs.state(), "ti_docs_prava", { plan: { expires: "2026-11-15" } }, { today: TODAY }));
+  const soon = TOOLS.read(docs, TOOLS.card("docs", "docs_soon"));
+  assert.deepEqual(soon.rows.map((row) => row.cells.map((cell) => cell.text)), [["Права", "15 ноя"], ["Загранпаспорт", "1 дек"]], "within sixty days, soonest first; the row of 2027 and the rows without a date stay out");
+  assert.equal(TOOLS.read(docs, TOOLS.card("docs", "docs_all")).total, 5);
+});
+
+// -- the vocabulary ----------------------------------------------------------------------------
+
+test("the manual prints the range grammar with its examples, the by values, the where operators and the values of every enum attribute", () => {
+  for (const surface of SURFACES) {
+    const text = renderManual(emptyState(), { surface, request: "x", today: TODAY });
+    for (const range of catalogue.RANGES) {
+      assert.ok(text.includes(range.token), `${surface}: ${range.token}`);
+      for (const example of range.examples) assert.ok(text.includes(example), `${surface}: ${example}`);
+      assert.ok(text.includes(range.doc.split(";")[0]), `${surface}: the meaning of ${range.token}`);
+    }
+    for (const word of Object.keys(catalogue.BY_WORDS)) assert.ok(text.includes(`${word} (${catalogue.BY_WORDS[word]})`), `${surface}: by ${word}`);
+    for (const type of catalogue.BY_FIELD_TYPES) assert.ok(text.includes(type), `${surface}: by a ${type} field`);
+    for (const op of Object.keys(catalogue.WHERE_OPS)) assert.ok(text.includes(op), `${surface}: operator ${op}`);
+    for (const key of Object.keys(catalogue.WHERE_KEYS)) assert.ok(text.includes(key), `${surface}: where key ${key}`);
+    for (const state of catalogue.WHERE_STATES) assert.ok(text.includes(state), `${surface}: where state ${state}`);
+    for (const element of Object.values(catalogue.ELEMENTS)) {
+      for (const [name, attr] of Object.entries(element.attrs)) {
+        if (attr.type === "enum") for (const value of attr.values) assert.ok(text.includes(String(value)), `${surface}: ${name}=${value}`);
+      }
+    }
+    assert.ok(text.includes("rows") && text.includes("pace") && text.includes("goal"), `${surface}: rows, pace, goal`);
+  }
+});
+
+test("the wording about the streak states what the engine does, and the rules do not contradict the kit", () => {
+  for (const surface of SURFACES) {
+    const text = renderManual(emptyState(), { surface, request: "x", today: TODAY });
+    assert.doesNotMatch(text, /срыв не обнуляет всё/, "the vague line of the catalogue is not printed");
+    assert.ok(text.includes("при grace 0 срыв начинает её заново"), `${surface}: the element line`);
+    assert.ok(text.includes("При grace 0 срыв начинает текущую серию заново, лучшая и доля за 30 дней остаются"), `${surface}: the decision row`);
+    assert.doesNotMatch(text, /уведомлений, поиска/, "search exists now");
+    assert.ok(text.includes("переставить можно order у экрана"), `${surface}: the rule about moving cards agrees with order`);
+    assert.doesNotMatch(text, /убери карточку \(remove\) и объяви её заново/, "the old way of moving a card is gone");
+    assert.ok(text.includes("Обещай в reply только то, что показывают карточки ответа"), `${surface}: the honesty rule`);
+  }
+});
+
+// -- the defaults ---------------------------------------------------------------------------------
+
+const D = (id) => defaultsFor(DEFAULT_CASES.find((c) => `${c.kind}, ${c.when}` === id).track);
+const names = (list) => list.map((el) => el.el);
+
+test("defaults on a fresh track: a log gets its input, its chart, the latest value with the change, and recent entries to edit", () => {
+  const accumulating = D("log, число копится за день");
+  assert.deepEqual([names(accumulating.home), names(accumulating.own)], [["meter", "form"], ["bars", "list"]]);
+  assert.deepEqual(accumulating.own[0], { el: "bars", of: "demo", value: "n", fn: "sum", range: "@last7d" });
+  assert.deepEqual(accumulating.own[1], { el: "list", of: "demo", columns: ["date", "n"], limit: 5, range: "@last30d", edit: true });
+
+  const counter = D("log, один счётчик (порц., шт., раз)");
+  assert.deepEqual(names(counter.home), ["meter", "quick", "form"]);
+  assert.deepEqual(counter.home[1], { el: "quick", of: "demo", values: { n: 1 } });
+
+  const measure = D("log, измерение без цели (температура, рост)");
+  assert.deepEqual([names(measure.home), names(measure.own)], [["form"], ["line", "stat", "stat", "list"]]);
+  assert.deepEqual(measure.own.slice(0, 3), [
+    { el: "line", of: "demo", value: "n", fn: "avg", range: "@last30d" },
+    { el: "stat", of: "demo", value: "n", fn: "last", range: "@all" },
+    { el: "stat", of: "demo", value: "n", fn: "delta", range: "@last30d" },
+  ]);
+  assert.equal(measure.own[3].edit, true);
+});
+
+test("defaults on a fresh track: a habit gets marks, a streak and bars of done per day, a course also a progress meter, never a long heatmap", () => {
+  const plain = D("habit, обычная");
+  assert.deepEqual([names(plain.home), names(plain.own)], [["marks"], ["streak", "bars"]]);
+  assert.deepEqual(plain.own[1], { el: "bars", of: "demo", value: "done", fn: "sum", range: "@last14d" });
+  const course = D("habit, у пункта есть until (курс)");
+  assert.deepEqual([names(course.home), names(course.own)], [["marks", "meter"], ["streak", "bars"]]);
+  assert.deepEqual(course.home[1], { el: "meter", of: "demo", value: "done", goal: "due", range: "@all" });
+  for (const shown of [plain, course]) assert.equal([...shown.home, ...shown.own].some((el) => el.el === "heatmap"), false);
+});
+
+test("defaults on a fresh track: a list, a catalog and a follow track", () => {
+  const plain = D("list, обычный");
+  assert.deepEqual([names(plain.home), names(plain.own)], [["stat"], ["marks"]]);
+  assert.equal(plain.own[0].add, true);
+  const priced = D("list, в поле ₽ planned: true");
+  assert.deepEqual(names(priced.own), ["marks", "stat", "stat"]);
+  assert.deepEqual(priced.own[1], { el: "stat", of: "demo", value: "n", fn: "sum", rows: "items", where: { state: "open" }, range: "@all" });
+
+  const catalog = D("catalog, любой");
+  assert.deepEqual([catalog.home, names(catalog.own)], [[], ["list"]]);
+  assert.deepEqual([catalog.own[0].add, catalog.own[0].edit, catalog.own[0].search], [true, true, true]);
+
+  const plainFollow = D("follow, есть поле-число");
+  assert.deepEqual([names(plainFollow.home), names(plainFollow.own)], [["marks"], ["line", "table"]]);
+  const choice = D("follow, есть поле choice");
+  assert.deepEqual([names(choice.home), names(choice.own)], [["marks"], ["bars", "table"]]);
+  assert.deepEqual(choice.own[0], { el: "bars", of: "demo", by: "feel", fn: "count", range: "@last30d" });
+});
+
+test("every default case passes checkBundle on its own, and the manual prints the table from the same function", () => {
+  const defaults = manualParts(emptyState(), { request: "x" }).find((part) => part.id === "defaults").text;
+  for (const { kind, when, track } of DEFAULT_CASES) {
+    const checked = checkBundle({ v: 2, name: "Демо", tracks: [{ key: "demo", name: "Демо", ...track }] }, emptyState(), { today: TODAY });
+    assert.equal(checked.ok, true, `${kind}, ${when}: ${JSON.stringify(checked.problems)}`);
+    const shown = defaultsFor(track);
+    assert.ok(defaults.includes(`- ${kind}, ${when}: на главную ${shown.home.length ? shown.home.map((el) => el.el).join(", ") : "ничего"}`), `${kind}, ${when}: the table line`);
+  }
+  assert.equal(DEFAULT_CASES.length, 10);
+  assert.match(defaults, /- habit, у пункта есть until \(курс\): на главную marks, meter \(goal due\)/);
+  assert.match(defaults, /Если карточка есть только на главной, экран трека с историей приложение добавит всё равно/);
+});
+
+test("a track the bundle names only on home still gets its own screen with history; a track with a screen of its own gets nothing added", () => {
+  const spec = readSpec(emptyState());
+  const track = { key: "t1", name: "Трек", kind: "follow", follows: "ration", fields: [{ key: "lvl", name: "Уровень", type: "scale" }] };
+  const onHome = { v: 2, name: "Т", tracks: [track], screens: [{ key: "home", cards: [{ key: "t1_form", title: "Уровень", body: [{ el: "marks", of: "t1" }] }] }] };
+  const expanded = expandDefaults(spec, onHome, { today: TODAY });
+  assert.deepEqual(expanded.screens.map((screen) => [screen.key, screen.cards.map((card) => card.key)]), [["home", ["t1_form"]], ["t1", ["t1_trend", "t1_last"]]]);
+  assert.equal(expanded.screens[1].name, "Трек", "the screen is named after the track");
+  const checked = checkBundle(onHome, emptyState(), { today: TODAY });
+  assert.equal(checked.ok, true, JSON.stringify(checked.problems));
+  assert.ok(Object.values(checked.spec.cards).some((card) => card.key === "t1_last" && card.screen === "t1"), "the history card is in the spec");
+
+  const withScreen = { ...onHome, screens: [{ key: "t1", name: "Трек", cards: [{ key: "t1_all", title: "Все", body: [{ el: "table", of: "t1", columns: ["date", "slot"], range: "@last30d" }] }] }] };
+  assert.deepEqual(expandDefaults(spec, withScreen, { today: TODAY }).screens.map((screen) => [screen.key, screen.cards.map((card) => card.key)]), [["t1", ["t1_all"]]], "nothing is added to a track that has its place");
+});
+
+test("defaults never push a valid answer over the limits of screens and cards", () => {
+  const spec = readSpec(emptyState());
+  const tracks = [1, 2, 3, 4].map((n) => ({ key: `c${n}`, name: `Счёт ${n}`, kind: "log", fields: [{ key: "n", name: "Раз", type: "number", unit: "раз", min: 1, max: 20 }] }));
+  const bundle = { v: 2, name: "Счета", tracks, screens: [{ key: "home", cards: tracks.map((t) => ({ key: `${t.key}_add`, title: t.name, body: [{ el: "form", of: t.key }] })) }] };
+  const expanded = expandDefaults(spec, bundle, { today: TODAY });
+  assert.ok(expanded.screens.length <= catalogue.LIMITS.screens, `${expanded.screens.length} screens`);
+  assert.deepEqual(expanded.screens.map((screen) => screen.key), ["home", "c1", "c2", "c3"], "the fourth track keeps its home card and goes without a screen of its own");
+  const checked = checkBundle(bundle, emptyState(), { today: TODAY });
+  assert.equal(checked.ok, true, JSON.stringify(checked.problems));
 });

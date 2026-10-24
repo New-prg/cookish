@@ -2,6 +2,8 @@
 // design/synthesis.md §2) and says in plain Russian what it holds. Used by the
 // «Готово» line of check.mjs and by judge-packet.mjs, so both describe the same
 // thing. Nothing here trusts what a model said about its own answer.
+import { elementBehaviour, trackBehaviour } from "./behaviour.mjs";
+
 const KIND = {
   log: "журнал записей (свободные записи, сколько угодно в день)",
   habit: "привычка (отметка по расписанию на каждый день)",
@@ -37,7 +39,7 @@ export function rangeRu(range) {
   if (!range) return "";
   const m = /^@last(\d+)([dwm])$/.exec(range);
   if (m) return `последние ${m[1]} ${{ d: "дн.", w: "нед.", m: "мес." }[m[2]]}`;
-  return { "@today": "сегодня", "@yesterday": "вчера", "@thisWeek": "эта неделя", "@thisMonth": "этот месяц" }[range] || range;
+  return { "@today": "сегодня", "@yesterday": "вчера", "@thisWeek": "эта неделя", "@thisMonth": "этот месяц", "@all": "всё время" }[range] || range;
 }
 
 function trackKey(state, of) {
@@ -78,7 +80,7 @@ function itemRu(o) {
   if (p.kit_from) bits.push(`с ${p.kit_from}`);
   if (p.kit_until) bits.push(`до ${p.kit_until}`);
   if (p.kit_plan && Object.keys(p.kit_plan).length) bits.push(`план: ${Object.entries(p.kit_plan).map(([k, v]) => `${k}=${v}`).join(", ")}`);
-  return `${q(o.name)}${bits.length ? ` (${bits.join("; ")})` : ""}`;
+  return `${q(o.name)} [${p.kit_key || o.id}]${bits.length ? ` (${bits.join("; ")})` : ""}`;
 }
 
 function sourceRu(state, of) {
@@ -96,6 +98,18 @@ function valueRu(state, of, value) {
     if (rel) return `${q(rel.name)}${rel.unit ? `, ${rel.unit}` : ""}`;
   }
   return VIRTUAL[value] ? `${VIRTUAL[value]} (${value})` : `${value}`;
+}
+
+// What describe knows of an element's source, for behaviour.mjs.
+function infoOf(state, el) {
+  const key = trackKey(state, el.of);
+  const type = key ? state.types[`tr_${key}`] : null;
+  if (!type) return {};
+  const k = type.kit;
+  const fields = fieldsOf(state, type).map((rel) => ({ key: rel.kit.field, name: rel.name, type: rel.kit.type || { formula: "calc" }[rel.format] || rel.format, required: Boolean(rel.kit.required ?? rel.required), goal: rel.kit.goal ?? null, goalType: rel.kit.goalType || "min", goalPer: rel.kit.goalPer || "day", unit: rel.unit || "", planned: Boolean(rel.kit.planned), on: rel.kit.on || null }));
+  const track = { key, kind: k.kind || "log", states: k.states?.length ? k.states : { habit: ["done", "skipped"], list: ["done"], follow: ["done"] }[k.kind] || [], labels: k.labels || {}, grace: Number.isInteger(k.grace) ? k.grace : null, unmarked: k.unmarked || (k.avoid ? "assumed" : "ignore"), follows: k.follows || null, avoid: k.avoid === true, quota: Number(k.times) > 0 ? { times: Number(k.times), per: k.per === "day" ? "day" : "week" } : null, fields };
+  if (track.avoid) track.labels = { done: "держусь", skipped: "сорвался", ...track.labels };
+  return { track, field: fields.find((f) => f.key === el.value) || null };
 }
 
 export function elementRu(state, el) {
@@ -131,7 +145,8 @@ export function readKit(state) {
     if (k.follows) lines.push(`Привязано к классическому разделу: ${SOURCES[k.follows] || k.follows}.`);
     for (const rel of fieldsOf(state, t)) lines.push(`${fieldRu(state, rel)}.`);
     const items = Object.values(state.objects).filter((o) => o.type === "track_item" && o.props?.kit_track === key && live(o));
-    if (items.length) lines.push(`Позиции (${items.length}): ${items.map(itemRu).join("; ")}.`);
+    if (items.length) lines.push(`Позиции (${items.length}):`, ...items.map((o) => `  позиция ${itemRu(o)}`));
+    for (const text of trackBehaviour({ kind: k.kind || "log", follows: k.follows, fields: fieldsOf(state, t).map((rel) => ({ name: rel.name, type: rel.kit.type || (rel.format === "formula" ? "calc" : rel.format) })) })) lines.push(`Само по себе: ${text}`);
     const entries = Object.values(state.objects).filter((o) => o.type === t.key && live(o)).length;
     return { key, name: t.name, lines, entries };
   });
@@ -139,6 +154,7 @@ export function readKit(state) {
   const screenObjs = Object.values(state.objects).filter((o) => o.type === "kit_screen" && live(o));
   const keyOfScreen = (id) => state.objects[id]?.props?.kit_key || String(id).replace(/^sc_/, "");
   const cards = Object.values(state.objects).filter((o) => o.type === "kit_card" && live(o));
+  screenObjs.sort((a, b) => (a.props.kit_order ?? 0) - (b.props.kit_order ?? 0));
   const keys = new Set(["home", ...screenObjs.map((s) => s.props.kit_key)]);
   const screens = [...keys].map((key) => {
     const own = screenObjs.find((s) => s.props.kit_key === key);
@@ -151,7 +167,10 @@ export function readKit(state) {
         name: c.name,
         lines: [
           `Карточка ${q(c.name)} (${c.props.kit_key || c.id}${c.props.kit_size ? `, ${c.props.kit_size === "half" ? "половина ширины" : "во всю ширину"}` : ""})${c.props.description ? `, подпись: ${q(c.props.description)}` : ""}:`,
-          ...(c.props.kit_body || []).map((el, i) => `  ${i + 1}. ${elementRu(state, el)}`),
+          ...(c.props.kit_body || []).flatMap((el, i) => {
+            const does = elementBehaviour(el, infoOf(state, el));
+            return [`  ${i + 1}. ${elementRu(state, el)}`, ...(does ? [`     Само по себе: ${does}`] : [])];
+          }),
         ],
         body: c.props.kit_body || [],
       })),
@@ -160,29 +179,59 @@ export function readKit(state) {
   return { tracks, screens };
 }
 
-// What changed between two spaces, by the description lines themselves.
+// Lines that only one side has, as multisets: «было» and «стало» of one object.
+function lineChanges(prev, next) {
+  const take = (from, other) => {
+    const left = [...other];
+    return from.filter((line) => {
+      const i = left.indexOf(line);
+      if (i < 0) return true;
+      left.splice(i, 1);
+      return false;
+    });
+  };
+  return { was: take(prev, next), now: take(next, prev) };
+}
+
+// Keys common to both lists in each list's order; they differ when something moved.
+function commonOrder(prevKeys, nextKeys) {
+  const common = new Set(prevKeys.filter((k) => nextKeys.includes(k)));
+  return { was: prevKeys.filter((k) => common.has(k)), now: nextKeys.filter((k) => common.has(k)) };
+}
+
+// What changed between two spaces, by the description lines themselves, with the
+// renames and the reorders that the lines alone would hide.
 export function diffKit(before, after) {
   const b = readKit(before);
   const a = readKit(after);
   const tracks = a.tracks.map((t) => {
     const prev = b.tracks.find((x) => x.key === t.key);
-    return { ...t, status: !prev ? "новое" : same(prev.lines, t.lines) ? "без изменений" : "изменено" };
+    const unchanged = prev && same(prev.lines, t.lines);
+    return { ...t, status: !prev ? "новое" : unchanged ? "без изменений" : "изменено", renamed: prev && prev.name !== t.name ? { was: prev.name, now: t.name } : null, changes: prev && !unchanged ? lineChanges(prev.lines, t.lines) : null };
   });
   const removedTracks = b.tracks.filter((t) => !a.tracks.some((x) => x.key === t.key)).map((t) => ({ ...t, status: "удалено" }));
   const screens = a.screens.map((s) => {
     const prev = b.screens.find((x) => x.key === s.key);
+    const order = prev ? commonOrder(prev.cards.map((c) => c.key), s.cards.map((c) => c.key)) : { was: [], now: [] };
     const cards = s.cards.map((c) => {
       const old = prev?.cards.find((x) => x.key === c.key);
-      return { ...c, status: !old ? "новое" : same(old.lines, c.lines) ? "без изменений" : "изменено" };
+      const moved = old ? order.was.indexOf(c.key) !== order.now.indexOf(c.key) : false;
+      const unchanged = old && same(old.lines, c.lines) && !moved;
+      const changes = old && !unchanged ? lineChanges(old.lines, c.lines) : null;
+      return { ...c, status: !old ? "новое" : unchanged ? "без изменений" : "изменено", renamed: old && old.name !== c.name ? { was: old.name, now: c.name } : null, moved: moved ? { was: order.was.indexOf(c.key) + 1, now: order.now.indexOf(c.key) + 1 } : null, changes };
     });
     const removedCards = (prev?.cards || []).filter((c) => !s.cards.some((x) => x.key === c.key)).map((c) => ({ ...c, status: "удалено" }));
-    return { ...s, status: prev || s.key === "home" ? "" : "новый", cards, removedCards };
+    const nameName = (keys, list) => keys.map((k) => list.find((c) => c.key === k)?.name || k);
+    const reordered = prev && order.was.join() !== order.now.join() ? { was: nameName(order.was, prev.cards), now: nameName(order.now, s.cards) } : null;
+    return { ...s, status: prev || s.key === "home" ? "" : "новый", renamed: prev && prev.name !== s.name ? { was: prev.name, now: s.name } : null, reordered, cards, removedCards };
   });
   const removedScreens = b.screens.filter((s) => !a.screens.some((x) => x.key === s.key)).map((s) => ({ ...s, status: "удалён", cards: [], removedCards: s.cards }));
-  return { tracks, removedTracks, screens, removedScreens };
+  const screenOrder = commonOrder(b.screens.map((s) => s.key), a.screens.map((s) => s.key));
+  const screensReordered = screenOrder.was.join() !== screenOrder.now.join() ? { was: screenOrder.was, now: screenOrder.now } : null;
+  return { tracks, removedTracks, screens, removedScreens, screensReordered };
 }
 
-const screenTouched = (s) => s.cards.some((c) => c.status !== "без изменений") || s.removedCards.length > 0 || s.status === "новый";
+const screenTouched = (s) => s.cards.some((c) => c.status !== "без изменений") || s.removedCards.length > 0 || s.status === "новый" || Boolean(s.renamed) || Boolean(s.reordered);
 
 // Keys of the screens a person must look at: new or changed cards, new screens,
 // the screens of removed cards.
@@ -190,17 +239,35 @@ export function changedScreens(before, after) {
   return diffKit(before, after).screens.filter(screenTouched).map((s) => s.key);
 }
 
+const trimmed = (line) => line.replace(/^\s+/, "");
+
+// «Было» and «стало» under an object that changed. Lines that begin a new
+// description (the header line) show the rename; the rest show the edits.
+function changeLines(item, indent) {
+  const out = [];
+  if (item.renamed) out.push(`${indent}Переименовано: ${q(item.renamed.was)} → ${q(item.renamed.now)}.`);
+  if (item.moved) out.push(`${indent}Место на экране изменилось: было ${item.moved.was}-е, стало ${item.moved.now}-е.`);
+  if (item.changes) {
+    for (const line of item.changes.was) out.push(`${indent}Было: ${trimmed(line)}`);
+    for (const line of item.changes.now) out.push(`${indent}Стало: ${trimmed(line)}`);
+  }
+  return out;
+}
+
 export function describeMarkdown(before, after) {
   const d = diffKit(before, after);
   const out = ["### Данные и логика"];
   const mark = (s) => (s === "без изменений" ? "" : ` [${s}]`);
   if (!d.tracks.length && !d.removedTracks.length) out.push("Трекеров нет.");
-  for (const t of d.tracks) out.push(`- Трекер${mark(t.status)}: ${t.lines[0]}`, ...t.lines.slice(1).map((l) => `  - ${l}`), `  - Записей в хранилище: ${t.entries}.`);
+  for (const t of d.tracks) out.push(`- Трекер${mark(t.status)}: ${t.lines[0]}`, ...t.lines.slice(1).map((l) => `  - ${trimmed(l)}`), `  - Записей в хранилище: ${t.entries}.`, ...changeLines(t, "  - "));
   for (const t of d.removedTracks) out.push(`- Трекер [удалён]: ${t.lines[0]}`);
   out.push("", "### Экраны");
+  if (d.screensReordered) out.push(`Порядок экранов в «Мои разделы» изменился: было ${d.screensReordered.was.join(", ")}, стало ${d.screensReordered.now.join(", ")}.`);
   for (const s of d.screens) {
     out.push(`- Экран ${q(s.name)} (${s.key})${s.status ? ` [${s.status}]` : ""}${s.cards.length ? "" : ": карточек нет"}`);
-    for (const c of s.cards) out.push(`  - ${c.lines[0]}${mark(c.status)}`, ...c.lines.slice(1).map((l) => `    ${l.trim()}`));
+    if (s.renamed) out.push(`  - Экран переименован: ${q(s.renamed.was)} → ${q(s.renamed.now)}.`);
+    if (s.reordered) out.push(`  - Порядок карточек изменился: было ${s.reordered.was.map(q).join(", ")}; стало ${s.reordered.now.map(q).join(", ")}.`);
+    for (const c of s.cards) out.push(`  - ${c.lines[0]}${mark(c.status)}`, ...c.lines.slice(1).map((l) => `    ${l.replace(/^  /, "")}`), ...changeLines(c, "    "));
     for (const c of s.removedCards) out.push(`  - Карточка ${q(c.name)} [удалена]`);
   }
   for (const s of d.removedScreens) out.push(`- Экран ${q(s.name)} (${s.key}) [удалён]`);
