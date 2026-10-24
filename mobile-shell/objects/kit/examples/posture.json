@@ -1,0 +1,27 @@
+{
+  "id": "posture",
+  "request": "Новый раздел «Рабочий день»: сегодняшнее питание из плана и перерывы на осанку в 11, 14 и 17 часов",
+  "reply": "Собрал раздел «Рабочий день»: сверху отметки перерывов на осанку по будням, ниже сегодняшний Рацион из плана.",
+  "tags": ["habit", "time", "embed", "screen", "schedule", "marks"],
+  "space": "demo",
+  "bundle": {
+    "v": 2,
+    "name": "Рабочий день",
+    "tracks": [
+      {
+        "key": "posture", "name": "Осанка", "kind": "habit", "icon": "🪑",
+        "items": [
+          { "name": "Перерыв в 11", "every": "weekdays", "at": "11:00" },
+          { "name": "Перерыв в 14", "every": "weekdays", "at": "14:00" },
+          { "name": "Перерыв в 17", "every": "weekdays", "at": "17:00" }
+        ]
+      }
+    ],
+    "screens": [
+      { "key": "workday", "name": "Рабочий день", "icon": "💼", "cards": [
+        { "key": "workday_breaks", "title": "Перерывы на осанку", "body": [{ "el": "marks", "of": "posture" }] },
+        { "key": "workday_ration", "title": "Питание сегодня", "body": [{ "el": "embed", "what": "ration-today" }] }
+      ] }
+    ]
+  }
+}

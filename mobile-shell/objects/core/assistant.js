@@ -9,7 +9,9 @@ import { applyThreadEvent } from "../../core/assistant-thread.js";
 import { normalizeProductName } from "../../core/ration-domain.js";
 import { COMPACTION, compactThread, requestChars } from "../../services/assistant/context-compaction.js";
 import { FOOD_TOOLS, createFoodSession, findReferenceTool, resolveCard, searchFoodTool } from "../../services/assistant/food-tools.js";
-import { opLanguage, spaceOutline, translate } from "./builder.js";
+import { checkBundle } from "../kit/pipeline.js";
+import { renderReference } from "../kit/manual.js";
+import { spaceOutline } from "./builder.js";
 import { cardProps, createOp, findProductByName } from "./catalog.js";
 import { changeRows } from "./changes.js";
 import { AREAS, shiftDate } from "./domain.js";
@@ -28,9 +30,9 @@ const MAX_TOOL_CHARS = 40_000;
 const BALANCE_DAYS = 14;
 
 // Types the Ассистент does not write through propose_objects: the plan has
-// its own tools, sets and widgets go through propose_space, and the profile
-// (targets, excluded products) is the person's.
-const NOT_FOR_OBJECTS = new Set(["week_plan", "day_plan", "meal", "portion", "session", "profile", "set", "dashboard"]);
+// its own tools, the person's tracks, screens and cards go through
+// propose_space, and the profile (targets, excluded products) is the person's.
+const NOT_FOR_OBJECTS = new Set(["week_plan", "day_plan", "meal", "portion", "session", "profile", "set", "dashboard", "track_item", "kit_screen", "kit_card"]);
 
 const isDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
 
@@ -166,8 +168,15 @@ const WRITE_TOOLS = [
   },
   {
     name: "propose_space",
-    description: `Предложить свои типы, связи, наборы и виджеты на главной (трекер воды, веса, давления и т. п.). Операции:\n${opLanguage()}`,
-    parameters: { type: "object", properties: { summary: { type: "string", description: "что меняется, до 80 символов" }, ops: { type: "array", items: { type: "object" } } }, required: ["summary", "ops"] },
+    description: `Предложить приложение человека или его изменение: треки (то, что он ведёт: учёт, привычка, список, справочник), экраны и карточки. Передай пакет bundle. Чтобы изменить или убрать, читай ключи в get_space, поле kit: это «Пространство» в описании ниже. Записи в треки вносит только человек.\n\n${renderReference("json")}`,
+    parameters: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "что меняется, до 80 символов" },
+        bundle: { type: "object", description: "Пакет {\"v\":2,\"name\":\"…\",\"tracks\":[…],\"screens\":[…],\"remove\":[…]}: только то, что нужно этой просьбе" },
+      },
+      required: ["summary", "bundle"],
+    },
   },
   { name: "propose_revert", description: "Предложить откат набора изменений из журнала (своего или ручного).", parameters: { type: "object", properties: { id: { type: "string", description: "id из get_change_sets" } }, required: ["id"] } },
 ];
@@ -513,7 +522,7 @@ function proposeObjects(args, work) {
     if (!["create", "update", "archive"].includes(op?.op)) { problems.push(`${where}: нет операции «${op?.op}»`); return null; }
     if (op.op !== "create" && (!target || target.archivedAt)) { problems.push(`${where}: нет объекта ${op.id}`); return null; }
     if (!state.types[typeKey]) { problems.push(`${where}: нет типа «${typeKey}»`); return null; }
-    if (NOT_FOR_OBJECTS.has(typeKey)) { problems.push(`${where}: тип «${state.types[typeKey].name}» через propose_objects не меняется (план: propose_day и propose_week; наборы и виджеты: propose_space; профиль меняет человек)`); return null; }
+    if (NOT_FOR_OBJECTS.has(typeKey)) { problems.push(`${where}: тип «${state.types[typeKey].name}» через propose_objects не меняется (план: propose_day и propose_week; наборы, треки, экраны и карточки: propose_space; профиль меняет человек)`); return null; }
     if (op.op === "archive") return { op: "archive", id: op.id };
     const normalized = normalizeProps(state, op.props);
     problems.push(...normalized.problems.map((message) => `${where}: ${message}`));
@@ -526,12 +535,19 @@ function proposeObjects(args, work) {
   return finish({ kind: "objects", summary, ops, dates: [], preview: (before) => ({ type: "rows", rows: changeRows(before, ops) }) }, work);
 }
 
+// The bundle goes through the same layers as the Сборщик's: the first failing
+// layer comes back as problems to fix, nothing is written.
 function proposeSpace(args, work) {
-  const { storeOps, problems } = translate(work.scratch.state(), args.ops);
-  if (problems.length) return { ok: false, problems };
-  if (!storeOps.length) return { ok: false, error: "Нечего предлагать: в ops нет операций." };
-  const summary = String(args.summary || "Изменения пространства").slice(0, 80);
-  return finish({ kind: "space", summary, ops: storeOps, dates: [], preview: (before) => ({ type: "rows", rows: changeRows(before, storeOps) }) }, work);
+  if (!args.bundle || typeof args.bundle !== "object") return { ok: false, error: "bundle: нужен пакет {\"v\":2,\"name\":\"…\",\"tracks\":[…]}." };
+  // Numbers the person said may appear in titles, so the validator sees their words.
+  const request = work.thread.messages.filter((message) => message.role === "user").map((message) => String(message.content)).join("\n");
+  const checked = checkBundle(args.bundle, work.scratch.state(), { today: work.today, request });
+  if (!checked.ok) {
+    return { ok: false, layer: checked.layer, problems: checked.problems.map((problem) => `${problem.path ? `${problem.path}: ` : ""}${problem.message}`), ...(checked.changes.length ? { fixed: checked.changes } : {}) };
+  }
+  if (checked.noop) return { ok: false, error: "Нечего предлагать: пакет ничего не меняет в пространстве." };
+  const summary = String(args.summary || checked.summary).slice(0, 80);
+  return finish({ kind: "space", summary, ops: checked.ops, dates: [], preview: () => ({ type: "rows", rows: checked.rows }) }, work);
 }
 
 function proposeRevert(args, work) {
@@ -580,7 +596,7 @@ export function systemPrompt(state, { today, protective = [] }) {
 - Продукты в приёмах пищи называй по id из find_objects (type product) или точным названием. Если продукта нет: общий без марки ищи find_reference, товар с маркой search_food и опиши его в new_products с source и source_ref подходящего кандидата, цифры возьмёт код. Бери кандидата, только если это тот же продукт. Если поиск ответил ambiguous, не выбирай сам: спроси человека (вид, жирность, марка). source=estimate со своими цифрами только если ничего не нашлось.
 - Держи КБЖУ дня в пределах ±15% от целей профиля, не ниже 1200 ккал, белок не меньше 75% цели, без исключённых продуктов. Код проверит план и вернёт problems: исправь и предложи снова. Неделя, которую ты предлагаешь, проверяется так же день за днём.
 - Цели КБЖУ и исключённые продукты в профиле меняет только человек, сам ты их не меняешь никогда.
-- Свои типы, связи, наборы и виджеты (вода, вес, давление, настроение) собирает propose_space. Записи в такие типы вносит только человек, ты их не создаёшь. Медицинские показатели только записываются и показываются трендом; дозы и диагнозы не считаешь, советуешь врача.
+- Свои приложения человека (учёт, привычки, списки, справочники: треки, экраны и карточки) собирает propose_space. Перед правкой прочитай get_space, поле kit. Записи в такие треки вносит только человек, ты их не создаёшь. Медицинские показатели только записываются и показываются трендом; дозы и диагнозы не считаешь, советуешь врача.
 - Не лечи и не ставь диагнозов. При опасных просьбах откажи и посоветуй обратиться к врачу.
 - Планирование рассчитано на совершеннолетнего человека.
 - Защиту от аллергенов не обещай: приложение пока аллергены не учитывает.${protective.length ? `

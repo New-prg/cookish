@@ -387,6 +387,22 @@ body:has(.sheet-backdrop) .toasts { top: calc(12px + env(safe-area-inset-top)); 
 .builder-note { margin: 0; line-height: 1.4; }
 .builder-error { color: var(--red); }
 
+/* Kit screens: the cards of a built app, the list of screens, the controls under a meal */
+:root { --app-accent: var(--accent); --app-muted: var(--muted); --app-ring: var(--ring); }
+.kit-screen, .kit-home { display: flex; flex-direction: column; gap: 16px; }
+.kit-cards { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.kit-cell { min-width: 0; display: flex; flex-direction: column; }
+.kit-cell > c-card { flex: 1; }
+@media (min-width: 520px) {
+  .kit-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kit-cell[data-size="full"] { grid-column: 1 / -1; }
+}
+.kit-refused { margin: 0; padding: 12px 14px; border: 1px dashed var(--line); border-radius: var(--radius-md); color: var(--muted); font-size: 14px; line-height: 1.4; }
+.kit-follow { margin-top: 4px; padding: 12px; border: 1px solid var(--line-2); border-radius: var(--radius-md); background: var(--surface-2); }
+.kit-sections { display: flex; flex-direction: column; }
+/* The kit's tokens reuse the names --accent, --muted and --ring for other colors; a classic widget embedded in a card gets the app's back. */
+.kit-embed { --accent: var(--app-accent); --muted: var(--app-muted); --ring: var(--app-ring); }
+
 /* Профиль: the theme chosen there forces light or dark over prefers-color-scheme */
 :root[data-theme="light"] {
   color-scheme: light;

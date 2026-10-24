@@ -1,0 +1,25 @@
+{
+  "id": "veg",
+  "request": "К каждому приёму пищи хочу отмечать, были ли в нём овощи",
+  "reply": "Добавил отметку «Овощи были» к каждому приёму пищи из Рациона. Отметки за месяц видны на экране «Овощи».",
+  "tags": ["follow", "ration", "yesno", "marks", "table"],
+  "space": "demo",
+  "bundle": {
+    "v": 2,
+    "name": "Овощи в приёмах",
+    "tracks": [
+      {
+        "key": "veg", "name": "Овощи", "kind": "follow", "follows": "ration", "icon": "🥦",
+        "fields": [{ "key": "has", "name": "Овощи были", "type": "yesno" }]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "veg_today", "title": "Овощи сегодня", "body": [{ "el": "marks", "of": "veg" }] }
+      ] },
+      { "key": "veg", "name": "Овощи", "icon": "🥦", "cards": [
+        { "key": "veg_last", "title": "Отметки за месяц", "body": [{ "el": "table", "of": "veg", "columns": ["date", "slot", "has"], "limit": 10, "range": "@last30d" }] }
+      ] }
+    ]
+  }
+}

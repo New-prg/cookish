@@ -26,17 +26,33 @@ export function resolveDate(token, today) {
   return token;
 }
 
+const weekStartOf = (day) => shift(day, -((new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7));
+const monthStartOf = (day) => `${day.slice(0, 7)}-01`;
+const monthEndOf = (day) => new Date(Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)), 0)).toISOString().slice(0, 10);
+const shiftMonthOf = (day, n) => {
+  const d = new Date(`${monthStartOf(day)}T00:00:00Z`);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1)).toISOString().slice(0, 10);
+};
+
+// The one range resolver: queries, charts and the bundle validator all read
+// periods through it. «@last12w» runs from the Monday 11 weeks back and
+// «@last6m» from the first day of the month 5 months back, both to today; this
+// week and this month run to their end. A fixed date is a one-day range.
 export function resolveRange(token, today) {
-  const last = /^@last(\d+)d$/.exec(token || "");
-  if (last) return { from: shift(today, -(Number(last[1]) - 1)), to: today };
-  const next = /^@next(\d+)d$/.exec(token || "");
-  if (next) return { from: today, to: shift(today, Number(next[1]) - 1) };
-  if (token === "@thisWeek") {
-    const wd = (new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7;
-    return { from: shift(today, -wd), to: shift(today, 6 - wd) };
+  if (token && typeof token === "object" && token.from) return { from: resolveDate(token.from, today), to: resolveDate(token.to ?? token.from, today) };
+  const text = typeof token === "string" ? token : "";
+  const last = /^@last(\d+)(d|w|m)$/.exec(text);
+  if (last) {
+    const n = Number(last[1]);
+    if (last[2] === "d") return { from: shift(today, -(n - 1)), to: today };
+    if (last[2] === "w") return { from: shift(weekStartOf(today), -7 * (n - 1)), to: today };
+    return { from: shiftMonthOf(today, -(n - 1)), to: today };
   }
-  if (token === "@thisMonth") return { from: `${today.slice(0, 7)}-01`, to: `${today.slice(0, 7)}-31` };
-  if (token && typeof token === "object" && token.from) return { from: resolveDate(token.from, today), to: resolveDate(token.to, today) };
+  const next = /^@next(\d+)d$/.exec(text);
+  if (next) return { from: today, to: shift(today, Number(next[1]) - 1) };
+  if (text === "@thisWeek") return { from: weekStartOf(today), to: shift(weekStartOf(today), 6) };
+  if (text === "@thisMonth") return { from: monthStartOf(today), to: monthEndOf(today) };
+  if (text.startsWith("@") && !/^@(today|yesterday|tomorrow|[+-]\d+d)$/.test(text)) throw new Error(`неизвестный период ${text}`);
   const day = resolveDate(token, today);
   return { from: day, to: day };
 }

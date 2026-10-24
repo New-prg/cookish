@@ -1,7 +1,7 @@
 // Entry of objects.html: routes, the bottom navigation, the first run and
 // the render loop over the one store.
 import { ensureHome, store } from "./runtime.js";
-import { fill, h, icon, openSheet, toast } from "./dom.js";
+import { empty, fill, h, icon, openSheet, pageHeader, toast } from "./dom.js";
 import { homeScreen } from "./home.js";
 import { createSheet, libraryScreen, newTypeScreen, searchScreen } from "./library.js";
 import { setScreen } from "./setview.js";
@@ -10,6 +10,7 @@ import { rationScreen, sportScreen } from "./day.js";
 import { requestScreen } from "./request.js";
 import { profileScreen } from "./profile.js";
 import { assistantScreen } from "./assistant.js";
+import { mountScreen, screenInfo } from "../kit/screen.js";
 
 const LEGACY_KEY = "cookish.android.data.v1";
 // A calendar date: 2026-13-45 has the shape but is not a day.
@@ -28,7 +29,17 @@ const ROUTES = {
   assistant: { tab: "assistant", render: assistantScreen },
   ration: { tab: "home", render: (arg) => rationScreen(isDate(arg) ? arg : store.today()) },
   sport: { tab: "home", render: (arg) => sportScreen(isDate(arg) ? arg : store.today()) },
+  screen: { tab: "home", render: kitScreenPage },
 };
+
+// A screen a person built with the kit, opened from «Мои разделы» on the home.
+function kitScreenPage(key) {
+  const info = screenInfo(store.state(), key);
+  if (!info) return [pageHeader({ title: "Раздел", back: true }), empty("Такого раздела нет")];
+  const host = h("div", { class: "kit-screen" });
+  const { cards } = mountScreen(host, store, key);
+  return [pageHeader({ title: `${info.icon} ${info.name}`.trim(), back: true }), cards ? host : empty("На этом экране пока нет карточек")];
+}
 
 // A route that does not parse (a broken % escape, an unknown name) is home.
 function parseRoute() {

@@ -144,6 +144,15 @@ export function validateRelation(state, def) {
   return problems;
 }
 
+// A definition may replace an earlier custom one only when both belong to the
+// same kit track: a model that reuses a key must not rewrite someone else's type.
+function takenKey(existing, def, what) {
+  if (!existing || existing.system) return null;
+  const track = def.kit?.track;
+  if (track && existing.kit?.track === track) return null;
+  return `ключ «${def.key}» уже занят ${what} «${existing.name}», возьмите другой ключ`;
+}
+
 const slug = (name) => {
   const map = { а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "c", ч: "ch", ш: "sh", щ: "sch", ы: "y", э: "e", ю: "yu", я: "ya" };
   const s = String(name || "").toLowerCase().split("").map((c) => map[c] ?? (/[a-z0-9]/.test(c) ? c : "_")).join("").replace(/_+/g, "_").replace(/^_|_$/g, "");
@@ -209,6 +218,8 @@ export function openObjectStore({ storage = null, key = STORAGE_KEY, clock = () 
           const def = { format: "text", ...op.relation, system: false };
           def.key = def.key || `r_${slug(def.name)}`;
           const p = validateRelation(draft, def);
+          const taken = takenKey(draft.relations[def.key], def, "связью");
+          if (taken) p.push(taken);
           if (p.length) { problems.push(...p.map((m) => `связь «${def.name}»: ${m}`)); break; }
           if (!(def.key in schemaBefore.relations)) schemaBefore.relations[def.key] = state.relations[def.key] || null;
           draft.relations[def.key] = freeze(def);
@@ -220,6 +231,8 @@ export function openObjectStore({ storage = null, key = STORAGE_KEY, clock = () 
           def.key = def.key || `t_${slug(def.name)}`;
           def.plural = def.plural || def.name;
           const p = validateType(draft, def);
+          const taken = takenKey(draft.types[def.key], def, "типом");
+          if (taken) p.push(taken);
           if (p.length) { problems.push(...p.map((m) => `тип «${def.name}»: ${m}`)); break; }
           if (!(def.key in schemaBefore.types)) schemaBefore.types[def.key] = state.types[def.key] || null;
           draft.types[def.key] = freeze(def);
@@ -236,6 +249,10 @@ export function openObjectStore({ storage = null, key = STORAGE_KEY, clock = () 
             if (prev) draft.objects[id] = { ...prev, updatedAt: now, updatedBy: actor };
             else delete draft.objects[id];
           }
+          // A type made by this change may have gained entries since; removing it
+          // would leave them with no type.
+          const orphaned = Object.entries(set.schema?.types || {}).find(([key, prev]) => !prev && state.types[key] && Object.values(draft.objects).some((obj) => obj.type === key));
+          if (orphaned) { fail(`в треке «${state.types[orphaned[0]].name}» уже есть записи, откатить нельзя; уберите трек через remove, записи сохранятся`); break; }
           // An object made by this change may have gained marks or purchases
           // since; removing it would leave them pointing at nothing.
           const removed = new Set(Object.entries(set.before).filter(([, prev]) => !prev).map(([id]) => id));

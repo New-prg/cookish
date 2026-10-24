@@ -1,0 +1,22 @@
+{
+  "id": "dry",
+  "request": "Без алкоголя в будни. Хочу отмечать только срывы и видеть серию дней без них",
+  "reply": "Собрал «Без алкоголя»: день считается удачным, пока вы не нажали «Сорвался». Серия показывает текущую, лучшую и последние тридцать дней.",
+  "tags": ["habit", "avoid", "streak", "marks", "schedule"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Без алкоголя",
+    "tracks": [
+      {
+        "key": "dry", "name": "Без алкоголя", "kind": "habit", "avoid": true, "icon": "🚫",
+        "items": [{ "name": "Не пью алкоголь", "every": "weekdays" }]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "dry_today", "title": "Без алкоголя", "body": [{ "el": "marks", "of": "dry" }, { "el": "streak", "of": "dry" }] }
+      ] }
+    ]
+  }
+}

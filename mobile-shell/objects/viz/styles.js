@@ -127,6 +127,44 @@ c-table .viz-table tbody th, c-table .viz-table td { height: 44px; }
 .viz-empty-text { min-width: 0; overflow-wrap: anywhere; }
 c-empty { padding: 0; }
 :is(c-dashboard, c-grid, section) > c-empty { padding: 0; background: transparent; border: 0; }
+c-quick, c-form, c-marks, c-streak, c-embed { display: block; min-width: 0; font-family: var(--font-sans); color: var(--card-foreground); -webkit-text-size-adjust: 100%; }
+.kit-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.kit-btn { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 44px; min-height: 44px; padding: 0 16px; border: 1px solid var(--input); border-radius: 12px; background: var(--card); color: var(--foreground); font: 600 16px/1.2 var(--font-sans); text-align: center; cursor: pointer; touch-action: manipulation; }
+.kit-btn.is-primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+.kit-btn.is-quiet { border-color: transparent; background: transparent; color: var(--accent-foreground); }
+.kit-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--primary); color: var(--accent-foreground); }
+.kit-btn:disabled { opacity: 0.45; cursor: default; }
+.kit-btn:focus-visible, .kit-input:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.kit-buttons, .kit-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.kit-buttons > .kit-btn:not(.is-quiet) { flex: 1 1 96px; }
+.kit-input { box-sizing: border-box; width: 100%; min-width: 64px; min-height: 44px; padding: 10px 12px; border: 1px solid var(--input); border-radius: 10px; background: var(--card); color: var(--foreground); font: 16px/1.3 var(--font-sans); }
+.kit-with-unit { display: flex; align-items: center; gap: 8px; }
+.kit-unit { flex: none; font-size: 15px; color: var(--muted-foreground); white-space: nowrap; }
+.kit-form, .kit-fields, .kit-stack, .kit-more { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.kit-stack, .kit-more { gap: 8px; align-items: flex-start; }
+.kit-stack { align-items: stretch; }
+.kit-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.kit-label { font-size: 14px; font-weight: 600; color: var(--muted-foreground); }
+.kit-hint, .kit-caption { margin: 0; font-size: 13px; line-height: 1.35; color: var(--muted-foreground); }
+.kit-caption:empty { display: none; }
+.kit-error { margin: 0; font-size: 14px; line-height: 1.35; color: var(--destructive); }
+.kit-marks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.kit-mark { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--border); min-width: 0; }
+.kit-mark:first-child { padding-top: 0; border-top: 0; }
+.kit-mark:last-child { padding-bottom: 0; }
+.kit-mark-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.kit-mark-name { font-size: 16px; font-weight: 600; color: var(--foreground); overflow-wrap: anywhere; }
+.kit-mark-sub { flex: none; font-size: 14px; color: var(--muted-foreground); }
+.kit-ask { padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--muted); }
+.kit-add { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.kit-add > .kit-input, .kit-add.kit-form { align-items: stretch; }
+.kit-streak { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; }
+.kit-streak-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.kit-streak-value { white-space: nowrap; }
+.kit-streak-value { font-size: 28px; line-height: 1.1; font-weight: 650; letter-spacing: -0.02em; color: var(--foreground); }
+.kit-streak-cell.is-main .kit-streak-value { font-size: 36px; }
+.kit-streak-caption { font-size: 13px; line-height: 1.3; color: var(--muted-foreground); }
+.kit-embed { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 @media (prefers-reduced-motion: reduce) { .viz-fill, .viz-mark { transition: none; } }
 `;
 

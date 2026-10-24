@@ -67,7 +67,7 @@ export function emptyBox(text, { error = false } = {}) {
   return h("div", { class: `viz-empty${error ? " is-error" : ""}`, role: error ? "alert" : "status" }, glyph(error ? "warn" : "empty", 20), h("span", { class: "viz-empty-text", text }));
 }
 
-export const ATTRS = ["title", "data-title", "caption", "set", "value", "fn", "range", "by", "category", "goal", "date", "unit", "stack", "area", "compare", "spark", "good", "goal-type", "columns", "limit", "sort", "order", "cols"];
+export const ATTRS = ["title", "data-title", "caption", "set", "of", "where", "value", "fn", "range", "by", "category", "goal", "date", "unit", "stack", "area", "compare", "spark", "good", "goal-type", "columns", "limit", "sort", "order", "cols"];
 
 export class VizElement extends HTMLElement {
   static get observedAttributes() { return ATTRS; }
@@ -130,7 +130,7 @@ export class VizElement extends HTMLElement {
 
   resolve() {
     if (this._data !== undefined) return this._data;
-    if (!this.hasAttribute("set")) return null;
+    if (!this.hasAttribute("set") && !this.hasAttribute("of")) return null;
     const source = getDataSource();
     return source ? source(this.spec()) : null;
   }

@@ -1,0 +1,17 @@
+{
+  "id": "carbs",
+  "request": "Покажи, сколько углеводов я ем по дням за последний месяц и сколько в среднем за неделю",
+  "reply": "Добавил экран «Углеводы»: линия по дням за месяц и среднее за неделю. Данные берутся из Рациона, вводить ничего не нужно.",
+  "tags": ["source", "ration", "line", "stat", "screen"],
+  "space": "demo",
+  "bundle": {
+    "v": 2,
+    "name": "Углеводы",
+    "screens": [
+      { "key": "carbs", "name": "Углеводы", "icon": "🍚", "cards": [
+        { "key": "carbs_month", "title": "Углеводы по дням", "caption": "Граммы за день, последние 30 дней", "body": [{ "el": "line", "of": "ration", "value": "carbs", "range": "@last30d" }] },
+        { "key": "carbs_avg", "title": "В среднем за неделю", "body": [{ "el": "stat", "of": "ration", "value": "carbs", "fn": "avg", "range": "@last7d", "compare": true }] }
+      ] }
+    ]
+  }
+}

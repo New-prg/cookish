@@ -145,6 +145,46 @@ export function toast(message, { undo = null, error = false } = {}) {
   toastTimer = setTimeout(() => node.remove(), undo ? 7000 : 4000);
 }
 
+// Every write of the page, from a button or a kit screen. A batch that touches the
+// plan comes back with a change set whose revert undoes all of it, facts included;
+// a batch of facts alone is not journaled, so its undo is built here from the state
+// before. The result is store.apply's; a refusal is shown as an error toast.
+export function applyUndoable(store, ops, { summary = "", quiet = false } = {}) {
+  const list = Array.isArray(ops) ? ops : [ops];
+  const before = store.state();
+  const result = store.apply(list, { actor: "human", summary });
+  if (!result.ok) {
+    toast(result.reason, { error: true });
+    return result;
+  }
+  const touched = new Set([...result.ids, ...list.filter((op) => op.op !== "create" && op.id).map((op) => op.id)]);
+  const undo = result.changeSetId ? [{ op: "revert", changeSetId: result.changeSetId }] : factUndoOps(before, store.state(), touched);
+  if (!quiet && undo.length) {
+    toast(summary || "Сохранено", {
+      undo: () => {
+        const back = store.apply(undo, { actor: "human", summary: `Отмена: ${summary}` });
+        toast(back.ok ? "Отменено" : back.reason, { error: !back.ok });
+      },
+    });
+  }
+  return result;
+}
+
+function factUndoOps(before, after, ids) {
+  const ops = [];
+  for (const id of ids) {
+    const was = before.objects[id];
+    const now = after.objects[id];
+    if (!now || !after.types[now.type]?.fact) continue;
+    if (!was) { ops.push({ op: "archive", id }); continue; }
+    if (now.archivedAt && !was.archivedAt) ops.push({ op: "restore", id });
+    const keys = new Set([...Object.keys(was.props || {}), ...Object.keys(now.props || {})]);
+    ops.push({ op: "update", id, name: was.name, props: Object.fromEntries([...keys].map((k) => [k, was.props?.[k] ?? null])) });
+    if (was.archivedAt && !now.archivedAt) ops.push({ op: "archive", id });
+  }
+  return ops;
+}
+
 export function field(label, control, hint) {
   return h("label", { class: "field" }, h("span", { class: "field-label", text: label }), control, hint ? h("span", { class: "field-hint", text: hint }) : null);
 }

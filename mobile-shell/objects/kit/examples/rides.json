@@ -1,0 +1,39 @@
+{
+  "id": "rides",
+  "request": "Заведи мои веломаршруты: Набережная, Лесной круг и Дамба. Записывай, по какому катался и сколько минут. Хочу видеть минуты отдельно по Дамбе",
+  "reply": "Собрал справочник маршрутов и журнал поездок. Маршрут выбирается из списка, а на экране есть минуты только по Дамбе.",
+  "tags": ["catalog", "log", "link", "where", "form", "stat", "list"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Велопоездки",
+    "tracks": [
+      {
+        "key": "routes", "name": "Маршруты", "kind": "catalog", "icon": "🗺",
+        "fields": [{ "key": "km", "name": "Длина", "type": "number", "unit": "км", "min": 1, "max": 500 }],
+        "items": [
+          { "key": "naberezhnaya", "name": "Набережная", "plan": { "km": 18 } },
+          { "key": "lesnoy", "name": "Лесной круг", "plan": { "km": 27 } },
+          { "key": "damba", "name": "Дамба", "plan": { "km": 40 } }
+        ]
+      },
+      {
+        "key": "rides", "name": "Поездки", "kind": "log", "icon": "🚴",
+        "fields": [
+          { "key": "route", "name": "Маршрут", "type": "link", "to": "routes", "required": true },
+          { "key": "mins", "name": "Время", "type": "number", "unit": "мин", "min": 1, "max": 600 }
+        ]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "rides_add", "title": "Поездка", "body": [{ "el": "form", "of": "rides", "fields": ["route", "mins"] }] }
+      ] },
+      { "key": "rides", "name": "Поездки", "icon": "🚴", "cards": [
+        { "key": "rides_damba", "title": "Минуты на Дамбе за месяц", "body": [{ "el": "stat", "of": "rides", "value": "mins", "fn": "sum", "range": "@last30d", "where": { "route": "damba" } }] },
+        { "key": "rides_last", "title": "Последние поездки", "body": [{ "el": "list", "of": "rides", "columns": ["date", "route", "mins"], "limit": 6, "range": "@last30d" }] },
+        { "key": "rides_routes", "title": "Маршруты", "body": [{ "el": "list", "of": "routes", "columns": ["name", "km"], "limit": 10 }] }
+      ] }
+    ]
+  }
+}

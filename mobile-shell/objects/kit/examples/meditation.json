@@ -1,0 +1,30 @@
+{
+  "id": "meditation",
+  "request": "Медитирую по утрам, хочу хотя бы пять раз в неделю. После медитации оценка спокойствия от 1 до 5",
+  "reply": "Собрал «Медитацию»: утренняя отметка и серия на главной, при отметке спрашиваю спокойствие, на экране календарь и линия спокойствия.",
+  "tags": ["habit", "quota", "scale", "marks", "streak", "heatmap", "line"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Медитация",
+    "tracks": [
+      {
+        "key": "meditate", "name": "Медитация", "kind": "habit", "icon": "🧘",
+        "times": 5, "per": "week",
+        "fields": [
+          { "key": "calm", "name": "Спокойствие", "type": "scale", "min": 1, "max": 5, "labels": ["тревожно", "", "нормально", "", "спокойно"], "on": ["done"] }
+        ],
+        "items": [{ "name": "Медитация", "every": "day", "at": "morning" }]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "meditate_today", "title": "Медитация", "body": [{ "el": "marks", "of": "meditate" }, { "el": "streak", "of": "meditate" }] }
+      ] },
+      { "key": "meditate", "name": "Медитация", "icon": "🧘", "cards": [
+        { "key": "meditate_calendar", "title": "Календарь", "caption": "Темнее, когда неделя выполнена", "body": [{ "el": "heatmap", "of": "meditate", "value": "rate", "range": "@last12w" }] },
+        { "key": "meditate_calm", "title": "Спокойствие", "body": [{ "el": "line", "of": "meditate", "value": "calm", "fn": "avg", "range": "@last30d" }] }
+      ] }
+    ]
+  }
+}

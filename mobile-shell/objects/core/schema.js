@@ -19,6 +19,7 @@ const rel = (key, name, format, extra = {}) => Object.freeze({ key, name, format
 const MEAL_STATES = [opt("unmarked", "не отмечено", "grey"), opt("eaten", "съедено", "green"), opt("changed", "изменено", "amber"), opt("skipped", "не съедено", "red")];
 const SESSION_STATES = [opt("unmarked", "не отмечено", "grey"), opt("done", "выполнено", "green"), opt("changed", "изменено", "amber"), opt("skipped", "пропущено", "red")];
 const UNITS = [opt("г", "г"), opt("мл", "мл"), opt("кг", "кг"), opt("л", "л"), opt("шт.", "шт."), opt("уп.", "уп.")];
+const KIT_STATES = [opt("done", "сделано", "green"), opt("changed", "изменено", "amber"), opt("skipped", "пропущено", "red")];
 const SPORT_KINDS = [opt("strength", "Силовая"), opt("run", "Бег"), opt("swim", "Плавание"), opt("bike", "Велосипед"), opt("walk", "Ходьба"), opt("yoga", "Йога"), opt("other", "Другое")];
 const INTENSITIES = [opt("low", "низкая"), opt("medium", "средняя"), opt("high", "высокая")];
 
@@ -115,6 +116,25 @@ export const BUILTIN_RELATIONS = Object.freeze([
   rel("view", "Вид", "json", { hidden: true }),
   rel("widgets", "Виджеты", "json", { hidden: true }),
   rel("goalValue", "Цель", "number", { min: 0 }),
+
+  // Конструктор (kit): пункты треков, экраны, карточки и отметки треков. Скрыты
+  // из библиотеки; пункты, экраны и карточки пишет `kit/lower.js`, отметки человек.
+  rel("kit_track", "Трек", "text", { hidden: true }),
+  rel("kit_key", "Ключ", "text", { hidden: true }),
+  rel("kit_every", "Повтор", "text", { hidden: true }),
+  rel("kit_at", "Время суток", "text", { hidden: true }),
+  rel("kit_slot", "Слот приёма", "text", { hidden: true }),
+  rel("kit_app", "Приложение", "text", { hidden: true }),
+  rel("kit_icon", "Значок", "text", { hidden: true }),
+  rel("kit_from", "С", "date", { hidden: true }),
+  rel("kit_until", "До", "date", { hidden: true }),
+  rel("kit_plan", "План пункта", "json", { hidden: true }),
+  rel("kit_body", "Содержимое карточки", "json", { hidden: true }),
+  rel("kit_item", "Пункт", "object", { hidden: true, types: ["track_item"] }),
+  rel("kit_state", "Отметка", "select", { hidden: true, options: KIT_STATES }),
+  rel("kit_screen", "Экран", "object", { hidden: true, types: ["kit_screen"] }),
+  rel("kit_size", "Размер", "select", { hidden: true, options: [opt("full", "во всю ширину"), opt("half", "половина")] }),
+  rel("kit_order", "Порядок", "number", { hidden: true }),
 ]);
 
 const type = (key, name, plural, icon, relations, extra = {}) => Object.freeze({ key, name, plural, icon, relations, layout: "basic", system: true, ...extra });
@@ -137,6 +157,9 @@ export const BUILTIN_TYPES = Object.freeze([
   type("set", "Набор", "Наборы", "🗂", ["description", "query", "view"], { area: "system", layout: "set" }),
   type("dashboard", "Панель", "Панели", "🏠", ["description", "widgets"], { area: "system", layout: "dashboard" }),
   type("note", "Заметка", "Заметки", "📝", ["description", "tags"], { area: "custom", layout: "note" }),
+  type("track_item", "Пункт трека", "Пункты треков", "▫", ["kit_track", "kit_key", "kit_every", "kit_at", "kit_from", "kit_until", "kit_plan"], { area: "system", hidden: true }),
+  type("kit_screen", "Экран", "Экраны", "🧩", ["kit_key", "kit_order", "kit_icon", "kit_app"], { area: "system", hidden: true }),
+  type("kit_card", "Карточка", "Карточки", "🪟", ["description", "kit_key", "kit_screen", "kit_size", "kit_order", "kit_app", "kit_body"], { area: "system", hidden: true }),
 ]);
 
 export function builtinSchema() {

@@ -6,6 +6,7 @@ import { profileOf } from "../core/values.js";
 import { act, hrefFor, local, nameOf, rerender, store } from "./runtime.js";
 import { fill, empty, field, h, icon, num, openSheet, pageHeader, progressBar, relativeDay, segmented, shiftDate, toast } from "./dom.js";
 import { parseNumber, pickObject } from "./editors.js";
+import { followControls } from "../kit/screen.js";
 
 const MEAL_CONTROL = [{ id: "eaten", name: "съедено", color: "green" }, { id: "changed", name: "изменено", color: "amber" }, { id: "skipped", name: "не съедено", color: "red" }];
 const SESSION_CONTROL = [{ id: "done", name: "выполнено", color: "green" }, { id: "changed", name: "изменено", color: "amber" }, { id: "skipped", name: "пропущено", color: "red" }];
@@ -71,6 +72,7 @@ function mealCard(state, date, mealId, mark, { compact, editing, future }) {
         : h("span", { class: "portion-amount", text: `${num(p.props?.amount)} ${p.props?.unit || ""}` }),
     )));
   const discrepancies = (mark?.discrepancies || []).map((id) => state.objects[id]).filter(Boolean);
+  const follow = compact || editing || future ? null : followControls(store, "ration", date, mark?.slot ?? meal.props?.slot ?? meal.id);
   return h("article", { class: `meal state-${mealState}`, "data-meal": nameOf(meal) },
     head,
     items,
@@ -84,6 +86,7 @@ function mealCard(state, date, mealId, mark, { compact, editing, future }) {
         }, { label: `Как прошёл приём «${nameOf(meal)}»`, allowClear: true }),
         compact ? null : h("button", { class: "btn btn-quiet btn-small", onclick: () => discrepancySheet(date, meal, portions) }, "Расхождение"),
       ),
+    follow,
   );
 }
 
@@ -212,7 +215,7 @@ export function sportDayBody(state, date, c, { compact = false } = {}) {
   if (!day.sessions.length && !day.activities.length) return [header, empty(compact ? "Сегодня тренировок нет" : "Тренировок нет")];
   return [
     header,
-    h("div", { class: "meals" }, day.sessions.map((s) => sessionCard(state, date, s, { future }))),
+    h("div", { class: "meals" }, day.sessions.map((s) => sessionCard(state, date, s, { future, compact }))),
     day.activities.length ? h("div", { class: "list" }, day.activities.map((id) => state.objects[id]).filter(Boolean).map((a) => h("a", { class: "row", href: hrefFor(a) },
       h("span", { class: "row-icon", text: "⚡" }),
       h("span", { class: "row-main" }, h("span", { class: "row-title", text: nameOf(a) }), h("span", { class: "row-sub", text: [a.props?.time, a.props?.duration ? `${a.props.duration} мин` : "", optionName(state, "intensity", a.props?.intensity)].filter(Boolean).join(" · ") })),
@@ -220,11 +223,12 @@ export function sportDayBody(state, date, c, { compact = false } = {}) {
   ];
 }
 
-function sessionCard(state, date, s, { future }) {
+function sessionCard(state, date, s, { future, compact }) {
   const session = state.objects[s.sessionId];
   if (!session) return null;
   const p = session.props || {};
   const title = nameOf(session) || optionName(state, "kind", p.kind);
+  const follow = compact || future ? null : followControls(store, "sport", date, s.slot);
   return h("article", { class: `meal state-${s.state || "unmarked"}`, "data-session": title },
     h("div", { class: "meal-head" },
       h("span", { class: "meal-time", text: p.time || "" }),
@@ -236,6 +240,7 @@ function sessionCard(state, date, s, { future }) {
       if (next === "changed") { changedSessionSheet(date, session); return; }
       act(markSessionOps(store.state(), date, session.id, next || "unmarked"), { summary: `${title}: ${next ? SESSION_CONTROL.find((o) => o.id === next).name : "не отмечено"}` });
     }, { label: `Как прошла тренировка «${title}»`, allowClear: true })),
+    follow,
   );
 }
 

@@ -1,0 +1,28 @@
+{
+  "id": "lastmeal",
+  "request": "Хочу записывать, во сколько был последний приём пищи вечером, и коротко, как себя чувствовал",
+  "reply": "Собрал «Поздний ужин»: форма со временем и заметкой на главной, на экране последние записи.",
+  "tags": ["log", "form", "time", "text", "list"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Поздний ужин",
+    "tracks": [
+      {
+        "key": "lastmeal", "name": "Поздний ужин", "kind": "log", "icon": "🌙",
+        "fields": [
+          { "key": "ate_at", "name": "Во сколько", "type": "time", "required": true },
+          { "key": "feel", "name": "Самочувствие", "type": "text" }
+        ]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "lastmeal_add", "title": "Последний приём пищи", "body": [{ "el": "form", "of": "lastmeal", "fields": ["ate_at", "feel"] }] }
+      ] },
+      { "key": "lastmeal", "name": "Поздний ужин", "icon": "🌙", "cards": [
+        { "key": "lastmeal_last", "title": "Последние записи", "body": [{ "el": "list", "of": "lastmeal", "columns": ["date", "ate_at", "feel"], "limit": 10, "range": "@last30d" }] }
+      ] }
+    ]
+  }
+}

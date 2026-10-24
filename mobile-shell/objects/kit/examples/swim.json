@@ -1,0 +1,31 @@
+{
+  "id": "swim",
+  "request": "Плаваю в бассейне: сколько длин проплыл и какой длины бассейн. Хочу видеть километры и цель 3 км в неделю",
+  "reply": "Собрал «Бассейн»: на главной форма заплыва, на экране «Бассейн» километры недели к цели, километры по неделям и последние заплывы.",
+  "tags": ["log", "calc", "goal", "form", "meter", "bars", "table", "number"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Бассейн",
+    "tracks": [
+      {
+        "key": "swim", "name": "Бассейн", "kind": "log", "icon": "🏊",
+        "fields": [
+          { "key": "laps", "name": "Длин", "type": "number", "min": 1, "max": 200 },
+          { "key": "pool", "name": "Длина бассейна", "type": "number", "unit": "м", "min": 10, "max": 100 },
+          { "key": "km", "name": "Проплыто", "type": "calc", "calc": "laps * pool / 1000", "unit": "км", "goal": 3, "goalPer": "week" }
+        ]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "swim_add", "title": "Заплыв", "body": [{ "el": "form", "of": "swim", "fields": ["laps", "pool"] }] }
+      ] },
+      { "key": "swim", "name": "Бассейн", "icon": "🏊", "cards": [
+        { "key": "swim_week", "title": "Километры за неделю", "body": [{ "el": "meter", "of": "swim", "value": "km", "fn": "sum" }] },
+        { "key": "swim_trend", "title": "Километры по неделям", "body": [{ "el": "bars", "of": "swim", "value": "km", "fn": "sum", "by": "week", "range": "@last12w" }] },
+        { "key": "swim_last", "title": "Последние заплывы", "body": [{ "el": "table", "of": "swim", "columns": ["date", "laps", "pool", "km"], "limit": 6, "range": "@last30d" }] }
+      ] }
+    ]
+  }
+}

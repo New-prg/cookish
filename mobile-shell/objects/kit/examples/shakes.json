@@ -1,0 +1,29 @@
+{
+  "id": "shakes",
+  "request": "Пью протеиновые коктейли и хочу не больше двух порций в день. Ещё отмечать вкус",
+  "reply": "Собрал «Коктейли»: на главной шкала порций до предела, кнопка «+1 порция» и форма с вкусом.",
+  "tags": ["log", "quick", "choice", "goal", "goalmax", "meter", "number"],
+  "space": "empty",
+  "bundle": {
+    "v": 2,
+    "name": "Коктейли",
+    "tracks": [
+      {
+        "key": "shakes", "name": "Коктейли", "kind": "log", "icon": "🥤",
+        "fields": [
+          { "key": "portions", "name": "Порций", "type": "number", "unit": "порц.", "min": 1, "max": 10, "goal": 2, "goalType": "max", "goalPer": "day" },
+          { "key": "flavor", "name": "Вкус", "type": "choice", "options": ["шоколад", "ваниль", "ягоды"] }
+        ]
+      }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "shakes_today", "title": "Коктейли сегодня", "body": [
+          { "el": "meter", "of": "shakes", "value": "portions" },
+          { "el": "quick", "of": "shakes", "values": { "portions": 1 }, "label": "+1 порция" },
+          { "el": "form", "of": "shakes", "fields": ["portions", "flavor"] }
+        ] }
+      ] }
+    ]
+  }
+}

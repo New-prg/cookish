@@ -1,8 +1,10 @@
 // Pure helpers of the chart kit: calendar keys, ranges and week/month buckets,
 // Russian number and date formats, axis ticks and the shape of series data.
-// No DOM and no imports, so it runs in node, in the page and in the single-file
-// gallery. Dates are calendar keys (ГГГГ-ММ-ДД) and are computed in UTC, so a key
-// never shifts with the device time zone. Weeks start on Monday.
+// No DOM, so it runs in node and in the page. Dates are calendar keys
+// (ГГГГ-ММ-ДД) and are computed in UTC, so a key never shifts with the device
+// time zone. Weeks start on Monday. The single-file gallery strips the import
+// below; nothing it draws resolves a range.
+import { resolveRange } from "../core/query.js";
 
 const DAY = 86400000;
 const stamp = (key) => Date.parse(`${key}T00:00:00Z`);
@@ -40,20 +42,11 @@ export function rangeProblem(token) {
   return null;
 }
 
-// {from, to} of a range token. Weeks and months run to their end, so a chart of
-// «эта неделя» shows the days still to come as empty; the others end today.
-export function resolveRange(token, today) {
-  const m = RANGE_PATTERN.exec(token || "");
-  if (!m) throw new Error(`неизвестный период ${token}`);
-  if (m[1] === "today") return { from: today, to: today };
-  if (m[1] === "yesterday") return { from: shiftDate(today, -1), to: shiftDate(today, -1) };
-  if (m[1] === "thisWeek") return { from: weekStart(today), to: shiftDate(weekStart(today), 6) };
-  if (m[1] === "thisMonth") return { from: monthStart(today), to: monthEnd(today) };
-  const n = Number(m[2]);
-  if (m[3] === "d") return { from: shiftDate(today, -(n - 1)), to: today };
-  if (m[3] === "w") return { from: shiftDate(weekStart(today), -7 * (n - 1)), to: today };
-  return { from: shiftMonth(today, -(n - 1)), to: today };
-}
+// {from, to} of a range token: the one resolver of core/query.js, so queries,
+// charts and the validator read a period the same way. Weeks and months run to
+// their end, so a chart of «эта неделя» shows the days still to come as empty;
+// the others end today.
+export { resolveRange };
 
 // The range right before: same length, so a stat can say «+12 % к прошлой неделе».
 // A period still running is compared with the same number of days of the last one.

@@ -10,12 +10,13 @@
 // the element or attribute ("c-card[1] > c-bars[0]@fn"), `rule` is a short id, `message`
 // is a Russian sentence a model can act on, `allowed` lists the legal values when the rule has them.
 // `messages` is the same list as plain strings.
+import { LIMITS as KIT_LIMITS, componentsForMarkup } from "../kit/catalogue.js";
 import {
   BY, KCAL_GOAL_FLOOR, bucketsOf, dateRelationOf, isEnergyIntake, isNumericRelation, rangeProblem, resolveRange,
 } from "./util.js";
 
 export const VERSION = "1";
-export const LIMITS = Object.freeze({ elements: 16, depth: 2, text: 200, source: 6000, columns: 5, rows: 50, bars: 60, points: 400, heatmapWeeks: 27 });
+export const LIMITS = Object.freeze({ elements: 16, depth: 2, text: 200, source: 6000, columns: 5, rows: 50, bars: 60, points: 400, heatmapWeeks: 27, cardSource: 2400 });
 
 const FN = ["sum", "avg", "min", "max", "count"];
 const BOOL = { type: "bool" };
@@ -81,6 +82,33 @@ export const COMPONENTS = Object.freeze({
 });
 
 export const TAGS = Object.freeze(Object.keys(COMPONENTS));
+
+// The vocabulary of one kit card: <c-card> as the root, bound by `of` (a track key
+// or a classic source) instead of `set`. COMPONENTS above stays the vocabulary of
+// the older <c-dashboard> panels, so panels that exist keep validating as before.
+// validateMarkup(src, { kit: true }) selects this table. The elements come from
+// kit/catalogue.js; what the catalogue types as plain text but has a shape (`of`,
+// `where`, `values`, the fields of a form) is tightened here.
+const KIT_CARD_CHILDREN = ["p", "c-stat", "c-meter", "c-bars", "c-line", "c-spark", "c-heatmap", "c-table", "c-list", "c-empty", "c-quick", "c-form", "c-marks", "c-streak", "c-embed"];
+const TRACK = { type: "track" };
+
+function kitComponents() {
+  const out = { "c-card": { doc: "Карточка: один блок экрана с заголовком title и необязательной подписью caption. Внутри от 1 до 4 элементов.", attrs: { title: TITLE, caption: { type: "text", max: KIT_LIMITS.caption } }, children: KIT_CARD_CHILDREN }, p: COMPONENTS.p, "c-empty": COMPONENTS["c-empty"] };
+  for (const [tag, spec] of Object.entries(componentsForMarkup())) {
+    if (spec.text) continue;
+    const attrs = { ...spec.attrs };
+    if (attrs.of) attrs.of = TRACK;
+    if (attrs.where) attrs.where = { type: "pairs", max: KIT_LIMITS.where, example: "exercise=bench" };
+    if (attrs.values) attrs.values = { type: "pairs", max: KIT_LIMITS.values, example: "ml=250" };
+    if (attrs.fields && attrs.of) attrs.fields = { type: "keys", max: KIT_LIMITS.fields };
+    // every kit element, input or display, goes through checkKitBound
+    out[tag] = { ...spec, attrs, bound: true, children: [], required: spec.kit.required };
+  }
+  return Object.freeze(out);
+}
+
+export const KIT_COMPONENTS = kitComponents();
+export const KIT_TAGS = Object.freeze(Object.keys(KIT_COMPONENTS));
 const NUMERIC_ATTRS = new Set(["goal", "limit"]);
 
 // -- parser ---------------------------------------------------------------------
@@ -88,6 +116,7 @@ const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
 const decode = (text) => text.replace(/&(amp|lt|gt|quot|apos|nbsp|#39);/g, (_, name) => ENTITIES[name]);
 const escapeText = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const escapeAttr = (text) => escapeText(text).replace(/"/g, "&quot;");
+export { escapeAttr, escapeText };
 const RAW_TEXT = new Set(["script", "style", "textarea", "title", "iframe", "noscript"]);
 
 // Parses markup into { nodes, problems }. Problems are { rule, message, fixable, pos }.
@@ -236,7 +265,7 @@ const FALSE_WORDS = new Set(["false", "no", "нет", "0", "off"]);
 
 // Fixes slips that have exactly one reading: letter case, spaces, quotes, aliases.
 // Anything else is left for the validator. Returns the markup and what changed.
-export function normalizeMarkup(src) {
+export function normalizeMarkup(src, vocab = COMPONENTS) {
   const changes = [];
   if (typeof src !== "string") return { markup: "", changes };
   const { nodes, problems } = parseMarkup(src);
@@ -246,12 +275,12 @@ export function normalizeMarkup(src) {
   const visit = (node) => {
     if (node.type !== "el") return;
     if (node.rawTag !== node.tag) note(`Имя тега <${node.rawTag}> приведено к нижнему регистру.`);
-    const spec = COMPONENTS[node.tag];
+    const spec = vocab[node.tag];
     const kept = [];
     for (const attr of node.attrList) {
       let { name } = attr;
       if (attr.rawName !== name) note(`Имя атрибута «${attr.rawName}» приведено к нижнему регистру.`);
-      if (name === "label" && spec?.attrs.title && !("title" in spec.attrs && node.attrList.some((a) => a.name === "title"))) { name = "title"; note("Атрибут label переименован в title."); }
+      if (name === "label" && spec?.attrs.title && !spec.attrs.label && !("title" in spec.attrs && node.attrList.some((a) => a.name === "title"))) { name = "title"; note("Атрибут label переименован в title."); }
       let value = attr.value.trim();
       if (value !== attr.value) note(`Лишние пробелы вокруг значения «${name}» убраны.`);
       const type = spec?.attrs[name];
@@ -321,8 +350,16 @@ function valueProblem(name, spec, value) {
       return /^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(value) ? null : { rule: "bad-value", message: `Атрибут «${name}» должен быть ключом связи из структуры (латиница, цифры, _).` };
     case "keys": {
       const keys = value.split(",").map((s) => s.trim());
-      if (keys.length > LIMITS.columns) return { rule: "bad-value", message: `Атрибут «${name}»: не больше ${LIMITS.columns} связей.` };
+      const max = spec.max ?? LIMITS.columns;
+      if (keys.length > max) return { rule: "bad-value", message: `Атрибут «${name}»: не больше ${max} связей.` };
       return keys.every((k) => /^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(k)) ? null : { rule: "bad-value", message: `Атрибут «${name}» — ключи связей через запятую, например columns="date,price".` };
+    }
+    case "track":
+      return /^[a-z][a-z0-9_]{1,19}$/.test(value) ? null : { rule: "bad-value", message: `Атрибут «${name}» называет трек по ключу из структуры или раздел ration, sport, shopping: латиница, цифры и _, например ${name}="water".` };
+    case "pairs": {
+      const pairs = value.split(",").map((s) => s.trim());
+      const ok = pairs.length <= (spec.max ?? 4) && pairs.every((p) => /^[a-z][a-z0-9_]{0,15}=[^=,<>"\u0000-\u001f]{1,40}$/.test(p));
+      return ok ? null : { rule: "bad-value", message: `Атрибут «${name}» пишется парами ключ=значение через запятую (не больше ${spec.max ?? 4}), например ${name}="${spec.example || "ml=250"}".` };
     }
     case "range": {
       const why = rangeProblem(value);
@@ -332,51 +369,62 @@ function valueProblem(name, spec, value) {
   return null;
 }
 
-// options: { state, today, probe(tag, attrs) → boolean | null, normalize = true }
+// options: { state, today, probe(tag, attrs) → boolean | null, normalize = true, kit = false }
 //   state  - the object space; checks the sets, relations and the safety rules
 //   probe  - tells whether a bound element has data; a dashboard where none has is refused
-export function validateMarkup(src, { state = null, today = "2026-01-15", probe = null, normalize = true } = {}) {
+//   kit    - the source is one <c-card> of a kit screen, not a <c-dashboard>: the
+//            vocabulary is KIT_COMPONENTS, `of` names a track and is checked for shape
+//            only. That the track exists is a question for validateBundle, which sees
+//            the tracks a bundle creates; state and probe are not used in this mode.
+export function validateMarkup(src, { state = null, today = "2026-01-15", probe = null, normalize = true, kit = false } = {}) {
   const problems = [];
+  const vocab = kit ? KIT_COMPONENTS : COMPONENTS;
+  const rootTag = kit ? "c-card" : "c-dashboard";
   const add = (path, rule, message, allowed) => problems.push({ path, rule, message, ...(allowed ? { allowed } : {}) });
   if (typeof src !== "string" || !src.trim()) {
-    add("c-dashboard", "no-root", "Разметка пустая. Напишите <c-dashboard v=\"1\">…</c-dashboard> с карточками внутри.");
+    add(rootTag, "no-root", kit ? "Разметка карточки пустая. Напишите <c-card title=\"…\">…</c-card> с элементами внутри." : "Разметка пустая. Напишите <c-dashboard v=\"1\">…</c-dashboard> с карточками внутри.");
     return finish("", []);
   }
-  const fixed = normalize ? normalizeMarkup(src) : { markup: src, changes: [] };
+  const fixed = normalize ? normalizeMarkup(src, vocab) : { markup: src, changes: [] };
   const markup = fixed.markup;
-  if (markup.length > LIMITS.source) {
-    add("c-dashboard", "too-long", `Разметка длиннее ${LIMITS.source} символов. Сделайте панель короче и проще.`);
+  const sourceLimit = kit ? LIMITS.cardSource : LIMITS.source;
+  if (markup.length > sourceLimit) {
+    add(rootTag, "too-long", `Разметка длиннее ${sourceLimit} символов. Сделайте ${kit ? "карточку" : "панель"} короче и проще.`);
     return finish(markup, fixed.changes);
   }
   const parsed = parseMarkup(markup);
   if (parsed.problems.length) {
-    for (const p of parsed.problems) add("c-dashboard", p.rule, p.message);
+    for (const p of parsed.problems) add(rootTag, p.rule, p.message);
     return finish(markup, fixed.changes);
   }
 
-  // The root: exactly one <c-dashboard v="1">, nothing around it.
+  // The root: exactly one <c-dashboard v="1"> (one <c-card> in kit mode), nothing around it.
   const roots = parsed.nodes.filter((node) => node.type === "el");
   const stray = parsed.nodes.filter((node) => node.type === "text" && node.text.trim());
-  if (stray.length) add("c-dashboard", "text-not-allowed", "Текст вне <c-dashboard> не разрешён. Весь текст пишите внутри h2, h3, p или c-empty.");
-  const dash = roots.find((node) => node.tag === "c-dashboard");
+  if (stray.length) add(rootTag, "text-not-allowed", kit ? "Текст вне <c-card> не разрешён. Весь текст пишите внутри p или c-empty." : "Текст вне <c-dashboard> не разрешён. Весь текст пишите внутри h2, h3, p или c-empty.");
+  const dash = roots.find((node) => node.tag === rootTag);
   if (!dash) {
-    add("c-dashboard", "no-root", "Разметка должна начинаться с <c-dashboard v=\"1\"> и заканчиваться </c-dashboard>: версия формата обязательна.");
+    add(rootTag, "no-root", kit ? "Разметка должна быть одной карточкой: <c-card title=\"…\">…</c-card>." : "Разметка должна начинаться с <c-dashboard v=\"1\"> и заканчиваться </c-dashboard>: версия формата обязательна.");
     return finish(markup, fixed.changes);
   }
-  if (roots.length > 1) add("c-dashboard", "extra-root", "Снаружи <c-dashboard> ничего быть не должно: оберните всё в один корень.");
-  if (!("v" in dash.attrs)) add("c-dashboard@v", "missing-attr", `У <c-dashboard> нет атрибута v. Напишите v="${VERSION}".`, [VERSION]);
-  else if (dash.attrs.v !== VERSION) add("c-dashboard@v", "bad-version", `Версия формата v="${dash.attrs.v}" не поддерживается. Поддерживается только v="${VERSION}".`, [VERSION]);
-  for (const name of Object.keys(dash.attrs)) if (name !== "v") add(`c-dashboard@${name}`, "unknown-attr", `У <c-dashboard> нет атрибута «${name}». Оставьте только v.`, ["v"]);
+  if (roots.length > 1) add(rootTag, "extra-root", `Снаружи <${rootTag}> ничего быть не должно${kit ? ": одна карточка на разметку" : ": оберните всё в один корень"}.`);
+  if (!kit) {
+    if (!("v" in dash.attrs)) add("c-dashboard@v", "missing-attr", `У <c-dashboard> нет атрибута v. Напишите v="${VERSION}".`, [VERSION]);
+    else if (dash.attrs.v !== VERSION) add("c-dashboard@v", "bad-version", `Версия формата v="${dash.attrs.v}" не поддерживается. Поддерживается только v="${VERSION}".`, [VERSION]);
+    for (const name of Object.keys(dash.attrs)) if (name !== "v") add(`c-dashboard@${name}`, "unknown-attr", `У <c-dashboard> нет атрибута «${name}». Оставьте только v.`, ["v"]);
+  }
 
   const stats = { elements: 0, bound: [], texts: [], numbers: new Set(), anyDeepReported: false };
+  // In kit mode the card itself is the first node walked, under a root that allows only it.
+  const childrenOf = (parent) => (parent.tag === "#root" ? [rootTag] : vocab[parent.tag]?.children || []);
   const walk = (parent, nodes, trail, depth) => {
     const seen = {};
     for (const node of nodes) {
       if (node.type === "text") {
         if (!node.text.trim()) continue;
-        const spec = COMPONENTS[parent.tag];
-        const path = trail || "c-dashboard";
-        if (!spec?.text) { add(path, "text-not-allowed", `Текст «${clip(node.text)}» нельзя писать прямо в <${parent.tag}>. Оберните его в p, h3 или c-empty.`); continue; }
+        const spec = vocab[parent.tag];
+        const path = trail || rootTag;
+        if (!spec?.text) { add(path, "text-not-allowed", `Текст «${clip(node.text)}» нельзя писать прямо в <${parent.tag}>. Оберните его в p${kit ? "" : ", h3"} или c-empty.`); continue; }
         const text = node.text.trim();
         if (text.length > LIMITS.text) add(path, "text-too-long", `Текст в <${parent.tag}> длиннее ${LIMITS.text} символов (сейчас ${text.length}). Сократите.`);
         stats.texts.push({ path, text });
@@ -392,12 +440,13 @@ export function validateMarkup(src, { state = null, today = "2026-01-15", probe 
   };
 
   const checkElement = (parent, node, path, depth) => {
-    const spec = COMPONENTS[node.tag];
-    if (!spec || node.tag === "c-dashboard") {
-      add(path, "unknown-tag", node.tag === "c-dashboard" ? "<c-dashboard> может быть только корнем." : `Тег <${node.tag}> не разрешён. Разрешены: ${TAGS.filter((t) => t !== "c-dashboard").join(", ")}.`, TAGS.filter((t) => t !== "c-dashboard"));
+    const spec = vocab[node.tag];
+    const allowedTags = kit ? KIT_TAGS.filter((t) => t !== "c-card") : TAGS.filter((t) => t !== "c-dashboard");
+    if (!spec || (kit ? node.tag === "c-card" && parent.tag !== "#root" : node.tag === "c-dashboard")) {
+      add(path, "unknown-tag", node.tag === rootTag ? `<${rootTag}> может быть только корнем.` : `Тег <${node.tag}> не разрешён. Разрешены: ${allowedTags.join(", ")}.`, allowedTags);
       return;
     }
-    const allowedHere = COMPONENTS[parent.tag]?.children || [];
+    const allowedHere = childrenOf(parent);
     if (!allowedHere.includes(node.tag)) add(path, "not-allowed-here", `<${node.tag}> нельзя помещать в <${parent.tag}>. Там разрешены: ${allowedHere.join(", ") || "только текст"}.`, allowedHere);
     if (depth > LIMITS.depth && !stats.anyDeepReported) {
       stats.anyDeepReported = true;
@@ -413,6 +462,7 @@ export function validateMarkup(src, { state = null, today = "2026-01-15", probe 
       const why = valueProblem(name, type, value);
       if (why) add(`${path}@${name}`, why.rule, why.message, why.allowed);
       if (type.type === "number" && !why) stats.numbers.add(canonNumber(value));
+      if (type.type === "pairs" && !why) for (const m of value.matchAll(/=(-?\d+(?:\.\d+)?)(?=,|$)/g)) stats.numbers.add(canonNumber(m[1]));
       if (type.type === "range" && !why) for (const m of value.matchAll(/\d+/g)) stats.numbers.add(String(Number(m[0])));
       if ((name === "title" || name === "caption") && type.type === "text") stats.texts.push({ path: `${path}@${name}`, text: value });
     }
@@ -420,11 +470,18 @@ export function validateMarkup(src, { state = null, today = "2026-01-15", probe 
     if (spec.bound) stats.bound.push({ node, path, parent });
   };
 
-  walk(dash, dash.children, "", 0);
-  if (stats.elements > LIMITS.elements) add("c-dashboard", "too-many-elements", `Элементов ${stats.elements}, а можно не больше ${LIMITS.elements}. Уберите лишние карточки и заголовки.`);
-  if (!stats.bound.length && !problems.length) add("c-dashboard", "no-charts", "На панели нет ни одного графика или числа. Добавьте c-stat, c-meter, c-bars, c-line, c-heatmap, c-table или c-list.");
-
-  for (const item of stats.bound) checkBound(item, state, today, add);
+  if (kit) {
+    walk({ tag: "#root", children: [dash] }, [dash], "", 0);
+    const count = dash.children.filter((child) => child.type === "el").length;
+    if (count > KIT_LIMITS.elements) add(rootTag, "too-many-elements", `В карточке ${count} элементов, а можно не больше ${KIT_LIMITS.elements}. Разнесите их по нескольким карточкам.`);
+    if (!count && !problems.length) add(rootTag, "empty-card", "В карточке нет ни одного элемента. Добавьте число, график, кнопку записи или отметки.");
+    for (const item of stats.bound) checkKitBound(item, add);
+  } else {
+    walk(dash, dash.children, "", 0);
+    if (stats.elements > LIMITS.elements) add("c-dashboard", "too-many-elements", `Элементов ${stats.elements}, а можно не больше ${LIMITS.elements}. Уберите лишние карточки и заголовки.`);
+    if (!stats.bound.length && !problems.length) add("c-dashboard", "no-charts", "На панели нет ни одного графика или числа. Добавьте c-stat, c-meter, c-bars, c-line, c-heatmap, c-table или c-list.");
+    for (const item of stats.bound) checkBound(item, state, today, add);
+  }
 
   // Numbers about the person come from bindings, never from the model's own text.
   for (const { path, text } of stats.texts) {
@@ -435,7 +492,7 @@ export function validateMarkup(src, { state = null, today = "2026-01-15", probe 
     }
   }
 
-  if (probe && stats.bound.length && !problems.some((p) => /^(unknown-set|unknown-relation)$/.test(p.rule))) {
+  if (!kit && probe && stats.bound.length && !problems.some((p) => /^(unknown-set|unknown-relation)$/.test(p.rule))) {
     const results = stats.bound.map(({ node }) => probe(node.tag, { ...node.attrs }));
     if (results.every((r) => r === false)) add("c-dashboard", "all-empty", "Ни в одном графике сейчас нет данных, панель была бы пустой. Выберите наборы и связи, в которых есть записи.");
   }
@@ -447,6 +504,38 @@ export function validateMarkup(src, { state = null, today = "2026-01-15", probe 
 }
 
 const clip = (text) => (text.length > 40 ? `${text.trim().slice(0, 40)}…` : text.trim());
+
+// Shape of a chart against its range: too few or too many marks is not a chart.
+function checkShape(node, spec, a, own, add) {
+  const range = a.range || spec.defaults?.range;
+  const by = a.by || spec.defaults?.by || "day";
+  if (!range || rangeProblem(range)) return;
+  const buckets = bucketsOf(resolveRange(range, "2026-06-15"), node.tag === "c-heatmap" || node.tag === "c-spark" ? "day" : by).length;
+  if (node.tag === "c-bars" && buckets < 2) add(own("range"), "range-too-short", "Для столбцов нужно хотя бы два периода: возьмите @last7d, @last30d или @last12w.");
+  if (node.tag === "c-bars" && buckets > LIMITS.bars) add(own("by"), "too-many-points", `Столбцов получается ${buckets}, а читаются не больше ${LIMITS.bars}. Возьмите by="week" или by="month", или период короче.`, BY);
+  if (node.tag === "c-line" && buckets < 3) add(own("range"), "range-too-short", "Для линии нужно хотя бы три точки: возьмите период @last7d или длиннее.");
+  if (node.tag === "c-line" && buckets > LIMITS.points) add(own("by"), "too-many-points", `Точек получается ${buckets}, а нужно не больше ${LIMITS.points}. Возьмите by="week".`, BY);
+  if (node.tag === "c-spark" && buckets < 3) add(own("range"), "range-too-short", "Мини-график нужен хотя бы на три дня: возьмите @last7d или @last30d.");
+  if (node.tag === "c-heatmap" && (buckets < 14 || buckets > LIMITS.heatmapWeeks * 7)) add(own("range"), "range-too-short", `Календарь показывает от 14 дней до ${LIMITS.heatmapWeeks} недель: возьмите @last12w или @last90d.`);
+}
+
+// What a kit element needs besides valid attributes: its required attributes and, for a
+// chart, a value to count (or fn="count") and a period that makes a readable shape.
+function checkKitBound({ node, path }, add) {
+  const spec = KIT_COMPONENTS[node.tag];
+  const a = node.attrs;
+  const own = (name) => (name in a ? `${path}@${name}` : path);
+  for (const name of spec.required || []) {
+    if (!a[name]) add(path, "missing-attr", `У <${node.tag}> нет обязательного атрибута «${name}».`);
+  }
+  if (spec.attrs.value && (a.fn || "sum") !== "count" && !a.value) add(path, "missing-attr", `У <${node.tag}> нет атрибута value: какое поле или показатель считать. Либо укажите value, либо fn="count".`);
+  if (spec.kit?.needsRange && !spec.attrs.columns && !a.range) add(path, "missing-attr", `У <${node.tag}> нет атрибута range: за какой период показывать. Например range="@last7d".`);
+  if (a.fields) {
+    const keys = a.fields.split(",").map((s) => s.trim());
+    if (new Set(keys).size !== keys.length) add(own("fields"), "bad-value", "Атрибут «fields»: поле названо дважды.");
+  }
+  checkShape(node, spec, a, own, add);
+}
 
 function checkBound({ node, path, parent }, state, today, add) {
   const spec = COMPONENTS[node.tag];
@@ -462,18 +551,7 @@ function checkBound({ node, path, parent }, state, today, add) {
   if (spec.attrs.value && fn !== "count" && !a.value) add(path, "missing-attr", `У <${node.tag}> нет атрибута value: какую связь считать. Либо укажите value, либо fn="count".`);
   if (spec.goal === "required" && !a.goal) add(path, "missing-attr", `У <c-meter> нет цели goal. Без цели используйте c-stat.`);
 
-  // Shape of the chart against its range: too few or too many marks is not a chart.
-  const range = a.range || spec.defaults?.range;
-  const by = a.by || spec.defaults?.by || "day";
-  if (range && !rangeProblem(range)) {
-    const buckets = bucketsOf(resolveRange(range, "2026-06-15"), node.tag === "c-heatmap" || node.tag === "c-spark" ? "day" : by).length;
-    if (node.tag === "c-bars" && buckets < 2) add(own("range"), "range-too-short", "Для столбцов нужно хотя бы два периода: возьмите @last7d, @last30d или @last12w.");
-    if (node.tag === "c-bars" && buckets > LIMITS.bars) add(own("by"), "too-many-points", `Столбцов получается ${buckets}, а читаются не больше ${LIMITS.bars}. Возьмите by="week" или by="month", или период короче.`, BY);
-    if (node.tag === "c-line" && buckets < 3) add(own("range"), "range-too-short", "Для линии нужно хотя бы три точки: возьмите период @last7d или длиннее.");
-    if (node.tag === "c-line" && buckets > LIMITS.points) add(own("by"), "too-many-points", `Точек получается ${buckets}, а нужно не больше ${LIMITS.points}. Возьмите by="week".`, BY);
-    if (node.tag === "c-spark" && buckets < 3) add(own("range"), "range-too-short", "Мини-график нужен хотя бы на три дня: возьмите @last7d или @last30d.");
-    if (node.tag === "c-heatmap" && (buckets < 14 || buckets > LIMITS.heatmapWeeks * 7)) add(own("range"), "range-too-short", `Календарь показывает от 14 дней до ${LIMITS.heatmapWeeks} недель: возьмите @last12w или @last90d.`);
-  }
+  checkShape(node, spec, a, own, add);
   if (!state) return;
 
   const set = state.objects?.[a.set];

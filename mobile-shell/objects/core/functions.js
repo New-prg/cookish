@@ -35,7 +35,22 @@ export function burned(scope, target) {
   return Math.round(met * weight * (minutes / 60));
 }
 
+const minutesOf = (value) => {
+  const m = /^(\d{2}):(\d{2})$/.exec(String(value ?? ""));
+  return m && Number(m[1]) < 24 && Number(m[2]) < 60 ? Number(m[1]) * 60 + Number(m[2]) : null;
+};
+
+// Hours from one time of day to the next one, past midnight when needed:
+// spanHours("23:30", "07:15") is 7.75. The same time twice is zero hours.
+export function spanHours(from, to) {
+  const a = minutesOf(from);
+  const b = minutesOf(to);
+  if (a == null || b == null) return null;
+  return Math.round((((b - a) % 1440) + 1440) % 1440 / 60 * 100) / 100;
+}
+
 registerFunctions({
+  spanHours: (_scope, from, to) => spanHours(from, to),
   nutrientOf: (scope, target, field) => nutrient(scope, isRef(target) ? target : scope.self, String(field)),
   kcalOf: (scope, target) => nutrient(scope, isRef(target) ? target : scope.self, "kcal"),
   burnedOf: (scope, target) => burned(scope, isRef(target) ? target : scope.self),

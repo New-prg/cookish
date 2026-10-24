@@ -1,0 +1,20 @@
+{
+  "id": "swim-style",
+  "request": "В заплывах хочу отмечать стиль: кроль, брасс или на спине",
+  "reply": "Добавил поле «Стиль» в заплывы и в форму на главной. Прежние записи остались как были.",
+  "tags": ["patch", "overlay", "choice", "form"],
+  "space": "empty",
+  "after": ["swim"],
+  "bundle": {
+    "v": 2,
+    "name": "Стиль в заплывах",
+    "tracks": [
+      { "key": "swim", "fields": [{ "key": "style", "name": "Стиль", "type": "choice", "options": ["кроль", "брасс", "на спине"] }] }
+    ],
+    "screens": [
+      { "key": "home", "cards": [
+        { "key": "swim_add", "body": [{ "el": "form", "of": "swim", "fields": ["laps", "pool", "style"] }] }
+      ] }
+    ]
+  }
+}

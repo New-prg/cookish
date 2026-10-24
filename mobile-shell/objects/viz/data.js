@@ -2,12 +2,15 @@
 // a set, a relation and a range; this module runs the set's query, cuts it to the
 // range and buckets it by day, week (Monday first) or month. Day, week and month
 // buckets are made here on top of runQuery, so query.js stays as it is.
+// An element that names a track (`of`) goes through kit/bind.js instead; the
+// `set` path is the one the classic dashboards keep using.
 //
 //   setDataSource(stateDataSource(() => store.state(), () => ({ today: store.today() }), { hrefFor, iconOf }))
 import { aggregate, runQuery } from "../core/query.js";
 import { valueOf } from "../core/values.js";
 import { dateLabel, dateRelationOf, fmtValue, isDateKey, isEmptyData, periodName, previousRange, resolveRange, bucketKey, bucketsOf, shiftDate } from "./util.js";
 import { setDataSource, getDataSource } from "./source.js";
+import { resolveBinding } from "../kit/bind.js";
 import { validateMarkup } from "./validate.js";
 
 export { setDataSource, getDataSource };
@@ -180,6 +183,7 @@ export function stateDataSource(getState, getCtx, helpers = {}) {
   return (spec) => {
     const state = getState();
     const ctx = getCtx();
+    if (spec.of) return resolveBinding(state, spec, ctx);
     switch (spec.tag) {
       case "c-stat": return resolveStat(state, spec, ctx);
       case "c-meter": return resolveMeter(state, spec, ctx);
@@ -190,11 +194,17 @@ export function stateDataSource(getState, getCtx, helpers = {}) {
   };
 }
 
+// Inputs always have something to show: buttons, a form, today's marks.
+const INPUTS = new Set(["c-marks", "c-streak", "c-form", "c-quick"]);
+
 // For the validator: does a bound element have anything to draw?
 export function stateProbe(getState, getCtx, helpers = {}) {
   const source = stateDataSource(getState, getCtx, helpers);
   return (tag, attrs) => {
-    try { return !isEmptyData(tag, source({ tag, ...attrs })); } catch { return false; }
+    try {
+      const data = source({ tag, ...attrs });
+      return INPUTS.has(tag) || !isEmptyData(tag, data);
+    } catch { return false; }
   };
 }
 

@@ -190,30 +190,61 @@ test("protective mode refuses a deficit by code and says why; more food is welco
   assert.equal(calm.provider.requests[0].messages[0].content.includes("ВНИМАНИЕ"), false, "no warning without a sign");
 });
 
-test("propose_space builds a tracker as one proposal; applying and undoing it restores the space", async () => {
+test("propose_space takes a bundle: one proposal with change rows; applying and undoing it restores the space", async () => {
   const store = open();
-  const water = [
-    { op: "defineRelation", key: "water_ml", name: "Выпито, мл", format: "number", unit: "мл", dimension: "volume", min: 0, max: 5000 },
-    { op: "defineType", key: "water", name: "Вода", icon: "💧", fact: true, relations: ["at", "water_ml"] },
-    { op: "createSet", ref: "water_today", name: "Вода сегодня", source: { type: "water" }, filters: [{ rel: "at", op: "within", value: "@today" }], aggregates: [{ rel: "water_ml", fn: "sum" }] },
-    { op: "addWidget", title: "Вода сегодня", set: "water_today", display: "number", aggregate: { rel: "water_ml", fn: "sum" }, goal: 2000 },
-  ];
+  const tea = {
+    v: 2,
+    name: "Чай",
+    tracks: [{ key: "tea", name: "Чай", kind: "log", icon: "🍵", fields: [{ key: "cups", name: "Чашек", type: "number", unit: "шт.", min: 1, max: 10, goal: 4, goalType: "max", goalPer: "day" }] }],
+    screens: [{ key: "home", cards: [{ key: "tea_today", title: "Чай сегодня", body: [{ el: "meter", of: "tea", value: "cups" }, { el: "quick", of: "tea", values: { cups: 1 }, label: "+1 чашка" }] }] }],
+  };
+  const lowEnergy = { v: 2, name: "Лимит", tracks: [{ key: "food", name: "Еда", kind: "log", fields: [{ key: "kcal", name: "Энергия", type: "number", unit: "ккал", goal: 600, goalType: "max" }] }] };
   const { thread, results } = await ask(store, [
-    tools(call("propose_space", { summary: "Тип «Вода», набор и виджет", ops: water })),
-    tools(call("propose_space", { summary: "Низкая цель", ops: [water[0], water[1], water[2], { ...water[3], goal: 600, aggregate: { rel: "water_ml", fn: "sum" } }].map((op) => (op.dimension === "volume" ? { ...op, dimension: "energy" } : op)) })),
+    tools(call("propose_space", { summary: "Чай: шкала и кнопка", bundle: tea })),
+    tools(call("propose_space", { summary: "Низкая цель", bundle: lowEnergy })),
+    tools(call("propose_space", { summary: "Старый формат", ops: [{ op: "defineType", key: "water", name: "Вода" }] })),
     say("Собрала."),
-  ], "сделай дневник воды");
+  ], "сделай учёт чая");
   assert.equal(results[0].ok, true, JSON.stringify(results[0]));
-  assert.equal(results[0].preview.rows.length, 4);
-  assert.deepEqual(results[0].preview.rows.map((row) => row[0]), ["Связь", "Тип", "Набор", "Виджет на главной"]);
+  assert.deepEqual(results[0].preview.rows.map((row) => row[0]), ["Трек", "Новая карточка"]);
   assert.equal(results[1].ok, false, "a calorie goal under 1200 is refused");
-  assert.equal(store.state().types.water, undefined);
+  assert.match(results[1].problems.join(" "), /ниже 1200 ккал/);
+  assert.equal(results[2].ok, false, "the op language is gone: a bundle is required");
+  assert.match(results[2].error, /bundle/);
+  assert.equal(store.state().types.tr_tea, undefined);
   const applied = applyProposal(store, thread, results[0].proposalId);
   assert.equal(applied.ok, true, applied.reason);
-  assert.equal(store.state().types.water.fact, true);
-  assert.equal(spaceOutline(store.state()).widgets.some((w) => w.title === "Вода сегодня"), true);
+  assert.equal(store.state().types.tr_tea.fact, true);
+  assert.deepEqual(spaceOutline(store.state()).kit.screens.find((screen) => screen.key === "home").cards.map((card) => card.key), ["tea_today"]);
   assert.equal(revertProposal(store, thread, results[0].proposalId).ok, true);
-  assert.equal(store.state().types.water, undefined);
+  assert.equal(store.state().types.tr_tea, undefined);
+});
+
+test("propose_space lets a title repeat the person's own numbers and still refuses invented ones", async () => {
+  const store = open();
+  const bundle = (title) => ({
+    v: 2,
+    name: "Чай",
+    tracks: [{ key: "tea", name: "Чай", kind: "log", fields: [{ key: "cups", name: "Чашек", type: "number", unit: "шт.", min: 1, max: 10 }] }],
+    screens: [{ key: "home", cards: [{ key: "tea_today", title, body: [{ el: "quick", of: "tea", values: { cups: 1 }, label: "+1 чашка" }] }] }],
+  });
+  const { results } = await ask(store, [
+    tools(call("propose_space", { summary: "Чай", bundle: bundle("Не больше 3 чашек в день") })),
+    tools(call("propose_space", { summary: "Чай", bundle: bundle("Вы выпили 7 чашек") })),
+    say("Готово."),
+  ], "веду чай, хочу не больше 3 чашек в день");
+  assert.equal(results[0].ok, true, JSON.stringify(results[0]));
+  assert.equal(results[1].ok, false);
+  assert.match(results[1].problems.join(" "), /число 7/);
+});
+
+test("the tracks, screens and cards of the kit go through propose_space only", async () => {
+  const store = open();
+  const { results } = await ask(store, [
+    tools(call("propose_objects", { summary: "Экран", ops: [{ op: "create", type: "kit_screen", name: "Мой" }] })),
+    say("Не вышло."),
+  ], "добавь экран");
+  assert.match(results[0].problems.join(" "), /propose_space/);
 });
 
 test("a new product from the reference rides in the same proposal; the card's numbers come from code", async () => {

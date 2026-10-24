@@ -159,17 +159,14 @@ test("an empty space starts with an empty home and keeps a plan change undoable"
 // The Сборщик's answers as routerai.ru would send them, picked by the last
 // request; the page fetches the provider directly, so CORS headers matter.
 const builderAnswer = (request) => {
-  if (/инсулин/i.test(request)) return { reply: "Дозу инсулина подбирает врач. Могу собрать дневник сахара, если хотите.", summary: "", ops: [] };
-  const goal = /2,5/.test(request) ? 2500 : 2000;
+  if (/инсулин/i.test(request)) return { reply: "Дозу инсулина подбирает врач. Могу собрать дневник сахара, если хотите." };
+  const limit = /пять/.test(request) ? 5 : 4;
   return {
-    reply: `Собрал «Воду»: записи с объёмом и виджет, цель ${goal} мл.`,
-    summary: "Тип «Вода», набор и виджет",
-    ops: [
-      { op: "defineRelation", key: "water_ml", name: "Выпито, мл", format: "number", unit: "мл", dimension: "volume", min: 0, max: 5000 },
-      { op: "defineType", key: "water", name: "Вода", icon: "💧", fact: true, relations: ["at", "water_ml"] },
-      { op: "createSet", ref: "water_today", name: "Вода сегодня", source: { type: "water" }, filters: [{ rel: "at", op: "within", value: "@today" }], aggregates: [{ rel: "water_ml", fn: "sum" }] },
-      { op: "addWidget", title: "Вода сегодня", set: "water_today", display: "number", aggregate: { rel: "water_ml", fn: "sum" }, goal },
-    ],
+    reply: `Собрал «Чай»: шкала чашек до предела ${limit} и кнопка «+1 чашка» на главной.`,
+    v: 2,
+    name: "Чай",
+    tracks: [{ key: "tea", name: "Чай", kind: "log", icon: "🍵", fields: [{ key: "cups", name: "Чашек", type: "number", unit: "шт.", min: 1, max: 10, goal: limit, goalType: "max", goalPer: "day" }] }],
+    screens: [{ key: "home", cards: [{ key: "tea_today", title: "Чай сегодня", body: [{ el: "meter", of: "tea", value: "cups" }, { el: "quick", of: "tea", values: { cups: 1 }, label: "+1 чашка" }] }] }],
   };
 };
 
@@ -203,28 +200,29 @@ test("the Сборщик builds a tracker from words: refine, apply, undo, and a
   await page.evaluate(() => localStorage.setItem("cookish.ai.key.test", "test-key"));
   await openBuilder();
   await shot(page, "builder-sheet-light");
-  await page.getByLabel("Что отслеживать").fill("Хочу считать воду, 2 литра в день");
+  await page.getByLabel("Что отслеживать").fill("Хочу считать чай, не больше четырёх чашек в день");
   await page.getByRole("button", { name: "Собрать", exact: true }).click();
   const changes = page.getByRole("region", { name: "Что добавится" });
   await changes.waitFor();
-  assert.match(await text(changes), /Выпито, мл.*Вода.*записи вносите вы.*Вода сегодня.*Виджет на главной.*цель 2 000/);
-  assert.equal(await page.locator(".widget", { hasText: "Вода сегодня" }).count(), 0, "nothing is written before the person applies");
+  assert.match(await text(changes), /Чай.*Трек.*лимит 4 в день.*Чай сегодня.*Новая карточка.*экран «Главная»/);
+  assert.equal(await page.locator('[data-card="tea_today"]').count(), 0, "nothing is written before the person applies");
 
-  await page.getByLabel("Что отслеживать").fill("Цель 2,5 литра");
+  await page.getByLabel("Что отслеживать").fill("Лимит пять чашек");
   await page.getByRole("button", { name: "Уточнить" }).click();
-  await changes.filter({ hasText: /цель 2\s500/ }).waitFor();
+  await changes.filter({ hasText: /лимит 5 в день/ }).waitFor();
   assert.equal(sent.length, 2);
   assert.deepEqual(sent[1].messages.slice(1).map((m) => m.role), ["user", "assistant", "user"], "the refinement carries the first request and answer");
   assert.doesNotMatch(JSON.stringify(sent), /Овсяные хлопья|Куриная грудка|Творог/, "the text of objects never leaves the device");
   await shot(page, "builder-proposal-light");
 
   await page.getByRole("button", { name: "Добавить" }).click();
-  const widget = page.locator(".widget", { hasText: "Вода сегодня" });
-  await widget.waitFor();
-  assert.match(await text(widget), /из 2 500 мл/);
+  const card = page.locator('[data-card="tea_today"]');
+  await card.waitFor();
+  assert.match(await text(card), /Чай сегодня/);
+  assert.match(await text(card), /\+1 чашка/);
   await page.locator(".toast").getByRole("button", { name: "Отменить" }).click();
   await page.locator(".toast", { hasText: "Отменено" }).waitFor();
-  await until(() => widget.count(), (count) => count === 0, "undo removes the widget");
+  await until(() => card.count(), (count) => count === 0, "undo removes the card");
   assert.equal(await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem("cookish.objects.v1")).customTypes || {}).length), 0, "and the type");
 
   await openBuilder();

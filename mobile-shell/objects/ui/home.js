@@ -1,11 +1,30 @@
-// The home: the dashboard object and its widgets, with an edit mode to add,
-// remove and reorder them.
+// The home: the cards of the kit's home screen, then the dashboard object and its
+// widgets, with an edit mode to add, remove and reorder them.
 import { act, ctx, dateRelationOf, isNumeric, local, nameOf, rerender, store } from "./runtime.js";
 import { fill, dayLong, empty, field, h, icon, openSheet, segmented, toast } from "./dom.js";
 import { AGG_NAMES, DISPLAY_NAMES, WIDGET_KINDS } from "./widgets.js";
 import { defaultView, PERIODS } from "./setview.js";
 import { homeOf, objectsOfType } from "../core/values.js";
 import { requestFromPlanSheet } from "./request.js";
+import { keptScreens, mountScreen } from "../kit/screen.js";
+import { registerEmbeds } from "../kit/inputs.js";
+
+// The classic widgets a kit card embeds with <c-embed what="…">.
+registerEmbeds(Object.fromEntries(["ration-today", "sport-today", "requests"].map((what) => [what, (state, c) => WIDGET_KINDS[what].render(state, {}, c)])));
+
+// The screens a person built, one row each: reachable from the home tab, which keeps the five-item navigation.
+function mySections(state) {
+  const screens = keptScreens(state);
+  if (!screens.length) return null;
+  return h("section", { class: "kit-sections", "aria-label": "Мои разделы" },
+    h("h2", { class: "section-title", text: "Мои разделы" }),
+    h("div", { class: "card list" }, screens.map((screen) => h("a", { class: "row", href: `#/screen/${encodeURIComponent(screen.key)}` },
+      h("span", { class: "row-icon", "aria-hidden": "true", text: screen.icon || "🧩" }),
+      h("span", { class: "row-main" }, h("span", { class: "row-title", text: screen.name })),
+      icon("next", 18),
+    ))),
+  );
+}
 
 export function homeScreen() {
   const state = store.state();
@@ -20,6 +39,8 @@ export function homeScreen() {
     save(next, "Порядок виджетов");
   };
   const date = dayLong(c.today);
+  const kit = h("div", { class: "kit-home" });
+  const { cards } = mountScreen(kit, store, "home");
   return [
     h("header", { class: "page-head" },
       h("div", {}, h("h1", { class: "page-title", text: "Сегодня" }), h("p", { class: "page-sub", text: date })),
@@ -28,6 +49,7 @@ export function homeScreen() {
         h("a", { class: "icon-btn profile-link", href: "#/profile", "aria-label": "Профиль" }, h("span", { "aria-hidden": "true", text: "👤" })),
       ),
     ),
+    cards ? kit : null,
     widgets.length ? null : empty("На главной пока нет виджетов"),
     widgets.map((w, i) => {
       const kind = WIDGET_KINDS[w.kind];
@@ -48,6 +70,7 @@ export function homeScreen() {
       );
     }),
     mode.editing && dash ? h("button", { class: "btn btn-primary btn-block", onclick: () => widgetSheet(dash) }, "+ Виджет") : null,
+    mySections(state),
   ];
 }
 
