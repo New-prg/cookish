@@ -20,7 +20,9 @@ const TRANSLIT = { а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e"
 // A key from a name by transliteration: «Витамин D» -> vitamin_d.
 export function slugOf(name) {
   const s = String(name || "").toLowerCase().split("").map((c) => TRANSLIT[c] ?? (/[a-z0-9]/.test(c) ? c : "_")).join("").replace(/_+/g, "_").replace(/^_|_$/g, "");
-  return (/^[a-z]/.test(s) ? s : `x_${s}`).slice(0, 24).replace(/_$/, "") || "item";
+  const key = (/^[a-z]/.test(s) ? s : `x_${s}`).slice(0, 24).replace(/_$/, "");
+  // An item key has at least two characters, or an export of the app cannot be imported.
+  return key.length >= 2 ? key : `${key || "item"}_1`;
 }
 
 function dayOf(opts) {

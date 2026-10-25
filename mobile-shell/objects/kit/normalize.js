@@ -354,7 +354,7 @@ export function normalizeBundle(raw, { spec = null } = {}) {
       if (name !== out.el && ELEMENT_KEYS.includes(name)) note(`Карточка «${cardKey}»: элемент «${out.el}» записан как «${name}».`);
       out.el = ELEMENT_KEYS.includes(name) ? name : out.el;
     }
-    const spec = ELEMENTS[out.el];
+    const spec = Object.hasOwn(ELEMENTS, out.el) ? ELEMENTS[out.el] : null;
     const at = `карточка «${cardKey}», ${out.el}`;
     if (!spec) return out;
     if ("goal-type" in out) { out.goalType = out["goal-type"]; delete out["goal-type"]; }

@@ -3,6 +3,10 @@
 // «Готово» line of check.mjs and by judge-packet.mjs, so both describe the same
 // thing. Nothing here trusts what a model said about its own answer.
 import { elementBehaviour, trackBehaviour } from "./behaviour.mjs";
+import { splitCondition } from "../../../mobile-shell/objects/kit/catalogue.js";
+
+// A bundle may write where as text or as an object; the judge reads it as text.
+const whereRu = (where) => (typeof where === "string" ? where : Object.entries(where).map(([key, is]) => { const { op, value } = splitCondition(is); return `${key}${op}${value}`; }).join(", "));
 
 const KIND = {
   log: "журнал записей (свободные записи, сколько угодно в день)",
@@ -123,7 +127,7 @@ export function elementRu(state, el) {
   if (el.fn) bits.push(`${FN[el.fn] || el.fn}`);
   if (el.range) bits.push(`период: ${rangeRu(el.range)}`);
   if (el.by) bits.push(`по: ${el.by}`);
-  if (el.where) bits.push(`только где ${el.where}`);
+  if (el.where) bits.push(`только где ${whereRu(el.where)}`);
   if (rest.length) bits.push(rest.join(", "));
   let writes = "";
   if (el.el === "quick") writes = " Нажатие записывает значение от имени человека.";

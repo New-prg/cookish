@@ -86,12 +86,13 @@ export function calcReads(calc, lookup, seen = new Set()) {
 const BURNED = /burn|sport|расход|трат|сожж|тренир/i;
 const dailyOf = (goal, per) => (per === "week" ? goal / 7 : per === "month" ? goal / 30 : goal);
 
-// facts: { goals: [{ ref, key, name, unit, goal, per }], calcs: [{ ref, name, unit, readsUnits }], texts: [{ ref, text, allowed: Set }] }
+// facts: { goals: [{ ref, key, name, unit, goal, per, goalType }], calcs: [{ ref, name, unit, readsUnits }], texts: [{ ref, text, allowed: Set }] }
 // returns [{ rule, ref, message }]
 export function safetyFloors({ goals = [], calcs = [], texts = [] } = {}) {
   const out = [];
   for (const g of goals) {
-    if (g.unit !== "ккал" || BURNED.test(`${g.key} ${g.name}`)) continue;
+    // A burn goal is one to reach; a limit on any energy field is a limit on eating.
+    if (g.unit !== "ккал" || (BURNED.test(`${g.key} ${g.name}`) && g.goalType !== "max")) continue;
     if (dailyOf(Number(g.goal), g.per) < ENERGY_FLOOR) {
       out.push({ rule: "energy-goal-floor", ref: g.ref, message: `Цель ${g.goal} ккал${g.per && g.per !== "day" ? ` в ${g.per === "week" ? "неделю" : "месяц"}` : ""} у поля «${g.name}» ниже ${ENERGY_FLOOR} ккал в день: приложение не ставит такие цели, потому что это ниже безопасного минимума. Поставьте не меньше ${ENERGY_FLOOR} ккал в день или уберите goal.` });
     }
@@ -127,7 +128,7 @@ function factsOfBatch(prev, next) {
   for (const [key, rel] of Object.entries(next.relations)) {
     if (!rel.kit?.field || prev.relations[key] === rel) continue;
     const ref = `${rel.kit.track}.${rel.kit.field}`;
-    if (rel.kit.goal != null) facts.goals.push({ ref, key: rel.kit.field, name: rel.name, unit: rel.unit, goal: rel.kit.goal, per: rel.kit.goalPer });
+    if (rel.kit.goal != null) facts.goals.push({ ref, key: rel.kit.field, name: rel.name, unit: rel.unit, goal: rel.kit.goal, per: rel.kit.goalPer, goalType: rel.kit.goalType });
     if (rel.kit.type === "calc") {
       const lookup = (name) => {
         const sibling = next.relations[ids.relation(rel.kit.track, name)];

@@ -20,7 +20,7 @@ export const DECISIONS = Object.freeze([
   },
   {
     id: "missed", wish: "сколько пропустил, что не сделано",
-    say: "у трека unmarked missed (день без отметки считается пропуском, иначе он ничего не считает), потом stat, value skipped.",
+    say: "у трека unmarked missed (день без отметки считается пропуском), потом stat, value skipped.",
     show: [{ base: "plants", track: "plants", attrs: ["unmarked"] }, { base: "plants", card: "plants_week", at: 1 }],
   },
   {
@@ -57,6 +57,21 @@ export const DECISIONS = Object.freeze([
     id: "pace", wish: "сколько можно тратить в день до конца месяца",
     say: "у поля goal и goalPer month (лимит: goalType max); meter с pace left.",
     show: [{ base: "taxi", card: "taxi_month", at: 0 }],
+  },
+  {
+    id: "week-avg", wish: "в среднем за неделю",
+    say: "range @last7d (@thisWeek только для квоты); рядом stat с fn avg.",
+    show: [],
+  },
+  {
+    id: "ask-at-mark", wish: "спроси при отметке приёма, тренировки, покупки",
+    say: "kind follow, follows ration, sport или shopping; поле с on [\"skipped\"] спросят и у пропуска.",
+    show: [],
+  },
+  {
+    id: "plan-per-item", wish: "у пункта своё время или длительность",
+    say: "поле number или time, planned true, значение в plan пункта.",
+    show: [],
   },
   {
     id: "last-delta", wish: "последнее значение, что изменилось",

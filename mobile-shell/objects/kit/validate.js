@@ -114,7 +114,7 @@ function checkValue(value, attr, path, name, add, owner) {
 
 function unknownKeys(obj, table, path, owner, add) {
   for (const name of Object.keys(obj)) {
-    if (name in table) continue;
+    if (Object.hasOwn(table, name)) continue;
     const hint = ["entries", "records", "data", "values", "facts"].includes(name) && owner === "пакета"
       ? " Записи пакетом не добавляются: их вносит человек кнопками."
       : name === "id" ? " Идентификаторы пакет не содержит: объекты находятся по ключам." : "";
@@ -250,7 +250,7 @@ function cardShape(c, j, screen, spec, seen, at, add) {
 function elementShape(el, k, card, path, add) {
   const at = `${path}.body[${k}]`;
   if (!isObj(el)) return add(at, "bad-value", "Элемент должен быть объектом {\"el\":\"meter\",\"of\":…}.");
-  const spec = ELEMENTS[el.el];
+  const spec = Object.hasOwn(ELEMENTS, el.el) ? ELEMENTS[el.el] : null;
   if (!spec) return add(`${at}.el`, "unknown-element", `Элемента ${q(el.el)} нет. Допустимы: ${ELEMENT_KEYS.join(", ")}.`, ELEMENT_KEYS);
   // A number in goal is the old spelling: the goal lives on the field. Only meter takes goal, as "due".
   const numericGoal = (name) => name === "goal" && typeof el.goal === "number";
@@ -296,6 +296,7 @@ function referencePass(bundle, spec, merged, add) {
     }
   }
   for (const screen of bundle.screens || []) orderRules(screen, merged, add);
+  newFieldFormRules(bundle, spec, merged, add);
   // Cards the bundle did not write but whose track it changed must still hold.
   for (const card of live(merged.cards)) {
     if (declaredCards.has(card.key)) continue;
@@ -307,6 +308,26 @@ function referencePass(bundle, spec, merged, add) {
       elementRules(el, `cards.${card.key}.body[${i}]`, merged, (path, rule, message, allowed) => before.push({ path, rule, message: `Карточка ${q(card.key)} уже есть и перестала подходить: ${message} Исправьте её в этом же пакете или уберите (remove card).`, allowed }));
       for (const p of before) add(p.path, p.rule, p.message, p.allowed);
     });
+  }
+}
+
+// A field added to an existing track must reach the forms that list their fields, or the
+// person cannot enter it when they record; a quick button that writes it is enough.
+function newFieldFormRules(bundle, spec, merged, add) {
+  for (const decl of bundle.tracks || []) {
+    if (!spec.tracks[decl.key]) continue;
+    const before = new Set(spec.tracks[decl.key].fields.map((f) => f.key));
+    const fresh = (merged.tracks[decl.key]?.fields || []).filter((f) => !before.has(f.key) && f.type !== "calc" && !f.planned && !f.on);
+    if (!fresh.length) continue;
+    const bodies = live(merged.cards).map((card) => ({ card, els: (card.body || []).filter((el) => el.of === decl.key) }));
+    const quick = new Set(bodies.flatMap(({ els }) => els.filter((el) => el.el === "quick").flatMap((el) => Object.keys(el.values || {}))));
+    for (const { card, els } of bodies) {
+      els.forEach((el) => {
+        if (el.el !== "form" || !Array.isArray(el.fields)) return;
+        const missed = fresh.filter((f) => !el.fields.includes(f.key) && !quick.has(f.key)).map((f) => f.key);
+        if (missed.length) add(`cards.${card.key}.body`, "form-misses-field", `Поле ${words(missed)} новое, а форма в карточке ${q(card.key)} спрашивает только ${words(el.fields)}. Добавьте ${words(missed)} в fields этой формы или уберите fields, чтобы форма спрашивала все поля.`, missed);
+      });
+    }
   }
 }
 
@@ -860,7 +881,7 @@ function safetyPass(bundle, merged, add, request) {
     for (const f of decl.fields || []) {
       const field = track.fields.find((x) => x.key === f.key);
       const ref = `tracks.${track.key}.fields.${field.key}`;
-      if (field.goal != null) facts.goals.push({ ref: `${ref}.goal`, key: field.key, name: field.name, unit: field.unit, goal: field.goal, per: field.goalPer });
+      if (field.goal != null) facts.goals.push({ ref: `${ref}.goal`, key: field.key, name: field.name, unit: field.unit, goal: field.goal, per: field.goalPer, goalType: field.goalType });
       if (field.type === "calc") {
         const own = (key) => track.fields.find((x) => x.key === key);
         facts.calcs.push({ ref: `${ref}.calc`, name: field.name, unit: field.unit, readsUnits: calcReads(field.calc, (key) => (own(key) ? { unit: own(key).unit, calc: own(key).calc } : null)) });

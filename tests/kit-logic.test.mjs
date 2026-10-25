@@ -1290,3 +1290,24 @@ test("item rows say their state in a word; the items of a habit with no period a
   const catalog = bind(spaceOf(BOOKS).state(), { el: "list", of: "books", columns: ["name"] });
   assert.equal(catalog.rows.every((r) => !("state" in r)), true, "a catalog row has no state");
 });
+
+test("a weight or a scale without fn is averaged, not summed; a volume without fn is summed", () => {
+  const store = openSpace();
+  defineTrack(store, "weight", { fields: [{ key: "kg", unit: "кг" }, { key: "mood", type: "scale", min: 1, max: 5 }, { key: "ml", unit: "мл" }] });
+  entry(store, "weight", "2026-10-22", { kg: 80, mood: 3, ml: 200 });
+  entry(store, "weight", "2026-10-22", { kg: 82, mood: 5, ml: 300 });
+  entry(store, "weight", "2026-10-23", { kg: 81, mood: 4, ml: 500 });
+  const state = store.state();
+  const stat = (value) => valueTotal(state, { of: "weight", value, range: range("2026-10-18", TODAY) }, CTX).value;
+  assert.equal(stat("kg"), 81);
+  assert.equal(stat("mood"), 4);
+  assert.equal(stat("ml"), 1000);
+});
+
+test("an item key made from a one-letter or non-Latin name still exports and imports", () => {
+  const store = openSpace();
+  defineTrack(store, "spices", { kind: "list" });
+  for (const name of ["Э", "日本", "!!!"]) assert.equal(store.apply(addItemOps(store.state(), "spices", { name }, CTX), { actor: "human" }).ok, true);
+  const keys = itemsOf(store.state(), "spices").map((i) => i.key);
+  assert.deepEqual(keys.map((k) => k.length >= 2), [true, true, true], keys.join(", "));
+});

@@ -1193,3 +1193,37 @@ test("round 2: every attribute and value the catalogue knows has a one-line Russ
   assert.deepEqual(SOURCES.ration.values.map((v) => v.key).slice(-2), ["meals", "meals_planned"]);
   assert.deepEqual(SOURCES.sport.values.map((v) => v.key).slice(-2), ["sessions", "sessions_planned"]);
 });
+
+test("a field added to an existing track must reach the form that lists its fields", () => {
+  const store = openSpace();
+  const gifts = { key: "gifts", name: "Подарки", kind: "log", fields: [{ key: "gift", name: "Подарок", type: "text" }, { key: "price", name: "Цена", type: "number", unit: "₽" }] };
+  build(store, { v: 2, name: "Подарки", tracks: [gifts], screens: [{ key: "gifts", name: "Подарки", cards: [{ key: "gifts_add", title: "Новый подарок", body: [{ el: "form", of: "gifts", fields: ["gift", "price"] }] }] }] });
+  const occasion = { key: "occasion", name: "Повод", type: "choice", options: ["день рождения", "Новый год", "другое"] };
+  const forgot = checkBundle({ v: 2, name: "Подарки", tracks: [{ key: "gifts", fields: [occasion] }] }, store.state(), ctx);
+  assert.equal(forgot.ok, false);
+  assert.deepEqual(forgot.problems.map((p) => [p.rule, p.allowed]), [["form-misses-field", ["occasion"]]]);
+  const fixed = { v: 2, name: "Подарки", tracks: [{ key: "gifts", fields: [occasion] }], screens: [{ key: "gifts", cards: [{ key: "gifts_add", body: [{ el: "form", of: "gifts", fields: ["gift", "price", "occasion"] }] }] }] };
+  assert.equal(checkBundle(fixed, store.state(), ctx).ok, true);
+  const quick = { v: 2, name: "Подарки", tracks: [{ key: "gifts", fields: [{ key: "wrapped", name: "Упакован", type: "yesno" }] }], screens: [{ key: "gifts", cards: [{ key: "gifts_wrap", title: "Упаковал", body: [{ el: "quick", of: "gifts", values: { wrapped: true }, label: "Упаковал" }] }] }] };
+  assert.equal(checkBundle(quick, store.state(), ctx).ok, true, "a quick button that writes the field is enough");
+});
+
+test("a key named after an Object member is refused as a key, not thrown on", () => {
+  const store = openSpace();
+  const track = { key: "constructor", name: "Вода", kind: "log", fields: [{ key: "ml", name: "Выпито", type: "number", unit: "мл" }] };
+  const checked = checkBundle({ v: 2, name: "Вода", tracks: [track] }, store.state(), ctx);
+  assert.equal(checked.ok, false);
+  assert.equal(Object.hasOwn(Object, "kind"), false);
+  const element = checkBundle({ ...WATER, screens: [{ key: "home", cards: [{ key: "w_card", title: "Вода", body: [{ el: "constructor", of: "water" }] }] }] }, store.state(), ctx);
+  assert.deepEqual(element.problems.map((p) => p.rule), ["unknown-element"]);
+  const kind = checkBundle({ v: 2, name: "Вода", tracks: [{ ...WATER.tracks[0], kind: "constructor" }] }, store.state(), ctx);
+  const type = checkBundle({ v: 2, name: "Вода", tracks: [{ ...WATER.tracks[0], fields: [{ key: "ml", name: "Выпито", type: "constructor" }] }] }, store.state(), ctx);
+  assert.equal(kind.ok || type.ok, false);
+});
+
+test("an energy limit under the floor is refused whatever the field is called; a burn goal is not a limit", () => {
+  const store = openSpace();
+  const track = (field) => ({ v: 2, name: "Энергия", tracks: [{ key: "energy", name: "Энергия", kind: "log", fields: [{ key: "kcal", type: "number", unit: "ккал", ...field }] }] });
+  assert.deepEqual(checkBundle(track({ name: "Расход еды", goal: 400, goalType: "max" }), store.state(), ctx).problems.map((p) => p.rule), ["energy-goal-floor"]);
+  assert.equal(checkBundle(track({ name: "Сожжено на тренировке", goal: 400 }), store.state(), ctx).ok, true);
+});

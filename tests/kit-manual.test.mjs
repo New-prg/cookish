@@ -517,7 +517,7 @@ test("a typical prompt fits the target for every request of the corpus and the h
 test("every decision row names a wish, a rule and pieces cut from checked answers; the literal pieces pass checkBundle on the demo space", () => {
   assert.ok(DECISIONS.length >= 18, `${DECISIONS.length} rows`);
   assert.equal(new Set(DECISIONS.map((row) => row.id)).size, DECISIONS.length);
-  const required = ["week-count", "missed", "weekdays", "month", "frequency", "plan-fact", "course", "money-left", "pace", "last-delta", "expiring", "edit-search", "one-record", "own-date", "catalog-or-list", "shopping", "streak", "honest"];
+  const required = ["week-count", "missed", "weekdays", "month", "frequency", "plan-fact", "course", "money-left", "pace", "week-avg", "ask-at-mark", "plan-per-item", "last-delta", "expiring", "edit-search", "one-record", "own-date", "catalog-or-list", "shopping", "streak", "honest"];
   assert.deepEqual(DECISIONS.map((row) => row.id).sort(), required.sort());
   for (const row of DECISIONS) {
     assert.match(row.wish, /[а-яё]/i, row.id);

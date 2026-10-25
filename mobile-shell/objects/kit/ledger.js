@@ -632,7 +632,7 @@ function valueMeta(track, value) {
   const wanted = value || (["habit", "follow", "list"].includes(track.kind) ? "done" : track.fields.find((f) => f.type === "number")?.key || "count");
   const field = fieldOf(track, wanted);
   if (field) {
-    return { kind: "field", key: field.key, field, label: field.name, unit: field.unit, additive: isAdditiveUnit(field.unit), defaultFn: "sum", goal: field.goal, goalType: field.goalType, goalPer: field.goalPer };
+    return { kind: "field", key: field.key, field, label: field.name, unit: field.unit, additive: isAdditiveUnit(field.unit), defaultFn: field.type === "scale" || (field.unit && !isAdditiveUnit(field.unit)) ? "avg" : "sum", goal: field.goal, goalType: field.goalType, goalPer: field.goalPer };
   }
   const allowed = VIRTUAL_OF_KIND[track.kind] || ["count"];
   if (!allowed.includes(wanted)) {

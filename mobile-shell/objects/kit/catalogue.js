@@ -25,7 +25,7 @@ export const KEYS = Object.freeze({
   card: { min: 2, max: 30, doc: "ключ карточки: латиница в нижнем регистре, цифры и _, до 30 символов" },
 });
 const KEY_SHAPE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
-export const isKey = (kind, key) => typeof key === "string" && KEY_SHAPE.test(key) && key.length >= KEYS[kind].min && key.length <= KEYS[kind].max;
+export const isKey = (kind, key) => typeof key === "string" && KEY_SHAPE.test(key) && key.length >= KEYS[kind].min && key.length <= KEYS[kind].max && !Object.hasOwn(Object.prototype, key);
 
 // -- kinds ---------------------------------------------------------------------
 export const STATES = Object.freeze(["done", "changed", "skipped"]);
